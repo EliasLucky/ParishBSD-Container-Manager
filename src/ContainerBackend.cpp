@@ -232,3 +232,43 @@ void ContainerBackend::runParishctl(const QString &description, const QStringLis
 
 ////////////
 /// Actions
+////////////
+void ContainerBackend::startContainer(const QString &name) {
+	runParishctl(tr("Starting '%1'").arg(name), { QStringLiteral("start"), name });
+}
+
+void ContainerBackend::stopContainer(const QString &name) {
+	runParishctl(tr("Stopping '%1'").arg(name), { QStringLiteral("stop"), name });
+}
+
+void ContainerBackend::unlockVault(const QString &name)
+{
+	// unlocking prompts for a passphrase
+	// instead of using stdin from GUI -> launch parishctl inside a
+	// terminal emulator
+	const QString cmd = QStringLiteral("%1 unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+
+	runAsync(tr("Unlocking '%1'").arg(name),
+		QStringLiteral("/usr/local/bin/xfce4-terminal"),
+		{ QStringLiteral("--title"), tr("Unlock Vault: %1").arg(name),
+		QStringLiteral("--geometry"), QStringLiteral("90x20"),
+		QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd))
+		});
+}
+
+void ContainerBackend::lockVault(const QString &name)
+{
+	runParishctl(tr("Locking '%1'".arg(name), { QStringLiteral("lock"), name });
+}
+
+void ContainerBackend::destroyContainer(const QString &name)
+{
+	// parishctl performs its own typed confirmation.
+	const QString cmd = QStringLiteral("%1 destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+
+	runAsync(tr("Destroying '%1'").arg(name),
+		QStringLiteral("/usr/local/bin/xfce4-terminal"),
+		{ QStringLiteral("--title"), tr("Destroy: %1").arg(name),
+	       	QStringLiteral("--geometry"), QStringLiteral("90x24"),
+		QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd)) });
+}
