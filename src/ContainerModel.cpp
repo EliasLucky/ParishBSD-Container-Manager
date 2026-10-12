@@ -50,7 +50,7 @@ QVariant ContainerModel::data(const QModelIndex &index, int role) const
 	return QVariant();
 }
 
-QVariant ContainerModel::headerData(int section, Qt::Orientation orientaiton, int role) const
+QVariant ContainerModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
 	if (role != Qt::DisplayRole)
 		return QVariant();
@@ -86,7 +86,7 @@ ContainerInfo ContainerModel::containerAt(int row) const
 
 int ContainerModel::rowForName(const QString &name) const
 {
-	for (int = 0; i < m_rows.size(); ++i)
+	for (int i = 0; i < m_rows.size(); ++i)
 		if (m_rows.at(i).name == name)
 			return i;
 	return -1;
@@ -108,7 +108,7 @@ QIcon ContainerModel::makeStateIcon(const QString &state)
 	}
 	else {
 		color = QColor(0x80, 0x80, 0x80); // gray, hollow
-		filled = false
+		filled = false;
 	}
 
 	QPixmap pm(16,16);

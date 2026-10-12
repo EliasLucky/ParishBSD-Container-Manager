@@ -89,7 +89,7 @@ void MainWindow::buildToolBar()
 	tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	tb->setMovable(false);
 
-	audo add = [tb](QAction *a, const QString &iconName) {
+	auto add = [tb](QAction *a, const QString &iconName) {
 		QIcon icon = QIcon::fromTheme(iconName);
 		if (!icon.isNull())
 			a->setIcon(icon);
@@ -221,7 +221,7 @@ void MainWindow::onSelectionChanged()
 //////////////
 /// Actions
 //////////////
-void MainWindow::onRefresh();
+void MainWindow::onRefresh()
 {
 	m_model->refresh();
 	updateActionStates();

@@ -10,5 +10,5 @@ QString formatDiskUsage(quint64 bytes) {
 	}
 	if (unit == 0)
 		return QString("%1 B").arg(bytes);
-	return QString("%1 %2").arg(value, 0, 'f', 2).arg(units[unit]):
+	return QString("%1 %2").arg(value, 0, 'f', 2).arg(units[unit]);
 }

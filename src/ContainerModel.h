@@ -6,7 +6,7 @@
 
 #include "ContainerInfo.h"
 
-class ContainerBacked;
+class ContainerBackend;
 
 // Table model for the container list.
 // Columns: Name, Kind, State, Template, Disk usage.

@@ -158,9 +158,9 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 				else if (last == QLatin1Char('G')) { multiplier = 1024ULL * 1024 * 1024; }
 				else if (last == QLatin1Char('T')) { multiplier = 1024ULL * 1024 * 1024 * 1024; }
 				if (last.isLetter())
-					s.chop(1)
-				book ok = false;
-				const double v = s.toTouble(&ok);
+					s.chop(1);
+				bool ok = false;
+				const double v = s.toDouble(&ok);
 				if (ok)
 					info.diskUsage = static_cast<quint64>(v * multiplier);
 			}
@@ -202,7 +202,7 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
 		if (*completed) return;
 		*completed = true;	
 
-		const bool ok = (status == QProcess::NormalExit && exitCode == 0):
+		const bool ok = (status == QProcess::NormalExit && exitCode == 0);
 		QString err;
 		if (!ok) {
 			err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
@@ -257,7 +257,7 @@ void ContainerBackend::unlockVault(const QString &name)
 
 void ContainerBackend::lockVault(const QString &name)
 {
-	runParishctl(tr("Locking '%1'".arg(name), { QStringLiteral("lock"), name });
+	runParishctl(tr("Locking '%1'").arg(name), { QStringLiteral("lock"), name });
 }
 
 void ContainerBackend::destroyContainer(const QString &name)

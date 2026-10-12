@@ -8,12 +8,12 @@
 #include <QMessageBox>
 #include <QDialogButtonBox>
 
-ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent) : QDialog(parent), m_backend(backend, m_info(info)
+ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent) : QDialog(parent), m_backend(backend), m_info(info)
 {
 	setWindowTitle(tr("Actions: %1").arg(info.name));
 	setMinimumWidth(420);
 
-	auto *root = new QVboxLayout(this);
+	auto *root = new QVBoxLayout(this);
 
 	auto *summary = new QLabel(this);
 	summary->setTextFormat(Qt::RichText);
@@ -23,7 +23,7 @@ ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &inf
 		"State: %3<br>"
 		"Personality: %4<br>"
 		"Disk usage: %5")
-		.arg(info.name.toHtmlEscaped(), info.kind.toHtmlEscaped(), info.state.toHtmlEscaped(), info.personality.toHtmlEscaped(), formatDiskUsage(info.diskUSage).toHtmlEscaped()));
+		.arg(info.name.toHtmlEscaped(), info.kind.toHtmlEscaped(), info.state.toHtmlEscaped(), info.personality.toHtmlEscaped(), formatDiskUsage(info.diskUsage).toHtmlEscaped()));
 	root->addWidget(summary);
 	root->addSpacing(8);
 
@@ -33,7 +33,7 @@ ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &inf
 	rebuildButtons();
 
 	auto *box = new QDialogButtonBox(QDialogButtonBox::Close, this);
-	connect(box, &DialogButtonBox::rejected, this, &QDialog::reject);
+	connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
 	root->addWidget(box);
 
 	connect(m_backend, &ContainerBackend::operationFinished, this, &ActionsDialog::onOperationFinished);
@@ -117,7 +117,7 @@ void ActionsDialog::onDestroy() {
 		     "will be destroyed. The data cannot be recovered, even with the passphrase.").arg(m_info.name)
 		: tr("Destroy container '%1'?\n\nThis cannot be undone.").arg(m_info.name);
 
-	if (QMessageBox::warning(this, tr("Destroy"), warning, QMessage::Yes | QMessage::No) != QMessageBox::Yes
+	if (QMessageBox::warning(this, tr("Destroy"), warning, QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
 		return;
 	
 	m_backend->destroyContainer(m_info.name);
