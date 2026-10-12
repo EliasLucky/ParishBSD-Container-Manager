@@ -10,7 +10,7 @@ class ContainerBacked;
 
 // Table model for the container list.
 // Columns: Name, Kind, State, Template, Disk usage.
-class ContainerMOdel : public QAbstractTableModel
+class ContainerModel : public QAbstractTableModel
 {
 	Q_OBJECT
 public:
@@ -39,4 +39,4 @@ private:
 
 	ContainerBackend *m_backend;
 	QList<ContainerInfo> m_rows;
-}
+};
