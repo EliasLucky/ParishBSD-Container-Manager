@@ -272,3 +272,37 @@ void ContainerBackend::destroyContainer(const QString &name)
 	       	QStringLiteral("--geometry"), QStringLiteral("90x24"),
 		QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd)) });
 }
+
+void ContainerBackend::createContainer(const QString &name, const QString &personality)
+{
+	// vault creation requires prompt for a passphrase.
+	const bool isVault = personality.startsWith(QStringLiteral("vault-"));
+
+	if (isVault) {
+		const QString cmd = QStringLiteral("%1 create %2 %3; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name, personality);
+
+		runAsync(tr("Creating vault '%1'").arg(name),
+			QStringLiteral("/usr/local/bin/xfce4-terminal"),
+			{ QStringLiteral("--title"), tr("Create Vault: %1").arg(name),
+			QStringLiteral("--geometry"), QStringLiteral("90x24"),
+		        QStringLiteral("-e"), QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd)) });
+	}
+	else {
+		runParishctl(tr("Creating '%1'").arg(name), { QStringLiteral("create"), name, personality });
+	}
+}
+
+void ContainerBackend::openConsole(const QString &name)
+{
+	const QString cmd = QStringLiteral("jexec %1 /bin/sh").arg(name);
+	runAsync(tr("Opening console for '%1'").arg(name),
+		QStringLiteral("/usr/local/bin/xfce4-terminal"),
+		{ QStringLiteral("--title"), tr("Console: %1").arg(name),
+	        QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(cmd) });
+}
+
+void ContainerBackend::openVaultFiles(const QString &name) {
+	runAsync(tr("Opening files for '%1'").arg(name),
+		m_root + QStringLiteral("/parishctl/parish-vault-files"),
+		{ name });
+}
