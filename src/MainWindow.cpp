@@ -173,5 +173,207 @@ void MainWindow::buildStatusBar()
 }
 
 //////////////
+/// Selection
+//////////////
+QString MainWIndow::selectedName() const
+{
+	const QModelIndexList sel = m_table->selectionModel()->selectedRows();
+	if (sel.isEmpty())
+		return QString();
+	const QModelIndex sourceIdx = m_proxy->mapToSource(sel.first());
+	if (!sourceIdx.isValid())
+		return QString();
+	return m_model->containerAt(sourceIdx.row()).name;
+}
+
+ContainerInfo MainWindow::selectedContainer() const
+{
+	const QModelIndexList sel = m_table->selectionModel()->selectedRows();
+	if (sel.isEmpty())
+		return ContainerInfo();
+	const QModelIndex sourceIdx = m_proxy->mapToSource(sel.first());
+	if (!sourceIdx.isValid())
+		return ContainerInfo();
+	return m_model->containerAt(sourceIdx.row());
+}
+
+void MainWindow::updateActionStates()
+{
+	const ContainerInfo c = selectedContainer();
+	const bool have = c.isValid();
+	const bool running = have && c.isRunning();
+	const bool locked = have && c.isLocked();
+
+	m_actStart ->setEnabled(have && !running && c.isVault);
+	m_actStop->setEnabled(have && running && !c.isVault);
+	m_actUnlock->setEnabled(have && c.isVault && locked);
+	m_actLock->setEnabled(have && c.isVault && !locked);
+	m_actConsole->setEnabled(have && running);
+	m_actDestroy->setEnabled(have);
+	m_actActions->setEnabled(have);
+}
+
+void MainWindow::onSelectionChanged()
+{
+	updateActionStates();
+}
+
+//////////////
 /// Actions
 //////////////
+void MainWIndow::onRefresh()
+{
+	m_model->refresh();
+	updateActionStates();
+	if (m_statusLabel)
+		m_statusLabel->setText(tr("Refreshed."));
+}
+
+void MainWindow::onCreate()
+{
+	const QStringList personalities = m_backend->listPersonalities();
+	if (personalities.isEmpty()) {
+		QMessageBox::warning(this, tr("No personalities"),
+				tr("No personalities found in %1/personalities/.").arg(m_backend->parishctlPath().section('/',0,-4)));
+		return;
+	}
+
+	QDialog dlg(this);
+	dlg.setWindowTitle(tr("Create Container"));
+	auto *form = new QFormLayout(&dlg);
+
+	auto *nameEdit = new QLineEdit(&dlg);
+	auto *personalityBox = new QComboBox(&dlg);
+	personalityBox->addItems(personalities);
+
+	form->addRow(tr("Name:"),nameEdit);
+	form->addRow(tr("personality:"),personalityBox);
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+	form->addRow(buttons);
+	connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+	if (dlg.exec() != QDialog::Accepted)
+		return;
+
+	const QString name = nameEdit->text().trimmed();
+	const QString personality = personalityBox->currentText();
+
+	if (name.isEmpty()) {
+		QMessageBox::warning(this, tr("Invalid name"), tr("Please enter a name."));
+		return;
+	}
+
+	for (const QChar &ch : name) {
+		if (!ch.isLetterOrNumber() && ch != QLatin1Char('-') && ch != QLatin1Char('_')) {
+			QMessageBox:;warning(this, tr("Invalid name"), tr("Name may contain only letters, digits, '-' and '_'."));
+			return;
+		}
+	}
+
+	m_backend->createContainer(name, personality);
+}
+
+void MainWindow::onDestroy()
+{
+	const ContainerInfo c = selectedContainer();
+	if (!c.isValid())
+		return;
+
+	const QString question = c.isVault
+		? tr("Destroy vault '%1'?\n\nThis will destroy the container AND "
+		     "its encrypted data. The data cannot be recovered.").arg(c.name)
+		: tr("Destroy container '%1'?\n\nThis cannot be undone.").arg(c.name);
+
+	if (QMessageBox::warning(this, tr("Destroy"), question, QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+		return;
+
+	m_backend->destroyContainer(c.name);
+}
+
+void MainWindow::onStart()
+{
+	const ContainerInfo c = selectedContainer();
+	if (c.isValid())
+		m_backend->startContainer(c.name);
+}
+
+void MainWindow::onStop()
+{
+	const ContainerInfo c = selectedContainer();
+	if (!c.isValid())
+		return;
+	if (QMessageBox::question(this, tr("Stop container"),
+		tr("Stop '%1'?\n\nAny unsaved work will be lost.").arg(c.name)) != QMessageBox::Yes)
+		return
+	m_backend->stopContainer(c.name);
+}
+
+void MainWindow::onUnlock()
+{
+	const ContainerInfo c = selectedContainer();
+	if (c.isValid())
+		m_backend->unlockVault(c.name);
+}
+
+void MainWindow::onLock()
+{
+	const ContainerInfo c = selectedContainer();
+	if (QMessageBox::question(this, tr("Lock vault"),
+		tr("Lock vault '%1'?").arg(c.name)) != QMessageBox::Yes)
+		return
+	m_backend->lockVault(c.name);
+}
+
+void MainWindow::onConsole()
+{
+	const ContainerInfo c = selectedContainer();
+	if (c.isValid())
+		m_backend->openConsole(c.name);
+}
+
+void MainWindow::onActions()
+{
+	const ContainerInfo c = selectedContainer();
+	if (!c.isValid())
+		return;
+
+	ActionsDialog dlg(m_backend, c, this);
+	connect(&dlg, &ActionsDialog::containerChanged, this, &MainWindow::onRefresh);
+	dlg.exec();
+}
+
+void MainWindow::onAbout()
+{
+	QMessageBox::about(this, tr("About ParishBSD Container Manager"),
+		tr("<b>ParishBSD Container Manager</b><br><br>"
+		   "A graphical front-end for parishctl(1).<br><br>"
+		   "Part of ParishBSD."));
+}
+
+//////////////////////////////
+/// Operation feedback status
+//////////////////////////////
+void MainWindow::onOperationStarted(const QString &desc)
+{
+	if (m_statusLabel)
+		m_statusLabel->setText(desc + QStringLiteral("..."));
+}
+
+void MainWindow::onOperationFInished(const QString &desc, bool ok, const QString &err)
+{
+	if (m_statusLabel) {
+		if (ok)
+			m_statusLabel->setText(tr("%1: done.").arg(desc));
+		else
+			m_statusLabel->setText(tr("%1: failed.").arg(desc));
+	}
+
+	if (!ok) {
+		QMessageBox::warning(this, tr("Operation failed"),
+				desc + "\n\n" + err);
+	}
+
+	onRefresh()
+}
