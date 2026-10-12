@@ -31,12 +31,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
 	m_proxy = new QSortFilterProxyModel(this);
 	m_proxy->setSourceModel(m_model);
-	m_proxy->setFilterCaseSensitiviy(Qt::CaseInsensitive);
+	m_proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
 	m_proxy->setFilterKeyColumn(ContainerModel::NameColumn);
 	m_proxy->setSortCaseSensitivity(Qt::CaseInsensitive);
 
 	buildMenus();
-	buildToolbar();
+	buildToolBar();
 	buildCentralWidget();
 	buildStatusBar();
 
@@ -83,9 +83,9 @@ void MainWindow::buildMenus()
 	connect(m_actConsole, &QAction::triggered, this, &MainWindow::onConsole);
 }
 
-void MainWindow::buildToolbar()
+void MainWindow::buildToolBar()
 {
-	QToolbar *tb = addToolBar(tr("Main"));
+	QToolBar *tb = addToolBar(tr("Main"));
 	tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	tb->setMovable(false);
 

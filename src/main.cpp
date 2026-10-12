@@ -1,4 +1,8 @@
-#define _POSIX_C_SOURCE 200809L
+#if defined (__FreeBSD__)
+#	ifndef _XOPEN_SOURCE
+#		define _XOPEN_SOURCE 700
+#	endif
+#endif
 
 #include <QApplication>
 #include <QMessageBox>
@@ -20,7 +24,7 @@ static void setApplicationMetadata()
 static bool isRunningAsRoot()
 {
 	QProcess proc;
-	proc.start(QStringLiteral("id"), { StringLiteral("-u") });
+	proc.start(QStringLiteral("id"), { QStringLiteral("-u") });
 	if (!proc.waitForFinished(5000)) {
 		return false;		
 	}

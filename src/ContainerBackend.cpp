@@ -5,7 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
-#include <QStandardPats>
+#include <QStandardPaths>
 
 #include <memory>
 

@@ -9,13 +9,13 @@
 
 class QProcess;
 
-// For listing containers, ContainerBacked reads the filesystem and
+// For listing containers, ContainerBackend reads the filesystem and
 // queries zfs(8) / jail(8) directly. For actions (start, stop, create,
 // destroy, unlock, lock), it runs parishctl(1).
-class ContainerBacked : public QObject {
+class ContainerBackend : public QObject {
 	Q_OBJECT
 public:
-	explicit ContainerBacked(QObject *parent = nullptr);
+	explicit ContainerBackend(QObject *parent = nullptr);
 
 	QList<ContainerInfo> listContainers(QString *errorOut = nullptr) const;
 
