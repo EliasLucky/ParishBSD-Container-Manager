@@ -4,7 +4,7 @@
 
 class QLineEdit;
 class QTableView;
-class QSortFilterProxyMOdel;
+class QSortFilterProxyModel;
 class QAction;
 class QLabel;
 
@@ -45,7 +45,7 @@ private:
 
 	QString selectedName() const;
 
-	COntainerBackend *m_backend = nullptr;
+	ContainerBackend *m_backend = nullptr;
 	ContainerModel *m_model = nullptr;
 	QSortFilterProxyModel *m_proxy = nullptr;
 
