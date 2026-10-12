@@ -1,5 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <QApplication>
 #include <QMessageBox>
+#include <QLocale>
+#include <QTranslator>
+
+#include <unistd.h>
 
 #include "MainWindow.h"
 
@@ -9,7 +15,7 @@ int main(int argc, char *argv[])
 	QApplication::setApplicationName(QStringLiteral("parish-manager"));
 	QApplication::setApplicationDisplayName(QStringLiteral("ParishBSD Container Manager"));
 	QApplication::setOrganizationName(QStringLiteral("ParishBSD"));
-	QApplication::setOrganizationDOmain(QStringLiteral("parishbsd.org"));
+	QApplication::setOrganizationDomain(QStringLiteral("parishbsd.org"));
 	QApplication::setApplicationVersion(QStringLiteral("1.0.0"));
 
 	// The container manager runs parishctl which requires root.

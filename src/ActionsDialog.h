@@ -10,7 +10,7 @@ class ActionsDialog : public QDialog
 {
 	Q_OBJECT
 public:
-	ActionsDialog(ContainerBackend *backend, const COntainerInfo & info, QWidget *parent = nullptr);
+	ActionsDialog(ContainerBackend *backend, const ContainerInfo & info, QWidget *parent = nullptr);
 
 signals:
 	void containerChanged();

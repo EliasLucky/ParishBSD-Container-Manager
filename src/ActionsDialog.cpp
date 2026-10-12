@@ -95,7 +95,7 @@ void ActionsDialog::onUnlock()
 
 void ActionsDialog::onLock()
 {
-	if (QMessageBox::question9this, tr("Lock vault"),
+	if (QMessageBox::question(this, tr("Lock vault"),
 		tr("Lock vault '%1'?\n\nThe container will stop and its encryption key will be unloaded.").arg(m_info.name)) != QMessageBox::Yes)
 		return;
 	m_backend->lockVault(m_info.name);
