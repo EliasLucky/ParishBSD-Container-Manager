@@ -18,7 +18,7 @@ ContainerBackend::ContainerBackend(QObject *parent) : QObject(parent)
 	m_root = qEnvironmentVariable("PARISHBSD_ROOT", QStringLiteral("/usr/local/parishbsd"));
 	m_parishctlPath = m_root + QStringLiteral("/parishctl/parishctl");
 	m_jailsDir = QStringLiteral("/usr/local/jails");
-	m_valtDataDir = QStringLiteral("/zrot/vault-data");
+	m_vaultDataDir = QStringLiteral("/zrot/vault-data");
 }
 
 /////////////////////////////////////////////
@@ -35,15 +35,15 @@ QString ContainerBackend::runSync(const QString &program, const QStringList &arg
 	}
 	proc.waitForFinished(15000);
 	if (exitCode) *exitCode = proc.exitCode();
-	return QString:fromUtf8(proc.readAllStandardOutput());
+	return QString::fromUtf8(proc.readAllStandardOutput());
 }
 
-QString ContainerBackend::findJail(const QString &name, QString *tierOut) const
+QString ContainerBackend::findJailRoot(const QString &name, QString *tierOut) const
 {
 	const QStringList tiers = { QStringLiteral("app"), QStringLiteral("vault") };
 	for (const QString &tier : tiers) {
-		const QString candidate = m_jailrsDir + QLatin1Char('/') + tier + QLatin1Char('/') + name;
-		if (QFileInfo::exists(candiate + QStringLiteral("/bin/sh"))) {
+		const QString candidate = m_jailsDir + QLatin1Char('/') + tier + QLatin1Char('/') + name;
+		if (QFileInfo::exists(candidate + QStringLiteral("/bin/sh"))) {
 			if (tierOut) *tierOut = tier;
 			return candidate;
 		}
@@ -54,11 +54,11 @@ QString ContainerBackend::findJail(const QString &name, QString *tierOut) const
 QString ContainerBackend::readPersonality(const QString &jailRoot) const
 {
 	QFile f(jailRoot + QStringLiteral("/usr/local/etc/parishbsd/metadata"));
-	if (!f.open(QIODevice::readOnly | QIODevice::Text))
+	if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
 		return QString();
 	QTextStream in(&f);
 	while (!in.atEnd()) {
-		const QString line = in readLine().trimmed();
+		const QString line = in.readLine().trimmed();
 		if (line.startsWith(QStringLiteral("PERSONALITY=")))
 			return line.mid(QStringLiteral("PERSONALITY=").size());
 	}
@@ -72,7 +72,7 @@ QString ContainerBackend::kindFromPersonality(const QString &personality)
 	if (personality == QLatin1String("apps-compatible"))
 		return QStringLiteral("Compatibility");
 	if (personality == QLatin1String("vault-files"))
-		return QStringLiteral("File Vault")
+		return QStringLiteral("File Vault");
 	if (personality == QLatin1String("vault-postgres"))
 		return QStringLiteral("Database Vault");
 	return personality.isEmpty() ? QStringLiteral("Unknown") : personality;
@@ -91,16 +91,15 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 		const QString tierDir = m_jailsDir + QLatin1Char('/') + tier;
 		QDir d(tierDir);
 		if (!d.exists())
-			continue
+			continue;
 
-		const QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDor::Name);
+		const QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
 
 		for (const QString &name : entries) {
 			const QString jailRoot = tierDir + QLatin1Char('/') + name;
-			if (!QFileInfo::exists((jailRoot + QStringLiteral("/bin/sh")))
-					continue;
+			if (!QFileInfo::exists(jailRoot + QStringLiteral("/bin/sh"))) { continue; }
 
-			ContainerInfo ifo;
+			ContainerInfo info;
 			info.name = name;
 			info.tier = tier;
 			info.isVault = (tier == QLatin1String("vault"));
@@ -112,7 +111,7 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 			// is jail running?
 			int jlsRc = 0;
 			const QString jlsOut = runSync(QStringLiteral("/usr/sbin/jls"), { QStringLiteral("name") }, &jlsRc);
-			const QStringList running = jlsOut.split('\n'), Qt::SkipEmptyParts);
+			const QStringList running = jlsOut.split('\n', Qt::SkipEmptyParts);
 			const bool isRunning = running.contains(name);
 
 			// for vaults check keystatus
@@ -135,7 +134,7 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 				if (info.isVault && keystatus == QLatin1String("available"))
 					info.state = QStringLiteral("unlocked");
 				else if (info.isVault) {
-					info.state = QStringLiteral("locked"):
+					info.state = QStringLiteral("locked");
 				}
 				else {
 					info.state = QStringLiteral("stopped");
@@ -148,16 +147,16 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 			const QString used = runSync(
 				QStringLiteral("/sbin/zfs"),
 				{ QStringLiteral("list"), QStringLiteral("-H"), QStringLiteral("-o"), QStringLiteral("used"), ds },	
-				&zrc)
+				&zrc);
 			if (zrc == 0) {
 				// kind of unnecessary perhaps?
 				QString s = used.trimmed();
 				quint64 multiplier = 1;
 				QChar last = s.isEmpty() ? QChar() : s.back().toUpper();
-				if (last == QLatin1Char('K')) { multiplier = 1024NULL; }
-				else if (last == QLatin1Char('M')) { multiplier = 1024NULL * 1024; }
-				else if (last == QLatin1Char('G')) { multiplier = 1024NULL * 1024 * 1024; }
-				else if (last == QLatin1Char('T')) { multiplier = 1024NULL * 1024 * 1024 * 1024; }
+				if (last == QLatin1Char('K')) { multiplier = 1024ULL; }
+				else if (last == QLatin1Char('M')) { multiplier = 1024ULL * 1024; }
+				else if (last == QLatin1Char('G')) { multiplier = 1024ULL * 1024 * 1024; }
+				else if (last == QLatin1Char('T')) { multiplier = 1024ULL * 1024 * 1024 * 1024; }
 				if (last.isLetter())
 					s.chop(1)
 				book ok = false;
@@ -199,7 +198,7 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
 	// guard against finished() and errorOccurred() firing
 	auto completed = std::make_shared<bool>(false);
 
-	connect(proc, &QProcess:finished, this, [this,proc,description,completed] (int exitCode, QProcess:ExitStatus status) {
+	connect(proc, &QProcess::finished, this, [this,proc,description,completed] (int exitCode, QProcess::ExitStatus status) {
 		if (*completed) return;
 		*completed = true;	
 
@@ -214,7 +213,7 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
 		proc->deleteLater();
 	});
 
-	connect(proc, &QProcess::errorOccured, this, [this, proc, description, completed] (QProgress::ProcessError) {
+	connect(proc, &QProcess::errorOccurred, this, [this, proc, description, completed] (QProcess::ProcessError) {
 		if (*completed) return;
 		*completed = true;
 

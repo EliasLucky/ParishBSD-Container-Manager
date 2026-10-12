@@ -30,7 +30,7 @@ public:
 	QVariant data(const QModelIndex &index, int role) const override;
 	QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
 
-	void refersh(); // reload using backend
+	void refresh(); // reload using backend
 	
 	ContainerInfo containerAt(int row) const;
 	int rowForName(const QString &name) const;

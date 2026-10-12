@@ -54,6 +54,6 @@ private:
 
 	QString m_root; // /usr/local/parishbsd
 	QString m_parishctlPath;
-	QString m_jailrsDir; // /usr/local/jails
+	QString m_jailsDir; // /usr/local/jails
 	QString m_vaultDataDir; // /zroot/vault-data
 };

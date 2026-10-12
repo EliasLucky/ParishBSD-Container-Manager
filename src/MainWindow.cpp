@@ -90,10 +90,10 @@ void MainWindow::buildToolBar()
 	tb->setMovable(false);
 
 	audo add = [tb](QAction *a, const QString &iconName) {
-		QIcon icon = QIcon::fromTheme(iconNme);
+		QIcon icon = QIcon::fromTheme(iconName);
 		if (!icon.isNull())
 			a->setIcon(icon);
-		tb->addAction(a)
+		tb->addAction(a);
 	};
 
 	add(m_actCreate, QStringLiteral("list-add"));
@@ -113,7 +113,7 @@ void MainWindow::buildToolBar()
 
 void MainWindow::buildCentralWidget()
 {
-	auto *cenral = new QWidget(this);
+	auto *central = new QWidget(this);
 	auto *layout = new QVBoxLayout(central);
 	layout->setContentsMargins(8,8,8,8);
 
@@ -129,7 +129,7 @@ void MainWindow::buildCentralWidget()
 	// tittle
 	m_table = new QTableView(central);
 	m_table->setModel(m_proxy);
-	m_table->setSelectionBehaviour(QAbstractItemView::SelectRows);
+	m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
 	m_table->setSelectionMode(QAbstractItemView::SingleSelection);
 	m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	m_table->setSortingEnabled(true);
@@ -142,7 +142,7 @@ void MainWindow::buildCentralWidget()
 	h->setSectionResizeMode(ContainerModel::NameColumn, QHeaderView::Interactive);
 	h->setSectionResizeMode(ContainerModel::KindColumn, QHeaderView::ResizeToContents);
 	h->setSectionResizeMode(ContainerModel::StateColumn, QHeaderView::ResizeToContents);
-	h->setSectionResizeMOde(ContainerModel::TemplateColumn, QHeaderView::Interactive);
+	h->setSectionResizeMode(ContainerModel::TemplateColumn, QHeaderView::Interactive);
 	h->setSectionResizeMode(ContainerModel::DiskUsageColumn, QHeaderView::ResizeToContents);
 	h->setStretchLastSection(false);
 	h->resizeSection(ContainerModel::NameColumn, 220);
@@ -158,7 +158,7 @@ void MainWindow::buildCentralWidget()
 			m_proxy->setFilterFixedString(t);
 		});
 
-	connect(m_table->selectionModel(), &QItemSelection::selectionChanged,
+	connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged,
 		this, &MainWindow::onSelectionChanged);
 
 	// double-click opens ActionsDialog
@@ -175,7 +175,7 @@ void MainWindow::buildStatusBar()
 //////////////
 /// Selection
 //////////////
-QString MainWIndow::selectedName() const
+QString MainWindow::selectedName() const
 {
 	const QModelIndexList sel = m_table->selectionModel()->selectedRows();
 	if (sel.isEmpty())
@@ -221,7 +221,7 @@ void MainWindow::onSelectionChanged()
 //////////////
 /// Actions
 //////////////
-void MainWIndow::onRefresh()
+void MainWindow::onRefresh();
 {
 	m_model->refresh();
 	updateActionStates();
@@ -267,7 +267,7 @@ void MainWindow::onCreate()
 
 	for (const QChar &ch : name) {
 		if (!ch.isLetterOrNumber() && ch != QLatin1Char('-') && ch != QLatin1Char('_')) {
-			QMessageBox:;warning(this, tr("Invalid name"), tr("Name may contain only letters, digits, '-' and '_'."));
+			QMessageBox::warning(this, tr("Invalid name"), tr("Name may contain only letters, digits, '-' and '_'."));
 			return;
 		}
 	}
@@ -361,7 +361,7 @@ void MainWindow::onOperationStarted(const QString &desc)
 		m_statusLabel->setText(desc + QStringLiteral("..."));
 }
 
-void MainWindow::onOperationFInished(const QString &desc, bool ok, const QString &err)
+void MainWindow::onOperationFinished(const QString &desc, bool ok, const QString &err)
 {
 	if (m_statusLabel) {
 		if (ok)
@@ -375,5 +375,5 @@ void MainWindow::onOperationFInished(const QString &desc, bool ok, const QString
 				desc + "\n\n" + err);
 	}
 
-	onRefresh()
+	onRefresh();
 }

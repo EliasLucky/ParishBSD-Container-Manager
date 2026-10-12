@@ -35,11 +35,11 @@ private slots:
 
 private:
 	void buildMenus();
-	void buildToolbar();
+	void buildToolBar();
 	void buildCentralWidget();
 	void buildStatusBar();
 
-	struct ContainerInfo selectedCotainer() const;
+	struct ContainerInfo selectedContainer() const;
 
 	void updateActionStates();
 
