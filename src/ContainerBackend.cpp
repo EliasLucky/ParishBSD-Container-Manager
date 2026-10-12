@@ -1,59 +1,26 @@
-#pragma once
+#include "ContainerBackend.h"
 
-#include <QObject>
-#include <QList>
-#include <QString>
-#include <QStringList>
+#include <QProcess>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTextStream>
+#include <QStandardPats>
 
-#include "ContainerInfo.h"
+#include <memory>
 
-class QProcess;
+///////////////////////////////////////////////
+/// Constructor
+///////////////////////////////////////////////
 
-// For listing containers, ContainerBacked reads the filesystem and
-// queries zfs(8) / jail(8) directly. For actions (start, stop, create,
-// destroy, unlock, lock), it runs parishctl(1).
-class ContainerBacked : public QObject {
-	Q_OBJECT
-public:
-	explicit ContainerBacked(QObject *parent = nullptr);
+ContainerBackend::ContainerBacked(QObject *parent) : QObject(parent)
+{
+	m_root = qEnvironmentVariable("PARISHBSD_ROOT", QStringLiteral("/usr/local/parishbsd"));
+	m_parishctlPath = m_root + QStringLiteral("/parishctl/parishctl");
+	m_jailsDir = QStringLiteral("/usr/local/jails");
+	m_valtDataDir = QStringLiteral("/zrot/vault-data");
+}
 
-	QList<ContainerInfo> listContainers(QString *errorOut = nullptr) const;
+/////////////////////////////////////////////
 
-	QStringList listPersonalities() const;
-
-	QString parishctlPath() const { return m_parishctlPath; }
-
-	// -----------------------------
-	
-	void startContainer(const QString &name);
-	void stopContainer(const QString &name);
-	void unlockVault(const QString &name);
-	void lockVault(const QString &name);
-	void destroyContainer(const QString &name);
-	void createContainer(const QString &name, const QString &personality);
-
-	void openConsole(const QString &name);
-
-	void openVaultFiles(const QString &name);
-signals:
-	void operationStarted(const QString &description);
-	void operationFinished(const QString &description, bool success, const QString &errorMessage);
-
-private:
-	void runParishctl(const QString &description, const QStringList &args);
-
-	void runAsync(const QString &description, const QString &program, const QStringList &args);
-
-	QString runSync(const QString &program, const QStringList &args, int *exitCode = nullptr) const;
-
-	QString findJailRoot(const QString &name, QString *tierOut = nullptr) const;
-	
-	QString readPersonality(const QString &jailRoot) const;
-
-	static QString kindFromPersonality(const QString &personality);
-
-	QString m_root; // /usr/local/parishbsd
-	QString m_parishctlPath;
-	QString m_jailrsDir; // /usr/local/jails
-	QString m_vaultDataDir; // /zroot/vault-data
-};
+QString ContainerBacked:runSync(const QString &program, const
