@@ -6,7 +6,7 @@
 int main(int argc, char *argv[])
 {
 	QApplication app(argc, argv);
-	QApplicaton::setApplicationName(QStringLiteral("parish-manager"));
+	QApplication::setApplicationName(QStringLiteral("parish-manager"));
 	QApplication::setApplicationDisplayName(QStringLiteral("ParishBSD Container Manager"));
 	QApplication::setOrganizationName(QStringLiteral("ParishBSD"));
 	QApplication::setOrganizationDOmain(QStringLiteral("parishbsd.org"));
