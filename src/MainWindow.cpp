@@ -204,7 +204,7 @@ void MainWindow::updateActionStates()
 	const bool running = have && c.isRunning();
 	const bool locked = have && c.isLocked();
 
-	m_actStart ->setEnabled(have && !running && c.isVault);
+	m_actStart ->setEnabled(have && !running && !c.isVault);
 	m_actStop->setEnabled(have && running && !c.isVault);
 	m_actUnlock->setEnabled(have && c.isVault && locked);
 	m_actLock->setEnabled(have && c.isVault && !locked);

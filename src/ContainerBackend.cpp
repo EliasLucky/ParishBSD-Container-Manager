@@ -251,7 +251,7 @@ void ContainerBackend::unlockVault(const QString &name)
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Unlock Vault: %1").arg(name),
 		QStringLiteral("--geometry"), QStringLiteral("90x20"),
-		QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd))
+		QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd
 		});
 }
 
@@ -269,7 +269,7 @@ void ContainerBackend::destroyContainer(const QString &name)
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Destroy: %1").arg(name),
 	       	QStringLiteral("--geometry"), QStringLiteral("90x24"),
-		QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd)) });
+		QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
 }
 
 void ContainerBackend::createContainer(const QString &name, const QString &personality)
@@ -284,7 +284,7 @@ void ContainerBackend::createContainer(const QString &name, const QString &perso
 			QStringLiteral("/usr/local/bin/xfce4-terminal"),
 			{ QStringLiteral("--title"), tr("Create Vault: %1").arg(name),
 			QStringLiteral("--geometry"), QStringLiteral("90x24"),
-		        QStringLiteral("-e"), QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(QStringLiteral("'%1'").arg(cmd)) });
+		        QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
 	}
 	else {
 		runParishctl(tr("Creating '%1'").arg(name), { QStringLiteral("create"), name, personality });
@@ -297,7 +297,7 @@ void ContainerBackend::openConsole(const QString &name)
 	runAsync(tr("Opening console for '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Console: %1").arg(name),
-	        QStringLiteral("-e"), QStringLiteral("sh -c %1").arg(cmd) });
+	        QStringLiteral("-x"), cmd });
 }
 
 void ContainerBackend::openVaultFiles(const QString &name) {
