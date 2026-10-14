@@ -226,7 +226,10 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
 
 void ContainerBackend::runParishctl(const QString &description, const QStringList &args)
 {
-	runAsync(description, m_parishctlPath, args);
+	QStringList pkArgs;
+	pkArgs << m_parishctlPath;
+	pkArgs << args;
+	runAsync(description, QStringLiteral("/usr/local/bin/pkexec"), args);
 }
 
 ////////////
@@ -245,7 +248,7 @@ void ContainerBackend::unlockVault(const QString &name)
 	// unlocking prompts for a passphrase
 	// instead of using stdin from GUI -> launch parishctl inside a
 	// terminal emulator
-	const QString cmd = QStringLiteral("%1 unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
 	runAsync(tr("Unlocking '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
@@ -263,7 +266,7 @@ void ContainerBackend::lockVault(const QString &name)
 void ContainerBackend::destroyContainer(const QString &name)
 {
 	// parishctl performs its own typed confirmation.
-	const QString cmd = QStringLiteral("%1 destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
 	runAsync(tr("Destroying '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
@@ -278,7 +281,7 @@ void ContainerBackend::createContainer(const QString &name, const QString &perso
 	const bool isVault = personality.startsWith(QStringLiteral("vault-"));
 
 	if (isVault) {
-		const QString cmd = QStringLiteral("%1 create %2 %3; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name, personality);
+		const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' create %2 %3; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name, personality);
 
 		runAsync(tr("Creating vault '%1'").arg(name),
 			QStringLiteral("/usr/local/bin/xfce4-terminal"),
