@@ -346,8 +346,8 @@ void MainWindow::onActions()
 
 void MainWindow::onAbout()
 {
-	QMessageBox::about(this, tr("About ParishBSD Container Manager"),
-		tr("<b>ParishBSD Container Manager</b><br><br>"
+	QMessageBox::about(this, tr("About ParishBSD Compartment Manager"),
+		tr("<b>ParishBSD Compartment Manager</b><br><br>"
 		   "A graphical front-end for parishctl(1).<br><br>"
 		   "Part of ParishBSD."));
 }

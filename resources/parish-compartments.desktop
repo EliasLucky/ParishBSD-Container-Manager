@@ -2,7 +2,7 @@
 Type=Application
 Name=Container Manager
 Comment=Create and manage ParishBSD containers
-Exec=parish-manager
+Exec=parish-compartments
 Icon=parishbsd
 Terminal=false
 Categories=System;Settings;
