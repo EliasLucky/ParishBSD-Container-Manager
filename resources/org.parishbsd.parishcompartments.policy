@@ -7,7 +7,7 @@
   <vendor>ParishBSD</vendor>
   <vendor_url>https://parishbsd.org</vendor_url>
 
-  <action id="org.parishbsd.parishcompartments.manage">
+  <action id="org.parishbsd.parishctl.manage">
     <description>Manage ParishBSD containers</description>
     <message>Authentication is required to manage containers</message>
     <defaults>

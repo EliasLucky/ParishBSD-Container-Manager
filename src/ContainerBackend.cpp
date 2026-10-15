@@ -229,7 +229,7 @@ void ContainerBackend::runParishctl(const QString &description, const QStringLis
 	QStringList pkArgs;
 	pkArgs << m_parishctlPath;
 	pkArgs << args;
-	runAsync(description, QStringLiteral("/usr/local/bin/pkexec"), args);
+	runAsync(description, QStringLiteral("pkexec"), pkArgs);
 }
 
 ////////////
@@ -248,7 +248,7 @@ void ContainerBackend::unlockVault(const QString &name)
 	// unlocking prompts for a passphrase
 	// instead of using stdin from GUI -> launch parishctl inside a
 	// terminal emulator
-	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("pkexec '%1' unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
 	runAsync(tr("Unlocking '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
@@ -266,7 +266,7 @@ void ContainerBackend::lockVault(const QString &name)
 void ContainerBackend::destroyContainer(const QString &name)
 {
 	// parishctl performs its own typed confirmation.
-	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("pkexec '%1' destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
 	runAsync(tr("Destroying '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
@@ -300,7 +300,8 @@ void ContainerBackend::openConsole(const QString &name)
 	runAsync(tr("Opening console for '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Console: %1").arg(name),
-	        QStringLiteral("-x"), cmd });
+	        QStringLiteral("-x"),
+		QStringLiteral("jexec"), name, QStringLiteral("/bin/sh") });
 }
 
 void ContainerBackend::openVaultFiles(const QString &name) {
