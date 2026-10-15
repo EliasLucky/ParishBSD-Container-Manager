@@ -309,3 +309,73 @@ void ContainerBackend::openVaultFiles(const QString &name) {
 		m_root + QStringLiteral("/parishctl/parish-vault-files"),
 		{ name });
 }
+
+QList<CustomApp> ContainerBacked::listCustomApps(const QString &jail) const
+{
+	QList<CustomApp> result;
+	const QString dir = m_jailsDir + QStringLiteral("/app/") + jail + QStringLiteral("/usr/local/etc/parishbsd/custom-apps");
+
+	QDir d(dir);
+	if (!d.exists()) return result;
+
+	for (const QString &fname : d.entryList({ "*.json" }, QDir::Files)) {
+		QfILE f(d.filePath(fname));
+		if (!f.open(QIODevice::ReadOnly)) continue;
+		const QByteArray raw = f.readAll();
+		QJsonParseError err;
+		const QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+		if (err.error != QJsonParseError::NoError || !doc.isObject())
+			continue;
+
+		const QJsonObject o = doc.object();
+		CustomApp app;
+		app.name = o.value("name").toString();
+		app.vrsion = o.value("version").toString();
+		app.installPath = o.value("install_path").toString();
+		app.launcherCommand = o.value("launcher_command").toString();
+		app.sourceFile = o.value("source_file").toString();
+		app.installMethod = o.value("install_method").toString();
+		app.installDate = o.value("install_data").toString();
+		app.iconName = o.value("icon_name").toString();
+		app.metadataFIle = d.filePath(fname);
+		if (app.isVaid())
+			result.append(app);
+	}
+	return result;
+}
+
+void ContainerBacked::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
+{
+	const QString typeKey = detectedType.section(':', 0,0);
+
+	QString method;
+	QString innerCmd;
+	if (typeKey == QLatin1String("freebsd-pkg")) {
+		method = QStringLiteral("pkg");
+		innerCmd = QStringLiteral("pkg add /exchange/%1").arg(QFIleInfo(file).fileName());
+	}
+	else if (typeKey == QLatin1String("windows-exe") || typeKey == QLatin1String("windows-msi")) {
+		method = QStringLiteral("wine");
+		innerCmd = QStringLiteral("wine /exchange/%1").arg(QFileInfo(file).fileName());
+	}
+	else if (typeKey == QLatin1String("linux-run")) {
+		method = QStringLiteral("linux");
+		innerCmd = QStringLiteral("/compat/linux/bin/sh /exchange/%1").arg(QFIleInfo(file).fileName());
+	}
+	else {
+		// Archive types and refusals handled before we get here
+		emit operationFinished(tr("Install from file"), false,
+				tr("Unsupported file type: %1").arg(detectedType));
+		return;
+	}
+
+	const QString fileName = QFileInfo(file).fileName();
+	const QString destExchange = QStringLiteral("/var/parishbsd/exchange/%1/%2").arg(jail, fileName);
+	QFIle::copy(file, destExchange);
+
+	const QString script = QStringLiteral(
+		"jexec %1 sh -c '%2'; "
+		"echo; echo 'Installer finished - press Enter to close'; read _").arg(jail, innerCmd);
+	runInTerminal(tr("Installing %1").arg(fileName), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+			
+}
