@@ -4,6 +4,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QColor>
+#include <QIcon>
 
 ContainerModel::ContainerModel(ContainerBackend *backend, QObject *parent) : QAbstractTableModel(parent), m_backend(backend) {}
 
@@ -21,6 +22,18 @@ int ContainerModel::columnCount(const QModelIndex &parent) const
 	return ColumnCount;
 }
 
+QIcon ContainerModel::iconFor(const ContainerInfo &c) const
+{
+	if (c.isVault) {
+		if (c.state == QLatin1String("locked"))
+			return QIcon::fromTheme("parish-container-vault-locked");
+		return QIcon::fromTheme("parish-container-vault-unlocked");
+	}
+	if (c.isCompatibility)
+		return QIcon::fromTheme("parish-container-compat");
+	return QIcon::fromTheme("parish-container-app");
+}
+
 QVariant ContainerModel::data(const QModelIndex &index, int role) const
 {
 	if (!index.isValid() || index.row() >= m_rows.size())
@@ -29,6 +42,7 @@ QVariant ContainerModel::data(const QModelIndex &index, int role) const
 
 	if (role == Qt::DisplayRole) {
 		switch (index.column()) {
+		case IconColumn: return QVariant();
 		case NameColumn: return c.name;
 		case KindColumn: return c.kind;
 		case StateColumn: return c.state;
@@ -36,6 +50,12 @@ QVariant ContainerModel::data(const QModelIndex &index, int role) const
 		case DiskUsageColumn: return formatDiskUsage(c.diskUsage);
 		}
 	}
+
+	if (role == Qt::DecorationRole && index.column() == IconColumn)
+		return iconFor(c);
+
+	if (role == Qt::SizeHint && index.column() == IconColumn)
+		return QSize(28,28)
 
 	if (role == Qt::DecorationRole && index.column() == StateColumn)
 		return makeStateIcon(c.state);
@@ -57,6 +77,7 @@ QVariant ContainerModel::headerData(int section, Qt::Orientation orientation, in
 
 	if (orientation == Qt::Horizontal) {
 		switch (section) {
+		case IconColumn: return QString();
 		case NameColumn: return tr("Name");
 		case KindColumn: return tr("Kind");
 		case StateColumn: return tr("State");

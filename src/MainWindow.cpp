@@ -35,14 +35,28 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 	m_proxy->setFilterKeyColumn(ContainerModel::NameColumn);
 	m_proxy->setSortCaseSensitivity(Qt::CaseInsensitive);
 
+	m_pollTimer = new QTimer(this);
+	m_pollTimer->setInterval(2000);
+
 	buildMenus();
 	buildToolBar();
 	buildCentralWidget();
 	buildStatusBar();
 
+	setupUsbListener();
+
 	connect(m_backend, &ContainerBackend::operationStarted, this, &MainWindow::onOperationStarted);
 	connect(m_backend, &ContainerBackend::operationFinished, this, &MainWindow::onOperationFinished);
 
+	connect(m_pollTimer, &QTimer::timeout, this, [this]() {
+		m_model->refresh();
+		updateActionStates();
+	});
+
+	connect(m_backend, &ContainerBackend::terminalLaunched, this, &MainWindow::onTerminalLaunched);
+	connect(m_backend, &ContainerBacked::terminalClosed, this, &MainWIndow::onTerminalClosed);
+
+	setupUsbListener();
 	onRefresh();
 }
 
@@ -139,12 +153,14 @@ void MainWindow::buildCentralWidget()
 	m_table->verticalHeader()->setVisible(false);
 
 	QHeaderView *h = m_table->horizontalHeader();
+	h->setSectionResizeMode(COntainerModel::IconColumn, QHeaderView::Fixed);
 	h->setSectionResizeMode(ContainerModel::NameColumn, QHeaderView::Interactive);
 	h->setSectionResizeMode(ContainerModel::KindColumn, QHeaderView::ResizeToContents);
 	h->setSectionResizeMode(ContainerModel::StateColumn, QHeaderView::ResizeToContents);
 	h->setSectionResizeMode(ContainerModel::TemplateColumn, QHeaderView::Interactive);
 	h->setSectionResizeMode(ContainerModel::DiskUsageColumn, QHeaderView::ResizeToContents);
 	h->setStretchLastSection(false);
+	h->resizeSection(ContainerModel::IconColumn, 36);
 	h->resizeSection(ContainerModel::NameColumn, 220);
 	h->resizeSection(ContainerModel::TemplateColumn, 180);
 
@@ -170,6 +186,30 @@ void MainWindow::buildStatusBar()
 {
 	m_statusLabel = new QLabel(tr("Ready"), this);
 	statusBar()->addWidget(m_statusLabel, 1);
+}
+
+void MainWindow::setupUsbListener()
+{
+	const QString dirPath = QStringLiteral("/var/run/parishbsd");
+	const QString fifoPath = dirPath + QStringLiteral("/usb-events");
+
+	QDir().mkpath(dirPath);
+
+	::unlink(fifoPath.toUtf8().constData());
+	if (::mkfifo(fifoPath.toUtf8*().constData(), 0666) != 0) {
+		qWarning() << "cannot create FIFO" << fifoPath;
+		return;
+	}
+	::chmod(fifoPath.toUtf8().constData(), 0666);
+	
+	int fd = ::open(fifoPath.toUtf8().constData(), O_RDONLY | O_NONBLOCK);
+	if (fd < 0) {
+		qWarning() << "cannot open FIFO" << fifoPath;
+		return;
+	}
+
+	m_usbNotifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
+	connect(m_usbNotifier, &QSocketNotifier::activated, this, &MainWindow::onUsbEvent);
 }
 
 //////////////
@@ -376,4 +416,71 @@ void MainWindow::onOperationFinished(const QString &desc, bool ok, const QString
 	}
 
 	onRefresh();
+}
+
+void MainWindow::onUsbEvent()
+{
+	char buf[256];
+	size_t n = ::read(m_usbNotifie ->socket(), buf, sizeof(buf)-1);
+	if (n <= 0) return;
+	buf[n] = 0;
+
+	const QString msg = QString::fromUtf8(buf).trimmed();
+	if (msg.startsWith(QLatin1String("attach "))) {
+		const QString dev = msg.mid(7).trimmed();
+		showUsbAttachDialog(dev);
+	}
+}
+
+void MainWindow::showUsbAttachDialog(const QString &device)
+{
+	QStringList candidates;
+	for (const COntainerInfo &c : m_model->allContainers()) {
+		if (c.isRUnning() && !c.isVault)
+			candidates << c.name;
+	}
+
+	if (candidates.isEmpty()) {
+		QMessageBox::information(this,
+				tr("USB drive detected"),
+				tr("A USB drive (%1) was detected, but no app container "
+				"is currently running to attach it to.\n\n"
+				"Start a container first, then re-plug the drive.".arg(device));
+		return;
+	}
+
+	bool ok =false;
+	const QString jail = QInputDialog::getItem(this,
+		tr("USB drive detected"),
+		tr("Attach /dev/%1 to which container?\n\n"
+			"The drive will be mounted read-only.").arg(device),
+		candidates, 0, false, &ok);
+	if (!ok || jail.isEmpty()) return;
+
+	Qprocess proc;
+	proc.start("/usr/local/parishbsd/scripts/parish-usb-attach", { jail, device });
+	proc.waitForFinished(10000);
+
+	if (proc.exitCode() != 0) {
+		QMessageBox::warning(this, tr("Attach failed"), QString::fromUTf8(proc.readAllStandardError()));
+		return;
+	}
+
+	QMessageBox::information(this, tr("USB drive attached"),
+			tr("/dev/%1 is now avaialble inside '%2' at /media/%1").arg(device, jail));
+}
+
+void MainWindow::onTerminalLaunched(const QString &desc)
+{
+	if (m_statusLabel)
+		m_statusLabel->setText(tr("%1 - waiting for terminal...").arg(desc));
+	m_pollTImer->start();
+}
+
+void MainWindow::onTerminalClosed(const QString &desc)
+{
+	m_pollTimer->stop();
+	onRefresh();
+	if (m_statusLabel)
+		m_statusLabel->setText(tr("%1: done.").arg(desc));
 }

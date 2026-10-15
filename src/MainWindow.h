@@ -32,6 +32,9 @@ private slots:
 
 	void onOperationStarted(const QString &desc);
 	void onOperationFinished(const QString &desc, bool ok, const QString &err);
+	void onUsbEvent();
+	void onTerminalLaunched(const QString &desc);
+	void onTerminalClosed(const QString &desc);
 
 private:
 	void buildMenus();
@@ -42,6 +45,9 @@ private:
 	struct ContainerInfo selectedContainer() const;
 
 	void updateActionStates();
+
+	void setupUsbListener();
+	void showUsbAttachDialog(const QString &device);
 
 	QString selectedName() const;
 
@@ -62,4 +68,8 @@ private:
 	QAction *m_actLock = nullptr;
 	QAction *m_actConsole = nullptr;
 	QAction *m_actActions = nullptr;
+
+	QSocketNotifier *m_usbNotifier = nullptr;
+
+	QTimer *m_pollTimer = nullptr;
 };

@@ -15,7 +15,8 @@ class ContainerModel : public QAbstractTableModel
 	Q_OBJECT
 public:
 	enum Column {
-		NameColumn = 0,
+		IconColumn = 0,
+		NameColumn
 		KindColumn,
 		StateColumn,
 		TemplateColumn,
@@ -31,11 +32,13 @@ public:
 	QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
 
 	void refresh(); // reload using backend
-	
+
+	Qlist<ContainerInfo> allContainers() const { return m_rows; }	
 	ContainerInfo containerAt(int row) const;
 	int rowForName(const QString &name) const;
 private:
 	static QIcon makeStateIcon(const QString &state);
+	QIcon iconFor(const ContainerInfo &c) const;
 
 	ContainerBackend *m_backend;
 	QList<ContainerInfo> m_rows;

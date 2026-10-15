@@ -38,6 +38,8 @@ public:
 signals:
 	void operationStarted(const QString &description);
 	void operationFinished(const QString &description, bool success, const QString &errorMessage);
+	void terminalLaunched(const QString &description);
+	void terminalClosed(const QString &descrpition);
 
 private:
 	void runParishctl(const QString &description, const QStringList &args);
