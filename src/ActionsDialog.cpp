@@ -7,6 +7,7 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QDialogButtonBox>
+#include <QFrame>
 
 ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent) : QDialog(parent), m_backend(backend), m_info(info)
 {
@@ -46,33 +47,54 @@ void ActionsDialog::rebuildButtons()
 		delete item;
 	}
 
-	auto addButton = [this](const QString &text, auto slot) {
+	auto addButton = [this](const QString &text, const QString &iconName, auto onClick) -> QPushButton* {
 		auto *b = new QPushButton(text, this);
-		connect(b, &QPushButton::clicked, this, slot);
+		if (!iconName.isEmpty()) {
+			const QIcon icon = QIcon::fromTheme(iconName);
+			if (!icon.isNull()) b->setIcon(icon);
+		}
+		connect(b, &QPushButton::clicked, this, onClick);
 		m_buttonLayout->addWidget(b);
 		return b;
 	};
 
+	auto addSeparator = [this]() {
+		auto *sep = new QFrame(this);
+		sep->setFrameShape(QFrame::HLine);
+		sep->setFrameShadow(QFrame::Sunken);
+		m_buttonLayout->addWidget(sep);
+	};
+
 	if (m_info.isVault) {
 		if (m_info.isLocked()) {
-			addButton(tr("Unlock vault"), &ActionsDialog::onUnlock);
+			addButton(tr("Unlock vault"), "security-medium", &ActionsDialog::onUnlock);
 		}
 		else {
-			addButton(tr("Open files"), &ActionsDialog::onOpenFiles);
-			addButton(tr("Lock vault"), &ActionsDialog::onLock);
+			addButton(tr("Open files"), "system-file-manager", &ActionsDialog::onOpenFiles);
+			addButton(tr("Lock vault"), "security-high", &ActionsDialog::onLock);
 		}
 	}
 	else {
 		if (m_info.isRunning()) {
-			addButton(tr("Open console"), &ActionsDialog::onConsole);
-			addButton(tr("Stop"), &ActionsDialog::onStop);
+			addButton(tr("Open console"), "utilities-terminal", &ActionsDialog::onConsole);
+			addButton(tr("Applications..."), "system-software-install", &ActionsDialog::onApplications);
 		}	
 		else {
-			addButton(tr("Start"), &ActionsDialog::onStart);
+			addButton(tr("Start"), "media-play-start", &ActionsDialog::onStart);
 		}
 	}
 
-	addButton(tr("Destroy..."), &ActionsDialog::onDestroy);
+	addSeparator();
+
+	if (!m_info.isVault && m_info.isRunning()) {
+		addButton(tr("Stop Container"), "media-playback-stop", &ActionsDialog::onStop);
+	}
+
+	addButton(tr("Refresh Status"), "view-refresh", &ActionsDialog::onRefresh);
+
+	addSeparator();
+
+	addButton(m_info.isVault ? tr("Destroy Vault...") : tr("Destroy Container..."), "edit-delete", &ActionsDialog::onDestroy);
 }
 
 void ActionsDialog::onStart()
@@ -109,6 +131,20 @@ void ActionsDialog::onConsole()
 void ActionsDialog::onOpenFiles()
 {
 	m_backend->openVaultFiles(m_info.name);
+}
+
+void ActionsDialog::onApplications()
+{
+	ApplicationsDialog dlg(m_backend, m_info.name, this);
+	dlg.exec();
+
+	emit containerChanged();
+}
+
+void ActionsDialog::onRefresh()
+{
+	emit containerChanged();
+	accept();
 }
 
 void ActionsDialog::onDestroy() {

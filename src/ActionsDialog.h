@@ -22,6 +22,8 @@ private slots:
 	void onLock();
 	void onConsole();
 	void onOpenFiles();
+	void onApplications();
+	void onRefresh();
 	void onDestroy();
 	void onOperationFinished(const QString &desc, bool ok, const QString &err);
 

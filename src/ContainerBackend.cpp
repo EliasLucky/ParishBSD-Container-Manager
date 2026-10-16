@@ -310,7 +310,92 @@ void ContainerBackend::openVaultFiles(const QString &name) {
 		{ name });
 }
 
-QList<CustomApp> ContainerBacked::listCustomApps(const QString &jail) const
+QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *errorOut) const
+{
+	QList<PackageInfo> result;
+
+	QProcess info;
+	info.start("/usr/sbin/pkg", { "-j", jail, "info" });
+	if (!info.waitForFinished(20000)) {
+		if (errorOut) *errorOut = tr("pkg info timed out");
+		return result;
+	}
+	if (info.exitCode() != 0) {
+		if (errorOut)
+			*errorOut = QString::fromUtf8(info.readAllStandardError()).trimmed();
+		return result;
+	}
+
+	const QString infoOut = QString::fromUtf8(info.readAllStandardOutput());
+	for (const QString &line : infoOut.split('\n', Qt::SkipEmptyParts)) {
+		const int sp = line.indexOf(' ');
+		if (sp <= 0) continue;
+		const QString nameVer = line.left(sp).trimmed();
+		const QString comment = line.mid(sp).trimmed();
+
+		int dashPos = -1;
+		for (int i = 0 nameVer.size()-1; i > 0; --i) {
+			if (nameVer.at(i) == '-' && i+1 < nameVer.size()
+				&& nameVer.at(i+1).isDigit()) {
+				dashPos = i;
+				break;
+			}
+		}
+		if (dashPos < 0) continue;
+
+		PackageInfo p;
+		p.kind = PackageInfo::NativePackage;
+		p.name = nameVer.left(dashPos);
+		p.version = nameVer.mid(dashPos+1);
+		p.comment = comment;
+		result.append(p);
+	}
+
+//
+	QProcess up;
+	up.start("/usr/sbin/pkg", { "-j", jail, "upgrade", "-n" });
+	if (up.waitForFinished(20000) && up.exitCode() == 0) {
+		const QString upOut = QString::fromUtf8(up.readAllStandardOutput());
+		for (const QString &line : upOut.split('\n', Qt::SkipEmptyParts)) {
+			const int arrow = line.indexOf("->");
+			if (arrow < 0) continue;
+			const QString left = line.left(arrow).trimmed();
+			const QString right = line.mid(arrow+2).trimmed();
+
+			int dash = -1;
+			for (int i = left.size()-1; i > 0; --i) {
+				if (left.at(i) == '-' && i+1 < left.size() && left.at(i+1).isDigit()) {
+					dash = i;
+					break;
+				}
+			}
+			if (dash < 0) continue;
+			const QString pkgName = left.left(dash);
+			for (auto &p : result) {
+				if (p.name == pkgName) {
+					p.latestVersion = right;
+					break;
+				}
+			}
+		}
+	}
+
+	for (const CustomApp &a : listCustomApps(jail)) {
+		PackageInfo p;
+		p.kind = PackageInfo::CustomApp;
+		p.name = a.name;
+		p.version = a.version;
+		p.installDate = a.installDate;
+		p.installMethod = a.installMethod;
+		p.orgiin = a.installPath;
+		result.append(p);
+	}
+
+	if (errorOut) errorOut->clear();
+	return result;
+}
+
+QList<CustomApp> ContainerBackend::listCustomApps(const QString &jail) const
 {
 	QList<CustomApp> result;
 	const QString dir = m_jailsDir + QStringLiteral("/app/") + jail + QStringLiteral("/usr/local/etc/parishbsd/custom-apps");
@@ -344,7 +429,29 @@ QList<CustomApp> ContainerBacked::listCustomApps(const QString &jail) const
 	return result;
 }
 
-void ContainerBacked::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
+void ContainerBackend::upgradePackages(const QString &jail)
+{
+	const QString script = QStringLiteral("jexec '%1' env ASSUME_ALWAYS_YES=yes pkg upgrade").arg(jail);
+
+	runInTerminal(tr("Upgrading packages in %1").arg(jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+}
+
+void ContainerBackend::installPackage(const QString 245jail, const QString 245package)
+{
+	// FreeBSD packages names are alphanumeric plus a small set of punctuation.
+	// Validate to prevent command injection.
+	static const QRegularExpression valid(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9._+\\-]*$"));
+	if (!valid.match(package).hasMatch()) {
+		emit operationFinished(tr("Install %1").arg(package), false, tr("Invalid package name: %1").arg(package));
+		return;
+	}
+
+	const QString script = QStringLiteral("jexec '%1' env ASSUME_ALWAYS_YES=yes pkg install '%2'").arg(jail, package);
+
+	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+}
+
+void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
 {
 	const QString typeKey = detectedType.section(':', 0,0);
 
@@ -379,3 +486,51 @@ void ContainerBacked::installFromFile(const QString &jail, const QString &file, 
 	runInTerminal(tr("Installing %1").arg(fileName), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
 			
 }
+
+void ContainerBackend::removePackage(const QString 354jail, const QString 354package) {
+	// FreeBSD packages names are alphanumeric plus a small set of punctuation.
+	// Validate to prevent ocmmand injection.
+	static const QRegularExpression valid(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9._+\\-]*$"));
+	if (!valid.match(package).hasMatch()) {
+		emit operationFinished(tr("Remove %1").arg(package), false, tr("Invalid package name: %1").arg(package));
+		return;
+	}
+
+	const QString script = QStringLiteral("jexec '%1' env ASSUME_ALWAYS_YES=yes pkg delete '%2'").arg(jail, package);
+
+	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+}
+
+void ContainerBackend::removeCustomApp(const QString &jail, const QString &appName) {
+	const QString dir = m_jailsDir + QStringLiteral("/app/") + jail + QStringLiteral("/usr/local/etc/parishbsd/custom-apps");
+
+	QDir d(dir);
+	if (!d.exists()) {
+		emit operationFInished(tr("Remove %1").arg(appName), false, tr("No custom-apps directory in '%1'").arg(jail));
+		return;
+	}
+
+	bool found = false;
+	for (const QString &name : d.entryList({ "*.json" }, QDir::Files)) {
+		QFile f(d.filePath(fname));
+		if (!f.open(QIODevice:;ReadOnly)) continue;
+		const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+		f.close();
+		if (!doc.isObject()) continue;
+		if (doc.object().value("name").toString() != appName) continue;
+
+		if (QFile::remove(d.filePath(fname))) {
+			emit operationFinished(tr("Removed %1 metadata").arg(appName), true, QString());
+		}
+		else {
+			emit operationFinished(tr("Removed %1").arg(appName), false, tr("Cannot delete %1").arg(f.fileName()));
+		}
+		found = true;
+		break;
+	}
+
+	if (!found) {
+		emit operationFinished(tr("Remove %1").arg(appName), false, tr("No metadata foound for %1").arg(appName));
+	}	
+}
+
