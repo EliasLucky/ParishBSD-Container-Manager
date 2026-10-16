@@ -233,30 +233,78 @@ void ApplicationsDialog::handleFileInstall(const QString &file)
 	const QString detected = QString::fromUtf8(det.readAllStandardOutput()).trimmed();
 	const QString typeKey = detected.section(':',0,0);
 
-	if (typeKey == QLatin1String("linux-deb") || typeKey == QLatin1Sting("linux-rpm")) {
+	if (typeKey == QLatin1String("unsupported-deb") || typeKey == QLatin1Sting("unsupported-rpm")) {
 		QMessageBox::warning(this, tr("Unsupported package"),
 			tr("This is a package for a different operating system.\n\n"
 			"ParishBSD runs FreeBSD software. Look in the catalog "
-			"for a FreeBSD version, or search the FReeBSD ports tree "
-			"at freshprots.org."));
+			"for a FreeBSD version."));
 		return;
 	}
 	if (typeKey.startsWith(QLatin1String("source-"))) {
 		QMessageBox::warning(this, tr("Source code"),
-			tr("This is a source code, not a ready-install program.\n\n"
-			"Building from source requires a compiler and specific arguments,commands,flags that vary by project. Open a console in this "
-			"container (Actions -> Open Console) and build it there."));
+			tr("This is a source code, not a ready-to-install program.\n\n"
+			"Open a console in this container (Actions -> Open Console"
+			"and build it there."));
 		return;
 	}
 
+	if(typeKey == QLatin1String("windows-installer")) {
+		confirmAndInstall(file, detected, InstallMode::Installer);
+	}
+	else if (typeKey == QLatin1String("windows-exe-ambigiuous")) {
+		askInstallerOrPortable(file, detected);
+	}
+	else if (typeKey == QLatin1String("windows-portable-archive") || typeKey == QLatin1String("linux-portable-archive")) {
+		confirmationAndInstall(file, detected, InstallMode::Portable);
+	}
+	else if (typeKey == QLatin1String("linux-run-ambiguous")) {
+		askInstallerOrPortable(file, detected);
+	}
+	else if (typeKey == QLatin1String("freebsd-pkg")) {
+		confirmAndInstall(file, deteceted, InstallMode::Installer);
+	}
+	else {
+		QMessageBox::warning(this, tr("Unknown file"), tr("The file could not be recognized.\n\nDetected: %1").arg(detected));
+	}
+}
+void ApplicationsDialog::confirmAndInstall(const QString &file, const QString &detected, InstallMode mode)
+{
+	const QString action = (mode == InstallMode::Installer) ? tr("run the installer") : tr("extract and install as a portable application");
+
 	const QString message = tr("Install this file in '%1'?\n\n"
 			"File: %2\n"
-			"Detected type: %3").arg(m_jail, QFileInfo(file).fileName(), detected);
+			"Detected type: %3\n"
+			"Action: %4").arg(m_jail, QFileInfo(file).fileName(), detected, action);
 
 	if (QMessageBox::question(this, tr("Install from file"), message) != QMessageBox::Yes)
 		return;
-	
+
 	m_backend->installFromFile(m_jail, file, detected);
+}
+
+void ApplicationsDialog::askInstallerOrPortable(const QString &file, const QString &detected)
+{
+	QMessageBox box(this);
+	box.setWindowTitle(tr("How to install?"));
+	box.setText(tr("This file could be an installer or a standalone "
+		"program.\n\nHow would you like to use it?"));
+	box.setInformativeText(tr("FIle: %1\nDetected: %2").arg(QFileInfo(file).fileName(), detected));
+
+	auto *installerBtn = box.addButton(tr("Run as installer"), QMessageBox::AcceptRole);
+	auto *portableBtn = box.addButton(tr("Install as portable application"), QMesageBox::ActionRole);
+	box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+	box.exec();
+
+	if (box.clickedButton() == installerBtn) {
+		QString detected2 = detected;
+		detected2.replace("ambiguous", "installer");
+		m_backend->installFromFile(m_jail, file, detected2);
+	}
+	else if (box.clickedButton() == portableBtn) {
+		QString detected2 = detected;
+		detected2.replace("ambiguous", "portable");
+		m_backend->installFromFile(m_jail, file, detected2);
+	}
 }
 
 void ApplicationsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)
