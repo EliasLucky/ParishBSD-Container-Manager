@@ -26,16 +26,7 @@ PLIST_FILES=	bin/parish-compartments \
 		share/pixmaps/parishbsd.png \
 		share/polkit-1/actions/org.parishbsd.parishcompartments.policy
 
-# Install the polkit policy and desktop entry ourselves.
-# CMake handles the binary and the icon.
-do-install:
-	${INSTALL_PROGRAM} ${BUILD_WRKSRC}/parish-compartments \
-		${STAGEDIR}${PREFIX}/bin/parish-compartments
-	${INSTALL_DATA} ${WRKSRC}/resources/parish-compartments.desktop \
-		${STAGEDIR}${PREFIX}/share/applications/parish-compartments.desktop
-	${INSTALL_DATA} ${WRKSRC}/resources/parishbsd.png \
-		${STAGEDIR}${PREFIX}/share/pixmaps/parishbsd.png
-	${INSTALL_DATA} ${WRKSRC}/resources/org.parishbsd.parishcompartments.policy \
-		${STAGEDIR}${PREFIX}/share/polkit-1/actions/org.parishbsd.parishcompartments.policy
-
+post-install:
+	@${ECHO_MSG} "Updating icon cache..."
+	-@${LOCALBASE}/bin/gtk-update-icon-cache -f -t ${STAGEDIR}${PREFIX}/share/icons/hicolor 2>/dev/null || true
 .include <bsd.port.mk>
