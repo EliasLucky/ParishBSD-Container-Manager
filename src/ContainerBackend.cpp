@@ -229,7 +229,7 @@ void ContainerBackend::runParishctl(const QString &description, const QStringLis
 	QStringList pkArgs;
 	pkArgs << m_parishctlPath;
 	pkArgs << args;
-	runAsync(description, QStringLiteral("pkexec"), pkArgs);
+	runAsync(description, QStringLiteral("/usr/local/bin/pkexec"), pkArgs);
 }
 
 ////////////
@@ -248,7 +248,7 @@ void ContainerBackend::unlockVault(const QString &name)
 	// unlocking prompts for a passphrase
 	// instead of using stdin from GUI -> launch parishctl inside a
 	// terminal emulator
-	const QString cmd = QStringLiteral("pkexec '%1' unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
 	runAsync(tr("Unlocking '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
@@ -266,7 +266,7 @@ void ContainerBackend::lockVault(const QString &name)
 void ContainerBackend::destroyContainer(const QString &name)
 {
 	// parishctl performs its own typed confirmation.
-	const QString cmd = QStringLiteral("pkexec '%1' destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
 	runAsync(tr("Destroying '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
@@ -422,7 +422,7 @@ QList<CustomApp> ContainerBackend::listCustomApps(const QString &jail) const
 		app.installMethod = o.value("install_method").toString();
 		app.installDate = o.value("install_data").toString();
 		app.iconName = o.value("icon_name").toString();
-		app.metadataFIle = d.filePath(fname);
+		app.metadataFile = d.filePath(fname);
 		if (app.isVaid())
 			result.append(app);
 	}
@@ -452,38 +452,79 @@ void ContainerBackend::installPackage(const QString 245jail, const QString 245pa
 }
 
 void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
+
+	const QString typeKey = detectedType.section(':', 0, 0);
+
+	const QString fileName = QFileInfo(file).fileName();
+	const QString exchangeHelper = m_root + "/parishctl/parish-exchaneg";
+
+	runAsync(tr("Copying $1 to %2").arg(fileName, jail), "/usr/local/bin/pkexec", { exchangeHelper, "put", file, jail });
+
+	auto *conn = newQMetaObject::Connection;
+*conn = connect(this, &ContainerBacked::operationFinished,
+		this, [this,conn,jail,fileName,detectedType,typeKey]
+		(const QString &desc, bool ok, const QString &) {
+			if (!desc.startsWith(tr("Copying"))) return;
+			disconnect(*conn);
+			delete conn;
+
+			if (!ok) {
+				emit operationFinished(tr("Install %1").arg(fileName), false, tr("Copy failed"));
+				return;
+			}
+			dispatchInstall(jail, fileName, detectedType, typeKey);
+		});
+}
+
+void ContainerBackend::dispatchInstall(const QString &jail, const QString &fileName, const QString &detectedType, const QString &typeKey)
 {
+	QString innerCmd;
 	const QString typeKey = detectedType.section(':', 0,0);
 
-	QString method;
 	QString innerCmd;
 	if (typeKey == QLatin1String("freebsd-pkg")) {
-		method = QStringLiteral("pkg");
-		innerCmd = QStringLiteral("pkg add /exchange/%1").arg(QFIleInfo(file).fileName());
+		innerCmd = QStringLiteral("pkg add /exchange/%1").arg(fileName);
 	}
-	else if (typeKey == QLatin1String("windows-exe") || typeKey == QLatin1String("windows-msi")) {
-		method = QStringLiteral("wine");
-		innerCmd = QStringLiteral("wine /exchange/%1").arg(QFileInfo(file).fileName());
+	else if (typeKey == QLatin1String("windows-installer")) {
+		innerCmd = QStringLiteral("wine /exchange/%1").arg(fileName);
 	}
-	else if (typeKey == QLatin1String("linux-run")) {
-		method = QStringLiteral("linux");
-		innerCmd = QStringLiteral("/compat/linux/bin/sh /exchange/%1").arg(QFIleInfo(file).fileName());
+	else if (typeKey == QLatin1String("linux-installer")) {
+		innerCmd = QStringLiteral("/compat/linux/bin/sh /exchange/%1").arg(fileName);
 	}
+	else if (typeKey == QLatin1String("windows-portable-archive")) {
+		innerCmd = QStringLiteral(
+			"mkdir -p /opt/parish-apps/%1 && "
+			"cd /opt/parish-apps/%1 && "
+			"case '%2' in "
+			"  *.zip) unzip -q /exchange/%2 ;; "
+			"  *.tar.gz|*.tgz) tar -xzf /exchange/%2 ;; "
+			"  *.tar.xz) tar -xJf /exchange/%2 ;; "
+			"  *.tar.bz2) tar -xjf /exchange/%2 ;; "
+			"esac && "
+			"echo 'Extracted to /opt/parish-apps/%1'; "
+			"ls -la /opt/parish-apps/%1")
+			.arg(QFileInfo(fileName).baseName(), fileName);}
+	else if (typeKey == QLatin1String("linux-portable-archive")) {
+		innerCmd = QStringLiteral(
+			"mkdir -p /opt/parish-apps/%1 && "
+			"cd /opt/parish-apps/%1 && "
+			"case '%2' in "
+			"  *.zip) unzip -q /exchange/%2 ;; "
+			"  *.tar.gz|*.tgz) tar -xzf /exchange/%2 ;; "
+			"  *.tar.xz) tar -xJf /exchange/%2 ;; "
+			"  *.tar.bz2) tar -xjf /exchange/%2 ;; "
+			"esac && "
+			"chmod +x bin/* 2>/dev/null || true; "
+			"echo 'Extracted to /opt/parish-apps/%1'")
+			.arg(QFileInfo(fileName).baseName(), fileName);
 	else {
-		// Archive types and refusals handled before we get here
-		emit operationFinished(tr("Install from file"), false,
-				tr("Unsupported file type: %1").arg(detectedType));
+		emit operationFinished(tr("Install %1").arg(fileName), false,
+			tr("Unsupported file type: %1").arg(detectedType));
 		return;
 	}
 
-	const QString fileName = QFileInfo(file).fileName();
-	const QString destExchange = QStringLiteral("/var/parishbsd/exchange/%1/%2").arg(jail, fileName);
-	QFIle::copy(file, destExchange);
-
-	const QString script = QStringLiteral(
-		"jexec %1 sh -c '%2'; "
-		"echo; echo 'Installer finished - press Enter to close'; read _").arg(jail, innerCmd);
-	runInTerminal(tr("Installing %1").arg(fileName), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+	const QString script = QStringLiteral("jexec %1 sh -c '%2'").arg(jail, innerCmd);
+	runInTerminal(tr("Installing %1 in %2").arg(fileName, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
 			
 }
 
@@ -506,7 +547,7 @@ void ContainerBackend::removeCustomApp(const QString &jail, const QString &appNa
 
 	QDir d(dir);
 	if (!d.exists()) {
-		emit operationFInished(tr("Remove %1").arg(appName), false, tr("No custom-apps directory in '%1'").arg(jail));
+		emit operationFinished(tr("Remove %1").arg(appName), false, tr("No custom-apps directory in '%1'").arg(jail));
 		return;
 	}
 
