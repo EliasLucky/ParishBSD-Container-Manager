@@ -59,7 +59,12 @@ target_link_libraries(parish-manager PRIVATE
 include(GNUInstallDirs)
 
 install(TARGETS parish-manager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES src/resources/parish-manager.desktop
-	DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
 install(FILES resources/parishbsd.png
-	DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/pixmaps)
+    DESTINATION /usr/local/share/pixmaps)
+install(DIRECTORY resources/icons/
+    DESTINATION /usr/local/share/icons/hicolor/scalable/apps
+    FILES_MATCHING PATTERN "*.svg")
+install(FILES resources/parish-manager.desktop
+    DESTINATION /usr/local/share/applications)
+install(FILES resources/org.parishbsd.parishcompartments.policy
+    DESTINATION /usr/local/share/polkit-1/actions)
