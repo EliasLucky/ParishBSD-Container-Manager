@@ -248,9 +248,9 @@ void ContainerBackend::unlockVault(const QString &name)
 	// unlocking prompts for a passphrase
 	// instead of using stdin from GUI -> launch parishctl inside a
 	// terminal emulator
-	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' unlock %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' unlock '%2'; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
-	runAsync(tr("Unlocking '%1'").arg(name),
+	runInTerminal(tr("Unlocking '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Unlock Vault: %1").arg(name),
 		QStringLiteral("--geometry"), QStringLiteral("90x20"),
@@ -266,9 +266,9 @@ void ContainerBackend::lockVault(const QString &name)
 void ContainerBackend::destroyContainer(const QString &name)
 {
 	// parishctl performs its own typed confirmation.
-	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' destroy %2; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' destroy '%2'; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name);
 
-	runAsync(tr("Destroying '%1'").arg(name),
+	runInTerminal(tr("Destroying '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Destroy: %1").arg(name),
 	       	QStringLiteral("--geometry"), QStringLiteral("90x24"),
@@ -281,9 +281,9 @@ void ContainerBackend::createContainer(const QString &name, const QString &perso
 	const bool isVault = personality.startsWith(QStringLiteral("vault-"));
 
 	if (isVault) {
-		const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' create %2 %3; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name, personality);
+		const QString cmd = QStringLiteral("/usr/local/bin/pkexec '%1' create '%2' '%3'; echo; echo 'Press Enter to close...'; read _").arg(m_parishctlPath, name, personality);
 
-		runAsync(tr("Creating vault '%1'").arg(name),
+		runInTerminal(tr("Creating vault '%1'").arg(name),
 			QStringLiteral("/usr/local/bin/xfce4-terminal"),
 			{ QStringLiteral("--title"), tr("Create Vault: %1").arg(name),
 			QStringLiteral("--geometry"), QStringLiteral("90x24"),
@@ -296,8 +296,8 @@ void ContainerBackend::createContainer(const QString &name, const QString &perso
 
 void ContainerBackend::openConsole(const QString &name)
 {
-	const QString cmd = QStringLiteral("jexec %1 /bin/sh").arg(name);
-	runAsync(tr("Opening console for '%1'").arg(name),
+	const QString cmd = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' /bin/sh; echo; echo '[console closed]'; read _").arg(name);
+	runInTerminal(tr("Console: '%1'").arg(name),
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Console: %1").arg(name),
 	        QStringLiteral("-x"),
@@ -431,9 +431,9 @@ QList<CustomApp> ContainerBackend::listCustomApps(const QString &jail) const
 
 void ContainerBackend::upgradePackages(const QString &jail)
 {
-	const QString script = QStringLiteral("jexec '%1' env ASSUME_ALWAYS_YES=yes pkg upgrade").arg(jail);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' 'env ASSUME_ALWAYS_YES=yes pkg upgrade'; echo; echo 'Press Enter to close...'; read _").arg(jail);
 
-	runInTerminal(tr("Upgrading packages in %1").arg(jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+	runInTerminal(tr("Upgrading packages in %1").arg(jail), QStringLiteral("/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"), tr("Upgrade: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
 void ContainerBackend::installPackage(const QString 245jail, const QString 245package)
@@ -446,9 +446,9 @@ void ContainerBackend::installPackage(const QString 245jail, const QString 245pa
 		return;
 	}
 
-	const QString script = QStringLiteral("jexec '%1' env ASSUME_ALWAYS_YES=yes pkg install '%2'").arg(jail, package);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' sh -c 'env ASSUME_ALWAYS_YES=yes pkg install %2'; echo; echo 'Press Enter to close...'; read _").arg(jail, package);
 
-	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"), tr("Upgrade: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
 void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
@@ -523,7 +523,7 @@ void ContainerBackend::dispatchInstall(const QString &jail, const QString &fileN
 		return;
 	}
 
-	const QString script = QStringLiteral("jexec %1 sh -c '%2'").arg(jail, innerCmd);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec %1 sh -c '%2'").arg(jail, innerCmd);
 	runInTerminal(tr("Installing %1 in %2").arg(fileName, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
 			
 }
@@ -537,9 +537,9 @@ void ContainerBackend::removePackage(const QString 354jail, const QString 354pac
 		return;
 	}
 
-	const QString script = QStringLiteral("jexec '%1' env ASSUME_ALWAYS_YES=yes pkg delete '%2'").arg(jail, package);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' sh -c 'env ASSUME_ALWAYS_YES=yes pkg delete -y %2'; echo; echo 'Press Enter to close...'; read _").arg(jail, package);
 
-	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"),tr("Remove: %1").arg(jail) QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
 void ContainerBackend::removeCustomApp(const QString &jail, const QString &appName) {
@@ -551,10 +551,9 @@ void ContainerBackend::removeCustomApp(const QString &jail, const QString &appNa
 		return;
 	}
 
-	bool found = false;
 	for (const QString &name : d.entryList({ "*.json" }, QDir::Files)) {
 		QFile f(d.filePath(fname));
-		if (!f.open(QIODevice:;ReadOnly)) continue;
+		if (!f.open(QIODevice::ReadOnly)) continue;
 		const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
 		f.close();
 		if (!doc.isObject()) continue;
@@ -566,12 +565,9 @@ void ContainerBackend::removeCustomApp(const QString &jail, const QString &appNa
 		else {
 			emit operationFinished(tr("Removed %1").arg(appName), false, tr("Cannot delete %1").arg(f.fileName()));
 		}
-		found = true;
-		break;
+		return;
 	}
 
-	if (!found) {
-		emit operationFinished(tr("Remove %1").arg(appName), false, tr("No metadata foound for %1").arg(appName));
-	}	
+	emit operationFinished(tr("Remove %1").arg(appName), false, tr("No metadata foound for %1").arg(appName));
 }
 
