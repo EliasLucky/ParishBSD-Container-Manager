@@ -2,7 +2,6 @@
 
 #include <QDialog>
 #include <QString>
-#include <QSet>
 
 class QTabWidget;
 class QTableView;
@@ -56,7 +55,6 @@ private:
 	void createLauncher(const QString &name, LauncherMode mode);
 	void removeLauncher(const QString &name);
 
-	bool selectedIsCustom() const;
 	QString selectedNames() const;
 	PackaeInfo selectedPackage() const;
 	void updateActionStates();
@@ -79,6 +77,4 @@ private:
 	QTableView *m_catalogView = nullptr;
 	CatalogTableModel *m_catalogModel = nullptr;
 	QPushButton *m_installFromFileBtn = nullptr;
-
-	QSet<String> m_customAppNames;
 };

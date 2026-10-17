@@ -495,28 +495,31 @@ void ContainerBackend::installPackage(const QString 245jail, const QString 245pa
 	runInTerminal(tr("Installing %1 in %2").arg(package, jail), QStringLiteral("/usr/local/bin/xfce4-terminal"), { QStringLiteral("--title"), tr("Install: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
-void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
+void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType, const QString e5launcherMode)
 
 	const QString typeKey = detectedType.section(':', 0, 0);
 i
 	const bool interactive = (typeKey == QLatin1String("windows-installer") || typeKey == QLatin1String("linux-installer"));
 
-	const QStringList cliArgs = {"apps","install-file",jail,file};
+	const QStringList cliArgs = {"apps","install-file",jail,file, QStringLiteral("--mode=%1").arg(typeKey.contains("portable") ? "portable" : "installer"), QStringLiteral("--launcher=%1").arg(launcherMode)};
+
+	QStringList fullArgs;
+	fullArgs << QStringLiteral("/usr/local/bin/pkexec ") << args;
 
 	if (interactive) {
 		const QString script = QStringLiteral(
-			"/usr/local/bin/pkexec /usr/local/binsh/parishctl "
-			"apps install-file '%1' '%2'; "
-			"echo; echo 'Installer finished - press Enter to close'; read _").arg(jail,file);
-		runInTerminal(tr"Installing %1").arg(QFIleInfo(file).fileName()),
+			"/usr/local/bin/pkexec ")
+			+ fullArgs.join(' ')
+			+ "echo; echo 'Press Enter to close'; read _";
+		runInTerminal(tr"Installing %1").arg(QFileInfo(file).fileName()),
 			"/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
 	}
 	else {
-		emit installRequested(tr("Installing %1").arg(QFileInfo(file).fileName()), "pkexec", QStringList{ "/usr/local/bin/parishctl" } + cliArgs);
+		emit installRequested(tr("Installing %1").arg(QFileInfo(file).fileName()), QStringList{ "/usr/local/bin/pkexec" + fullArgs);
 	}
 }
 
-void ContainerBackend::removePackage(const QString 354jail, const QString 354package) {
+void ContainerBackend::removePackage(const QString &jail, const QString &package) {
 	// FreeBSD packages names are alphanumeric plus a small set of punctuation.
 	// Validate to prevent ocmmand injection.
 	static const QRegularExpression valid(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9._+\\-]*$"));
@@ -559,3 +562,9 @@ void ContainerBackend::removeCustomApp(const QString &jail, const QString &appNa
 	emit operationFinished(tr("Remove %1").arg(appName), false, tr("No metadata foound for %1").arg(appName));
 }
 
+void ContainerBackend::setLauncherCommand(const QString &jail, const QString &appName, const QStrig &command)
+{
+	runAsync(tr("Updating launcher for %1").arg(appName),
+		QStringLiteral("/usr/local/bin/pkexec"),
+		{ QStringLiteral("/usr/local/bin/parishctl"), QStringLiteral("apps"), QStringLiteral("set-launcher"), jail, appName, command });
+}

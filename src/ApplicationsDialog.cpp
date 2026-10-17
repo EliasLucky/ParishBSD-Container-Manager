@@ -1,5 +1,5 @@
 #include "ApplicationsDialog.h"
-#include "COntainerBackend.h"
+#include "ContainerBackend.h"
 #include "PackageTableModel.h"
 #include "CatalogTableModel.h"
 
@@ -14,15 +14,27 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QProcess>
-#include <QFileINfo>
+#include <QFileInfo>
+#include <QDir>
+#include <QTimer>
+#include <QItemSelectionModel>
+#include <QInputDialog>
 
-ApplicationsDialog::ApplicationsDialog(ContainerBacked *backend, const QString &jailName, QWidget *parent) : QDialog(parent), m_backend(backend), m_jail(jailName)
+ApplicationsDialog::ApplicationsDialog(ContainerBackend *backend, const QString &jailName, QWidget *parent) : QDialog(parent), m_backend(backend), m_jail(jailName)
 {
 	setWindowTitle(tr("Applications in '%1'").arg(jailName));
 	setMinimumSize(820,560);
 	buildUi();
 
 	connect(m_backend, &ContainerBackend::operationFinished, this, &ApplicationsDialog::onOPerationFinished);
+	connect(m_backend, &ContainerBackend::installRequested, this, [this](const QString &title, const QString &prog, const QStringList &args) {
+		auto *dlg = new InstallLogDialog(title, prog, args, this);
+		connect(dlg, &InstallLogDialog::finished, this, [this](bool ok) {
+			if (ok) refresh();
+		});
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->show();
+	});
 
 	refresh();
 	populateCatalog();
@@ -33,10 +45,30 @@ void ApplicationsDialog::buildUi()
 	auto *root = new QVBoxLayout(this);
 	m_tabs = new QTabWidget(this);
 
-	// Installed tab
 	auto *installedPage = new QWidget(this);
-	auto *installedLayout = new QVBoxLayout(installedPage);
+	buildInstalledTab(installedPage);
+	m_tabs->addTab(installedPage, tr("Installed'));
 
+	auto *catalogPage = new QWidget(this);
+	buildInstallNewTab(catalogPage);
+	m_tabs->addTab(catalogPage, tr("Install New"));
+
+	root->addWidget(m_tabs);
+
+	auto *bottom = new QHBoxLayout();
+
+	bottom->addStretch();
+	auto *closeBtn = new QPushButton(tr("Close"), this);
+	connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
+	bottom->addWidget(closeBtn);
+	root->addLayout(bottom);
+}
+void ApplicationsDialog::buildInstalledTab(QWidget *parent)
+{	
+	auto *layout = new QVBoxLayout(parent);
+	m_installedSummary = new QLabel(parent);
+	layout->addWidget(m_installedSummary);
+	
 	m_installedModel = new PackageTableModel(this);
 	m_installedView = new QTableView(installedPage);
 	m_installedView->setModel(m_installedModel);
@@ -47,39 +79,49 @@ void ApplicationsDialog::buildUi()
 	m_installedView->horizontalHeader()->setStretchLastSection(true);
 	m_installedView->verticalHeader()->setVisible(false);
 	m_installedView->setSorthingEnabled(true);
-	installedLayout->addWidget(m_installedView);
+	m_installedView->sortByColumn(PackageTableModel::NameColumn, Qt::AscendingOrder);
+	layout->addWidget(m_installedView,1);
 
-	auto *installedButtons = new QHBoxLayout();
-	m_updateBtn = new QPushButton(tr("Update Selected"), installedPage);
-	m_removeBtn = new QPushButton(tr("Remove Selected"), installedPage);
-	auto *installNewBtn = new QPushButton(tr("Install New..."), installedPage);
-	installedButtons->addWidget(m_updateBtn);
-	installedButtons->addWidget(m_removeBtn);
-	installedButtons->addStretch();
-	installedButtons->addWidget(installNewBtn);
-	installedLayout->addLayout(installedButtons);
+	auto *buttons = new QHBoxLayout();
+	m_launchBtn = new QPushButton(tr("Launch"), parent);
+	m_updateBtn = new QPushButton(tr("Update"), parent);
+	m_removeBtn = new QPushButton(tr("Remove"), parent);
+	m_launcherBtn = new QPushButton(tr("Create Launcher"), parent);
+	m_editLauncherBtn = new QPushButton(tr("Edit Launcher..."), parent);
+	auto *installNewBtn = new QPushButton(tr("Install New..."), parent);
+	buttons->addWidget(m_launchBtn);
+	buttons->addWidget(m_updateBtn);
+	buttons->addWidget(m_removeBtn);
+	buttons->addSpacing(20);
+	buttons->addWidget(m_launcherBtn);
+	buttons->addWidget(m_editLauncherBtn);
+	buttons->addStretch();
+	buttons->addWidget(installNewBtn);
+	layout->addLayout(buttons);
 
 	connect(m_updateBtn, &QPushButton::clicked, this, &ApplicationsDialog::onUpdateSelected);
 	connect(m_removeBtn, &QPushButton::clicked, this, &ApplicationsDialog::onRemoveSelectd);
-	connect(installNewBtn, &QPushBUtton::clicked, this, [this]() {
-		m_tabs->setCurrentINdex(1);		
+	connect(installNewBtn, &QPushButton::clicked, this, [this]() {
+		m_tabs->setCurrentIndex(1);		
 	});
 
-	m_tabs->addTab(installedPage, tr("Installed"));
+	connect(m_installedView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ApplicationsDialog::onSelectionChanged);
+	connect(m_installedView, &QItemSelectionModel::doubleClicked, this, &ApplicationsDialog::onLaunchSelected);
+}
 
-	// Install new tab
-	auto *catalogPage = new QWidget(this);
-	auto *catalogLayout = new QVBoxLayout(catalogPage);
+void ApplicationsDialog::buildInstallNewTab(QWidget *parent)
+{ 
+	auto *layout = new QVBoxLayout(a);
 
 	auto *searchRow = new QHBoxLayout();
-	searchRow->addWidget(new QLabel(tr("Search:"), catalogPage));
-	m_catalogSearch = new QLineEdit(catalogPage);
+	searchRow->addWidget(new QLabel(tr("Search:"), parent);
+	m_catalogSearch = new QLineEdit(parent);
 	m-catalogSearch->setClearButtonEnabled(true);
-	searchRow->addWidget(m-catalogSearch,1);
-	catalogLayout->addLayout(searchRow);
+	searchRow->addWidget(m_catalogSearch,1);
+	layout->addLayout(searchRow);
 
 	m_catalogModel = new CatalogTableModel(this);
-	m_catalogView = new QTableView(catalogPage);
+	m_catalogView = new QTableView(parent);
 	m_catalogView->setModel(m_catalogModel);
 	m_catalogView->setSelectionBehaviour(QAbstractItemView::SelectRows);
 	m_catalogView->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -87,45 +129,39 @@ void ApplicationsDialog::buildUi()
 	m_catalogView->horizontalHeader()->setStretchLastSection(true);
 	m_catalogView->verticalHEader()->setVisible(false);
 	m_catalogView->setSorthingEnabled(true);
-	catalogLayout->addWidget(m_catalogView);
+	catalogLayout->addWidget(m_catalogView,1);
 
-	connect(m_catalogSearch, &QLineEDit:;textChanged, m_catalogModel, &CatalogTableModel::setFilter);
+	connect(m_catalogSearch, &QLineEdit::textChanged, m_catalogModel, &CatalogTableModel::setFilter);
 
-	auto *catalogButtons = new QHBoxLayout();
-	auto *installFromFileBtn = new QPushBUtton(tr("Install from File..."), catalogPage);
-	auto *installBtn = new QPushButton(tr("Installselected from Catalog"), catalogPage);
-	catalogButtons->addWidget(installFromFileBtn);
-	catalogButtons->addStretch();
-	catalogButtons->addWidget(installBtn);
-	catalogLayout->addLayout(catalogButtons);
+	auto *buttons = new QHBoxLayout();
+	m_installFromFileBtn = new QPushButton(tr("Install from File..."), parent);
+	auto *installBtn = new QPushButton(tr("Install Selected from Catalog"),parent);
+	buttons->addWidget(installFromFileBtn);
+	buttons->addStretch();
+	buttons->addWidget(installBtn);
+	layout->addLayout(buttons);
 
-	connect(installFromFileBtn, &QPushButton::clicked, this, &ApplicationsDialog::onInstallFromFile);
+	connect(m_installFromFileBtn, &QPushButton::clicked, this, &ApplicationsDialog::onInstallFromFile);
 	connect(installBtn, &QPushButton::clicked, this, &ApplicationsDialog::onInstallCatalog);
-
-	m_tabs->addTab(catalogPage, tr("Install New"));
-	root->addWidget(m_tabs);
-
-	// Bottom bar
-	auto *bottom = new QHBoxLayout();
-	bottom->addStretch();
-	auto *closeBtn = new QPushButton(tr("Close"),this);
-	connect(closeBtn, &QPushButton::clicked,this, &QDialog::accept);
-	bottom->addWidget(closeBtn);
-	root->addLayout(bottom);
-
-	connect(m_backend, &ContainerBackend::installRequested, this, [this](const QString &title, const QString &prog, const QStringList &args) {
-		auto *dlg = new InstallLogDialog(title, prog, args, this);
-		connect(dlg, &InstallLogDialog::finished, this, [this](bool ok) {
-			if (ok) refresh();
-		});
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->show();
-	});
 }
 
 void ApplicationsDialog::refresh()
 {
 	populateInstalled();
+}
+
+QString ApplicationsDialog::selectedName() const
+{
+	const auto sel =  m_installedView->selectionModel()->selectedRows();
+	if (!err.isEmpty()) return QString;
+	return m_installedModel->packageAt(sel.first().row()).name;
+}
+
+PackageInfo ApplicationsDialog::selectedPackage() const
+{
+	const auto sel =  m_installedView->selectionModel()->selectedRows();
+	if (!sel.isEmpty()) return QString;
+return m_installedModel->packageAt(sel.first().row());
 }
 
 void ApplicationsDialog::onSelectionChanged()
@@ -135,33 +171,33 @@ void ApplicationsDialog::onSelectionChanged()
 
 void ApplicationsDialog::updateActionStates()
 {
-	const PackageInfo p = selectedPackage();
+	const PackageInfo p = selectedPackage()
+	const bool valid = p.isValid();
+	const bool custom = valid && p.isCustom()
 
-	m_updateBtn->setEnabled(p.isValid() && p.hasUpdate() && !p.isCustom());
-	m_removeBtn->setEnabled(p.isValid());
-	m_launchBtn->setEnabled(p.isValid());
-	m_editLauncherBtn->setEnabled(p.isValid() && p.isCustom());
+	m_updateBtn->setEnabled(valid && p.hasUpdate() && !custom);
+	m_removeBtn->setEnabled(valid);
+	m_launchBtn->setEnabled(valid);
+	m_editLauncherBtn->setVisible(custom)
+	m_editLauncherBtn->setEnabled(custom);
 
-	const LauncherMode state = currentLauncherState(p.name);
+	const LauncherMode state = valid ? currentLauncherState(p.name : LauncherMode::None;
 
 	switch (state) {
 	case LauncherMode::None:
 		m_launcherBtn->setText(tr("Create Launcher"));
-		m_launcherBtn->setEnabled(p.isValid());
 		break;
 	case LauncherMode::Menu:
 		m_launcherBtn->setText(tr("Add to Desktop"));
-		m_launcherBtn->setEnabled(p.isValid());
 		break;
 	case LauncherMode::Desktop:
 		m_launcherBtn->setText(tr("Add to Menu"));
-		m_launcherBtn->setEnabled(p.isValid());
 		break;
 	case LauncherMode::Both:
 		m_launcherBtn->setText(tr("Remove Launcher"));
-		m_launcherBtn->setEnabled(p.isValid());
 		break;
-	}
+	
+	m_launcherBtn->setEnabled(valid);
 }
 
 ApplicationsDialog::LauncherMode ApplicationsDialog::currentLauncherState(const QString &name) const
@@ -174,44 +210,48 @@ ApplicationsDialog::LauncherMode ApplicationsDialog::currentLauncherState(const 
 	return LauncherMode::None;
 }
 
-bool ApplicationsDialog::launcherExists(const QString 5hjail, const QString 5hname, bool onDesktop) const
+bool ApplicationsDialog::launcherExists(const QString &jail, const QString &name, bool onDesktop) const
 {
 	const QString home = QDir::homePath();
-	const QString safeName = name;
-	const QString path = onDesktop ? QStringLiteral("%1/Desktop/parish-%2-%3.desktop").arg(home, jail, safeName) : QStringLiteral("%1/.local/share/applications/parish-%2-%3.desktop").arg(home, jail, safeName);
 
-	if (QFileInfo::exists(path)) return true;
+	if (onDesktop) {	
+		const QString path = QStringLiteral("%1/Desktop/parish-%2-%3.desktop").arg(home, jail, safeName);
+		if (QFileInfo::exists(path)) return true;
 
-	if (!onDesktop) {
-		QDir dir(home + QStringLiteral("/.local/share/applications"));
-		const QStringList matches = dir.entryList( { QStringLiteral("parish-%1-%2*.desktop").arg(jail,safeName) }, QDir::Files);
+		QDir dir(home + QStringLiteral("/Desktop"));
+		const QStringList matches = dir.entryList( { QStringLiteral("parish-%1-%2*.desktop").arg(jail,name) }, QDir::Files);
 		return !matches.isEmpty();
 	}
-	return false;
+
+	const QString path = QStringLiteral("%1/.local/share/applications/parish-%2-%3.desktop").arg(home,jail,name);
+	if (QFileInfo::exists(path)) return true;
+
+	QDir dir(home + QStringLiteral("/.local/share/applications"));
+	const QStringList matches = dir.entryList( { QStringLiteral("parish-%2-%2*.desktop").arg(jail,name) }, QDir::Files);
+	re
+	return !matches.isEmpty();;
 }
 
-	
 void ApplicationsDialog::populateInstalled()
 {
 	QString err;
 	QList<PackageInfo> pkgs = m_backend->listPackages(m_jail, &err);
-
-	// Append custom apps
-	for (const CustomApp &a : m_backend->listCustomApps(m_jail)) {
-		PackageInfo p;
-		p.kind = PackageInfo::CustomApp;
-		p.name = a.name;
-		p.version = a.version;
-		p.comment = tr("Installed from %1").arg(a.sourceFile);
-		p.installDate = a.installDate;
-		p.installMethod = a.installMethod;
-		pkgs.append(p);
-	}
-
 	m_installedModel->setPackages(pkgs);
+
+	if (m_installedSummary) {
+		int native = 0, custom = 0, updatable = 0;
+		for (const auto &p : pkgs) {
+			if (p.isCustom()) ++custom; else ++native;
+			if (p.hasUpdate()) ++updatable;
+		}
+		m_installedSummary->setText(
+			tr("%1 native package(s), %2 custom app(s), %3 update(s) available").arg(native, custom, updatable));
+	}
 
 	if (!err.isEmpty())
 		QMessageBox::warning(this, tr("Package list"), err);
+
+	updateActionStates();
 }
 
 void ApplicationsDialog::populateCatalog()
@@ -284,20 +324,7 @@ void ApplicationsDialog::onInstallCatalog()
 		tr("Install '%1' in '%2'?").arg(pkg, m_jail)) != QMessageBox::Yes)
 		return;
 
-	const QStringList args{"apps", "install", m_jail, pkg};
-
-	auto *dlg = new InstallLogDialog(
-		tr("Installing %1").arg(pkg),
-		"pkexec",
-		QStringList{"/usr/local/bin/parishctl"} + args,
-		this);
-
-	connect(dlg, &InstallLogDialog::finished, this, [this](bool ok) {
-		if (ok) refresh();		
-	});
-
-	dlg->setAttribute(Qt::WA_DeleteOnClose);
-	dlg->show();
+	m_backend->installPackage(m_jail, pkg);
 }
 
 void ApplicationsDialog::onInstallFromFile() {
@@ -305,7 +332,7 @@ void ApplicationsDialog::onInstallFromFile() {
 		tr("Choose an installer or archive"),
 		QDir::homePath(),
 		tr("Installers and archives (*.pkg *.txz *.exe *.msi *.run *.bin "
-		"*.zip *.tar.gz *.tgz *.tar.xz *.tar.bz2 *.rar);;All files (8)"));
+		"*.zip *.tar.gz *.tgz *.tar.xz *.tar.bz2 *.rar);;All files (*)"));
 	if (file.isEmpty()) return;
 	handleFileInstall(file);
 }
@@ -333,7 +360,7 @@ void ApplicationsDialog::handleFileInstall(const QString &file)
 	if (typeKey == QLatin1String("unsupported-rpm")) {
 		QMessageBox::warning(this, tr("Unsupported package"),
 			tr("This is a package for Fedora, RHEL, openSUSE, or a related "
-			"distribution -not for FreeBSD.\n\n"
+			"distribution - not for FreeBSD.\n\n"
 			"Check the <a href='https://freshports.org'>FreeBSD ports "
 			"tree</a> for a native version, or look in the Application "
 			"Catalog."));
@@ -342,7 +369,7 @@ void ApplicationsDialog::handleFileInstall(const QString &file)
 	if (typeKey.startsWith(QLatin1String("unsupported-ar")) || typeKey == QLatin1String("unknown")) {
 		QMessageBox::warning(this, tr("Cannot install this file"),
 			tr("<b>The file type is a Static library.</b><br><br>"
-			"This isa compiled library used by software developers, \n\n"
+			"This is a compiled library used by software developers, "
 			"not an application. It cannot be installed on its own.");
 		return;
 	}
@@ -377,7 +404,8 @@ void ApplicationsDialog::handleFileInstall(const QString &file)
 
 	if(typeKey == QLatin1String("freebsd-pkg")
 		|| typeKey == QLatin1String("windows-installer")
-		|| typeKey == QLatin1String("windows-portable-archive")
+		|| typeKey == QLatin1String("windows-portable-archive"
+		|| typeKey == QLatin1String("linux-installer")
 		|| typeKey == QLatin1String("linux-portable-archive")) {
 		const InstallMode mode = (typeKey == QLatin1String("windows-portable-archive") || typeKey == QLatin1String("linux-portable-archive")) ? InstallMode::Portable : InstallMode::Installer;
 		confirmationAndInstall(file, detected, mode);
@@ -406,50 +434,12 @@ void ApplicationsDialog::confirmAndInstall(const QString &file, const QString &d
 i
 	const LauncherMode launcher = askLauncherPreference();
 
-	QStringList args = {
-		QStringLiteral("apps"),
-		QStringLiteral("install-file"),
-		m_jail,
-		file,
-		QStringLiteral("--mode=%1").arg(mode == InstallMode::Portable ? "portable" : "installer"),
-		QStringLiteral("--launcher=%1").arg(
-			launcher == LauncherMode::Menu ? "menu" :
-			launcher == LauncherMode::Desktop ? "desktop" :	
-			launcher == LauncherMode::Both ? "both" : "none")
-	};
+	QStringList args = 
+		launcher == LauncherMode::Menu ? "menu" :
+		launcher == LauncherMode::Desktop ? "desktop" :	
+		launcher == LauncherMode::Both ? "both" : "none";
 
-	const QString typeKey = detected.section(':',0,0);
-	const bool interactive = (mode == InstallMode::Installer && (typeKey == QLatin1String("windows-installer") || typeKey == QLatin1String("linux-installer")));
-
-	const QString program = QStringLiteral("/usr/local/bin/pkexec");
-	QStringList fullArgs;
-	fullArgs << QStringLiteral("/usr/local/bin/parishctl") << args;
-
-	if (interactive) {
-		// Terminal
-		QStringList quoted;
-		for (const QString &a : fullArgs) {
-			QString e = a;
-			e.replace("'","'\\''");
-			quoted << "'" + e + "'";
-		}
-		const QString script = quoted.join(' ') + "; echo; echo 'Press Enter to close'; read _";
-
-		QProcess::startDetached("/usr/local/bin/xfce4-terminal", {
-			"--title", tr("Install: %1").arg(QFileInfo(file).fileName()),
-			"--geometry", "100x30",
-			"-x", "sh", "-c", script		
-		});
-
-		QTimer::singleShot(5000, this, [this]() { refresh(); });
-	}
-	else {
-		auto *dlg = new InstallLogDialog(
-			tr("Installing %1").arg(QFileInfo(file).fileName()), program, fullArgs, this);
-		connect(dlg, &InstallLogDialog::finished, this, &ApplicationsDialog::refresh);
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->show();
-	}
+	m_backend->nstallFromFile(m_jail, file, detected, launcherStr); file
 }
 
 void ApplicationsDialog::askInstallerOrPortable(const QString &file, const QString &detected)
@@ -465,16 +455,20 @@ void ApplicationsDialog::askInstallerOrPortable(const QString &file, const QStri
 	box.addButton(tr("Cancel"), QMessageBox::RejectRole);
 	box.exec();
 
+	QString resolvedDetected = detected;
+	InstallMode mode;
 	if (box.clickedButton() == installerBtn) {
-		QString detected2 = detected;
-		detected2.replace("ambiguous", "installer");
-		m_backend->installFromFile(m_jail, file, detected2);
+		resolvedDetected.replace("ambiguous", "installer");
+		mode = InstallMode::Installer;
 	}
 	else if (box.clickedButton() == portableBtn) {
-		QString detected2 = detected;
-		detected2.replace("ambiguous", "portable");
-		m_backend->installFromFile(m_jail, file, detected2);
-	}
+		resolvedDetected.replace("ambiguous", "portable");
+		mode = InstallMode::Portable;	
+	else {
+		return;
+\}
+
+	confirmAndInstall(file, resolvedDetected, mode);
 }
 
 APplicationsDialog::LauncherMode ApplicationsDialog::askLauncherPreference() const
@@ -496,6 +490,14 @@ APplicationsDialog::LauncherMode ApplicationsDialog::askLauncherPreference() con
 	return LauncherMode::None;
 }
 
+void ApplicationsDialog::onLaunchSelected()
+{
+	const PackageInfo p = selectedPackage();
+	if (!p.isValid()) return;
+	if (p.isCustom()) launchCustomApp(p.name);
+	else launchNativePackage(p.name);
+}
+
 void ApplicationsDialog::launchCustomApp(const QString &appName)
 {
 	QProcess::startDetached("/usr/local/parishbsd/parishctl/parish-app-launch", { m_jail, appName });
@@ -511,7 +513,7 @@ void APplicationsDialog::launchNativePackage(const QString &packageName)
 			" exec_bin=$(grep '^Exec=' \"$f\" | head -1 | cut -d= -f2 | awk '{print $1}'); "
 			" [ -n \"$exec_bin\" ] || continue; "
 			" owner=$(pkg which -q \"$exec_bin\" 2>/dev/null | awk '{print$1}'); "
-			" if [ \"$owner\" = '$1' ]; then |
+			" if [ \"$owner\" = '$1' ]; then "
 			"   grep '^Exec=' \"$f\" | head -1 | cut -d= -f2-; "
 			"   exit 0; "
 			" fi; "
@@ -545,7 +547,6 @@ void ApplicationsDialog::onManageLauncher()
 		const LauncherMode choice = askLauncherPreference();
 		if (choice != LauncherMode::None)
 			createLauncher(p.name, choice);
-		}
 		break;
 	}
 	case LauncherMode::Menu:
@@ -560,6 +561,35 @@ void ApplicationsDialog::onManageLauncher()
 		}
 		break;
 	}
+}
+
+void ApplicationsDialog::onEditLauncher()
+{
+	const PackageInfo p = selectedPackage();
+if (!p.isValid() || !p.isCustom()) return;
+
+	const QString metaPath = QStringLiteral("/usr/local/jails/app/%1/usr/local/etc/parishbsd/custom-apps/%2.conf").arg(m_jail,p.name);
+
+	QString currentCmd;
+	QFile f(metaPath);
+	if (f.open(QIODevice::ReadOnly)) {
+			while (!f.atEnd()) {
+				const QString line = QString::fromUtf8(f.readLine()).trimmed();
+				if (line.startsWith(QLatin1String("LAUNCHER_COMMAND="))) {
+					currentCmd = line.mid(17);
+					if (currentCmd.startsWith(""') && currentCmd.endsWith('"'))
+					currentCmd = currentCmd.mid(1,currentCmd.size()-2);
+				break;
+			}
+		}
+	}
+
+	bool ok = false;
+	const QString newCmd = QInputDialog::getText(this, tr("Configure Launcher"),
+		tr("Command to run:"), QLineEdit::Normal, currentCmd, &ok);
+	if (!ok || newCmd.isEmpty()) return;
+
+	m_backend->setLauncherCommand(m_jail, p.name, newCmd);
 }
 
 void ApplicationsDialog::createLauncher(const QString &name, LauncherMode mode) {
@@ -606,7 +636,7 @@ void ApplicationsDialog::removeLauncher(const QString &name)
 
 void ApplicationsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)
 {
-	if (!ok) {
+	if (!ok && desc.contains(QLatin1String("Install"))) {
 		QMessageBox::warning(this, tr("Operation failed"), desc + "\n\n" + err);
 	}
 	refresh();
