@@ -112,6 +112,15 @@ void ApplicationsDialog::buildUi()
 	connect(closeBtn, &QPushButton::clicked,this, &QDialog::accept);
 	bottom->addWidget(closeBtn);
 	root->addLayout(bottom);
+
+	connect(m_backend, &ContainerBackend::installRequested, this, [this](const QString &title, const QString &prog, const QStringList &args) {
+		auto *dlg = new InstallLogDialog(title, prog, args, this);
+		connect(dlg, &InstallLogDialog::finished, this, [this](bool ok) {
+			if (ok) refresh();
+		});
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->show();
+	});
 }
 
 void ApplicationsDialog::refresh()
@@ -119,6 +128,69 @@ void ApplicationsDialog::refresh()
 	populateInstalled();
 }
 
+void ApplicationsDialog::onSelectionChanged()
+{
+	updateActionStates();
+}
+
+void ApplicationsDialog::updateActionStates()
+{
+	const PackageInfo p = selectedPackage();
+
+	m_updateBtn->setEnabled(p.isValid() && p.hasUpdate() && !p.isCustom());
+	m_removeBtn->setEnabled(p.isValid());
+	m_launchBtn->setEnabled(p.isValid());
+	m_editLauncherBtn->setEnabled(p.isValid() && p.isCustom());
+
+	const LauncherMode state = currentLauncherState(p.name);
+
+	switch (state) {
+	case LauncherMode::None:
+		m_launcherBtn->setText(tr("Create Launcher"));
+		m_launcherBtn->setEnabled(p.isValid());
+		break;
+	case LauncherMode::Menu:
+		m_launcherBtn->setText(tr("Add to Desktop"));
+		m_launcherBtn->setEnabled(p.isValid());
+		break;
+	case LauncherMode::Desktop:
+		m_launcherBtn->setText(tr("Add to Menu"));
+		m_launcherBtn->setEnabled(p.isValid());
+		break;
+	case LauncherMode::Both:
+		m_launcherBtn->setText(tr("Remove Launcher"));
+		m_launcherBtn->setEnabled(p.isValid());
+		break;
+	}
+}
+
+ApplicationsDialog::LauncherMode ApplicationsDialog::currentLauncherState(const QString &name) const
+{
+	const bool hasMenu = launcherExists(m_jail, name, false);
+	const bool hasDesktop = launcherExists(m_jail, name, true);
+	if (hasMenu && hasDesktop) return LauncherMode::Both;
+	if (hasMenu) return LauncherMode::Menu;
+	if (hasDesktop) return LauncherMode::Desktop;
+	return LauncherMode::None;
+}
+
+bool ApplicationsDialog::launcherExists(const QString 5hjail, const QString 5hname, bool onDesktop) const
+{
+	const QString home = QDir::homePath();
+	const QString safeName = name;
+	const QString path = onDesktop ? QStringLiteral("%1/Desktop/parish-%2-%3.desktop").arg(home, jail, safeName) : QStringLiteral("%1/.local/share/applications/parish-%2-%3.desktop").arg(home, jail, safeName);
+
+	if (QFileInfo::exists(path)) return true;
+
+	if (!onDesktop) {
+		QDir dir(home + QStringLiteral("/.local/share/applications"));
+		const QStringList matches = dir.entryList( { QStringLiteral("parish-%1-%2*.desktop").arg(jail,safeName) }, QDir::Files);
+		return !matches.isEmpty();
+	}
+	return false;
+}
+
+	
 void ApplicationsDialog::populateInstalled()
 {
 	QString err;
@@ -212,7 +284,20 @@ void ApplicationsDialog::onInstallCatalog()
 		tr("Install '%1' in '%2'?").arg(pkg, m_jail)) != QMessageBox::Yes)
 		return;
 
-	m_backend->installPackage(m_jail, pkg);
+	const QStringList args{"apps", "install", m_jail, pkg};
+
+	auto *dlg = new InstallLogDialog(
+		tr("Installing %1").arg(pkg),
+		"pkexec",
+		QStringList{"/usr/local/bin/parishctl"} + args,
+		this);
+
+	connect(dlg, &InstallLogDialog::finished, this, [this](bool ok) {
+		if (ok) refresh();		
+	});
+
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->show();
 }
 
 void ApplicationsDialog::onInstallFromFile() {
@@ -228,44 +313,84 @@ void ApplicationsDialog::onInstallFromFile() {
 void ApplicationsDialog::handleFileInstall(const QString &file)
 {
 	QProcess det;
-	det.start("/usr/local/parishbsd/scripts/parish-detect-installer.sh", { file });
-	det.waitForFinished(5000);
+	det.start("/usr/local/bin/parishctl", { "detect", file });
+	if (!det.waitForFinished(5000)) {
+		QMessageBox::warning(this, tr("Detection failed"), tr("The file type could not be determined."));
+		return;
+	}
 	const QString detected = QString::fromUtf8(det.readAllStandardOutput()).trimmed();
 	const QString typeKey = detected.section(':',0,0);
 
 	if (typeKey == QLatin1String("unsupported-deb") || typeKey == QLatin1Sting("unsupported-rpm")) {
 		QMessageBox::warning(this, tr("Unsupported package"),
-			tr("This is a package for a different operating system.\n\n"
-			"ParishBSD runs FreeBSD software. Look in the catalog "
-			"for a FreeBSD version."));
+			tr("This is a package for Debian, Ubuntu, or a related "
+			"distribution - not for FreeBSD.\n\n"
+			"Check the <a href='https://freshports.org'>FreeBSD ports "
+			"tree</a> for a native version, or look in the Application"
+		        "Catalog."));
 		return;
 	}
-	if (typeKey.startsWith(QLatin1String("source-"))) {
+	if (typeKey == QLatin1String("unsupported-rpm")) {
+		QMessageBox::warning(this, tr("Unsupported package"),
+			tr("This is a package for Fedora, RHEL, openSUSE, or a related "
+			"distribution -not for FreeBSD.\n\n"
+			"Check the <a href='https://freshports.org'>FreeBSD ports "
+			"tree</a> for a native version, or look in the Application "
+			"Catalog."));
+		return;
+	}
+	if (typeKey.startsWith(QLatin1String("unsupported-ar")) || typeKey == QLatin1String("unknown")) {
+		QMessageBox::warning(this, tr("Cannot install this file"),
+			tr("<b>The file type is a Static library.</b><br><br>"
+			"This isa compiled library used by software developers, \n\n"
+			"not an application. It cannot be installed on its own.");
+		return;
+	}
+	if (typeKey.startsWith(QLatin1String("unsupported-"))) {
+		QMessageBox::warning(this, tr("Unsupported file"),
+			tr("<b>Unsupported file type.</b><br><br>Detected: %1").arg(detected.toHtmlEscaped()));
+		return;
+	}
+	if (typeKey.startsWith(QLatin1String("source-")) || typeKey == QLatin1String("unsupported-ar")) {
 		QMessageBox::warning(this, tr("Source code"),
-			tr("This is a source code, not a ready-to-install program.\n\n"
-			"Open a console in this container (Actions -> Open Console"
+			tr("<b>This is a source code, not a ready-to-install program.</b><br><br>"
+			"Open a console in this container "
+			"(Actions -> Open Console"
 			"and build it there."));
 		return;
 	}
+	if (typeKey == QLatin1String("archive-unknown")) {
+		QMessageBox::warning(this, tr("Cannot read this archive"),
+			tr("The archive format is not supported, or that required "
+			"roolt is not installed.<br><br>Detected: %1").arg(detected.toHtmlEscaped()));
+		returnl
+	}
+	if (typeKey == QLatin1String("archive-portable") || typeKey == QLatin1String("unknown")) {
+		QMessageBox::warning(this, tr("Cannot install this file"),
+			tr("<b>The file type is not recognized.</b><br><br>"
+			"Detected: %1<br><br>"
+			"Supported: FreeBSD packages, Windows installers and "
+			"portable archives, and Linux binaries.")
+			.arg(detected.toHtmlEscaped()));
+		return;
+	}
 
-	if(typeKey == QLatin1String("windows-installer")) {
-		confirmAndInstall(file, detected, InstallMode::Installer);
+	if(typeKey == QLatin1String("freebsd-pkg")
+		|| typeKey == QLatin1String("windows-installer")
+		|| typeKey == QLatin1String("windows-portable-archive")
+		|| typeKey == QLatin1String("linux-portable-archive")) {
+		const InstallMode mode = (typeKey == QLatin1String("windows-portable-archive") || typeKey == QLatin1String("linux-portable-archive")) ? InstallMode::Portable : InstallMode::Installer;
+		confirmationAndInstall(file, detected, mode);
+		return;
 	}
-	else if (typeKey == QLatin1String("windows-exe-ambigiuous")) {
+
+	if (typeKey == QLatin1String("windows-exe-ambiguous")
+		|| typeKey == QLatin1String("linux-run-ambiguous")) {
 		askInstallerOrPortable(file, detected);
+		return;
 	}
-	else if (typeKey == QLatin1String("windows-portable-archive") || typeKey == QLatin1String("linux-portable-archive")) {
-		confirmationAndInstall(file, detected, InstallMode::Portable);
-	}
-	else if (typeKey == QLatin1String("linux-run-ambiguous")) {
-		askInstallerOrPortable(file, detected);
-	}
-	else if (typeKey == QLatin1String("freebsd-pkg")) {
-		confirmAndInstall(file, deteceted, InstallMode::Installer);
-	}
-	else {
-		QMessageBox::warning(this, tr("Unknown file"), tr("The file could not be recognized.\n\nDetected: %1").arg(detected));
-	}
+	
+	QMessageBox::warning(this, tr("Cannot install this file"), tr("Unhandled file type: %1").arg(detected.toHtmlEscaped()));
 }
 void ApplicationsDialog::confirmAndInstall(const QString &file, const QString &detected, InstallMode mode)
 {
@@ -278,8 +403,53 @@ void ApplicationsDialog::confirmAndInstall(const QString &file, const QString &d
 
 	if (QMessageBox::question(this, tr("Install from file"), message) != QMessageBox::Yes)
 		return;
+i
+	const LauncherMode launcher = askLauncherPreference();
 
-	m_backend->installFromFile(m_jail, file, detected);
+	QStringList args = {
+		QStringLiteral("apps"),
+		QStringLiteral("install-file"),
+		m_jail,
+		file,
+		QStringLiteral("--mode=%1").arg(mode == InstallMode::Portable ? "portable" : "installer"),
+		QStringLiteral("--launcher=%1").arg(
+			launcher == LauncherMode::Menu ? "menu" :
+			launcher == LauncherMode::Desktop ? "desktop" :	
+			launcher == LauncherMode::Both ? "both" : "none")
+	};
+
+	const QString typeKey = detected.section(':',0,0);
+	const bool interactive = (mode == InstallMode::Installer && (typeKey == QLatin1String("windows-installer") || typeKey == QLatin1String("linux-installer")));
+
+	const QString program = QStringLiteral("/usr/local/bin/pkexec");
+	QStringList fullArgs;
+	fullArgs << QStringLiteral("/usr/local/bin/parishctl") << args;
+
+	if (interactive) {
+		// Terminal
+		QStringList quoted;
+		for (const QString &a : fullArgs) {
+			QString e = a;
+			e.replace("'","'\\''");
+			quoted << "'" + e + "'";
+		}
+		const QString script = quoted.join(' ') + "; echo; echo 'Press Enter to close'; read _";
+
+		QProcess::startDetached("/usr/local/bin/xfce4-terminal", {
+			"--title", tr("Install: %1").arg(QFileInfo(file).fileName()),
+			"--geometry", "100x30",
+			"-x", "sh", "-c", script		
+		});
+
+		QTimer::singleShot(5000, this, [this]() { refresh(); });
+	}
+	else {
+		auto *dlg = new InstallLogDialog(
+			tr("Installing %1").arg(QFileInfo(file).fileName()), program, fullArgs, this);
+		connect(dlg, &InstallLogDialog::finished, this, &ApplicationsDialog::refresh);
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->show();
+	}
 }
 
 void ApplicationsDialog::askInstallerOrPortable(const QString &file, const QString &detected)
@@ -288,10 +458,10 @@ void ApplicationsDialog::askInstallerOrPortable(const QString &file, const QStri
 	box.setWindowTitle(tr("How to install?"));
 	box.setText(tr("This file could be an installer or a standalone "
 		"program.\n\nHow would you like to use it?"));
-	box.setInformativeText(tr("FIle: %1\nDetected: %2").arg(QFileInfo(file).fileName(), detected));
+	box.setInformativeText(tr("FIle: %1\nDetected: %2").arg(QFileInfo(file).fileName(), detected.toHtmlEscaped()));
 
 	auto *installerBtn = box.addButton(tr("Run as installer"), QMessageBox::AcceptRole);
-	auto *portableBtn = box.addButton(tr("Install as portable application"), QMesageBox::ActionRole);
+	auto *portableBtn = box.addButton(tr("Install as portable"), QMesageBox::ActionRole);
 	box.addButton(tr("Cancel"), QMessageBox::RejectRole);
 	box.exec();
 
@@ -305,6 +475,133 @@ void ApplicationsDialog::askInstallerOrPortable(const QString &file, const QStri
 		detected2.replace("ambiguous", "portable");
 		m_backend->installFromFile(m_jail, file, detected2);
 	}
+}
+
+APplicationsDialog::LauncherMode ApplicationsDialog::askLauncherPreference() const
+{
+	QMessageBox box;
+	box.setWindowTitle(tr("Create launcher?"));
+	box.setText(tr("Would you like a launcher for this application?"));
+	box.setInformativeText(tr("A launcher is a shortcut you can click "
+				"to start the app. You can add it to your "
+				"application menu, your desktop, or both."));
+
+	auto *menuBtn = box.addButton(tr("Add to menu"), QMessageBox::AcceptRole);
+	auto *bothBtn = box.addButton(tr("Menu and desktop"), QMessageBox::ActionRole);
+	box.addButton(tr("No launcher"), QMessageBox::RejectRole);
+	box.exec();
+
+	if (box.clickedButton() == menuBtn) return LauncherMode::Menu;
+	if (box.clickedButton() == bothBtn) return LauncherMode::Both;
+	return LauncherMode::None;
+}
+
+void ApplicationsDialog::launchCustomApp(const QString &appName)
+{
+	QProcess::startDetached("/usr/local/parishbsd/parishctl/parish-app-launch", { m_jail, appName });
+}
+
+void APplicationsDialog::launchNativePackage(const QString &packageName)
+{
+	QProcess proc;
+	proc.start("/usr/sbin/jexec", { m_jail, "sh", "-c",
+		QStringLiteral(
+			"for f in /usr/local/share/applications/*.desktop; do "
+			" [ -f \"$f\" ] || continue; "
+			" exec_bin=$(grep '^Exec=' \"$f\" | head -1 | cut -d= -f2 | awk '{print $1}'); "
+			" [ -n \"$exec_bin\" ] || continue; "
+			" owner=$(pkg which -q \"$exec_bin\" 2>/dev/null | awk '{print$1}'); "
+			" if [ \"$owner\" = '$1' ]; then |
+			"   grep '^Exec=' \"$f\" | head -1 | cut -d= -f2-; "
+			"   exit 0; "
+			" fi; "
+			"done; exit 1").arg(packageName) });
+	proc.waitForFinished(5000);
+
+	if (proc.exitCode() != 0) {
+		QMessageBox::information(this, tr("Launch"),
+			tr("'%1' has no launcher .desktop file inside the compartment. "
+			"Open a console and run it manually.").arg(packageName));
+		return;
+	}
+	
+	const QString command = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+	if (command.isEmpty()) return;
+
+	QProcess::startDetached(
+		"/usr/local/parishbsd/parishctl/parish-jail-run",
+		{ m_jail, command });
+}
+void ApplicationsDialog::onManageLauncher()
+{
+	const PackageInfo p = selectedPackage();
+	if (!p.isValid()) return;
+
+	const LauncherMode state = currentLauncherState(p.name);
+
+	switch (state) {
+	case LauncherMode::None:
+		{
+		const LauncherMode choice = askLauncherPreference();
+		if (choice != LauncherMode::None)
+			createLauncher(p.name, choice);
+		}
+		break;
+	}
+	case LauncherMode::Menu:
+		createLauncher(p.name, LauncherMode::Both);
+		break;
+	case LauncherMode::Desktop:
+		createLauncher(p.name, LauncherMode::Both);
+		break;
+	case LauncherMode::Both:
+		if (QMessageBox::question(this, tr("Remove launcher"), tr("Remove the launcher for '%1'").arg(p.name)) == QMessageBox::Yes) {
+			removeLauncher(p.name);
+		}
+		break;
+	}
+}
+
+void ApplicationsDialog::createLauncher(const QString &name, LauncherMode mode) {
+	const QString where =
+		(mode == LauncherMode::Menu) ? "menu" :
+		(mode == LauncherMode::Desktop) ? "desktop" :
+		(mode == LauncherMode::Both) ? "both" : "none";
+
+	if (where == "none") return;
+
+	QProcess proc;
+	proc.start("/usr/local/parishbsd/parishctl/parish-app-create-launcher", { m_jail, name, where });
+	proc.waitForFinished(10000);
+
+	if (proc.exitCode() != 0) {
+		QMessageBox::warning(this, tr("Launcher creation failed"),
+			QString::fromUtf8(proc.readAllStandardError()));
+		return;
+	}
+
+	updateActionStates();
+}
+
+void ApplicationsDialog::removeLauncher(const QString &name)
+{
+	const QString home = QDir::homePath();
+	QDir appsDir(home + QStringLiterael("/.local/share/applications"));
+
+	// menu launchers
+	const QStringList menuFiles = appsDir.entryList({ QStringLiteral("parish-%1-%2*.desktop").arg(m_jail, name) }, QDir::Files);
+	for (const QString &f : menuFiles)
+		QFile::remove(appsDir.filePath(f));
+
+	// desktop launchers
+	QDir deskDir(home + QStringLiteral("/Desktop"));
+	const QStringList deskFiles = deskDir.entryList({ QStringLiteral("parish-%1-%2*.desktop").arg(m_jail, name) }, QDir::Files);
+	for (const QString &f : deskFiles)
+		QFile::remove(deskDir.filePath(f));
+
+	QProcess::execute("/usr/local/bin/update-desktop-database", { home +QStringLiteral("/.local/share/applications") });
+
+	updateActionStates();
 }
 
 void ApplicationsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)

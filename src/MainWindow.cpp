@@ -66,24 +66,47 @@ void MainWindow::buildMenus()
 {
 	QMenu *fileMenu = menuBar()->addMenu(tr("&Container"));
 	m_actCreate = fileMenu->addAction(tr("&New container..."));
+	m_actCreate->setIcon(QIcon::fromTheme("list-add"));
+	m_actCreate->setShortcut(QKeySequence::New);
+
 	m_actDestroy = fileMenu->addAction(tr("&Destroy..."));
+	m_actDestroy->setIcon(QIcon::fromTheme("edit-delete"));
 	fileMenu->addSeparator();
+
+	m_actApplications = containerMenu->addAction(tr("&Applications..."));
+	m_actApplications->setIcon(QIcon::fromTheme("system-software-install"));
+	m_actConsole = containerMenu->addAction(tr("Open &Console"));
+	m_actConsole->setIcon(QIcon::fromTheme("utilities-terminal"));
+	fileMenu->addSeparator();
+
 	m_actRefresh = fileMenu->addAction(tr("&Refresh"));
+	m_actRefresh->setIcon(QIcon::fromTheme("view-refresh"));
+	m_actRefresh->setShortcut(QKeySequence::Refresh);
+
 	fileMenu->addSeparator();
 	QAction *quit = fileMenu->addAction(tr("&Quit"));
 	quit->setShortcut(QKeySequence::Quit);
 
+
 	QMenu *runMenu = menuBar()->addMenu(tr("&Run"));
 	m_actStart = runMenu->addAction(tr("&Start"));
+	m_actStart->setIcon(QIcon::fromTheme("media-playback-start"));
 	m_actStop = runMenu->addAction(tr("Sto&p"));
-	m_actUnlock = runMenu->addAction(tr("&Unlock vault"));
-	m_actLock = runMenu->addAction(tr("&Lock vault"));
+
 	runMenu->addSeparator();
-	m_actConsole = runMenu->addAction(tr("Open &console"));
+
+	m_actUnlock = runMenu->addAction(tr("&Unlock vault"));
+	m_actUnlock->setIcon(QIcon::fromTheme("security-medium"));
+	m_actLock = runMenu->addAction(tr("&Lock Vault"));
+	m_actLock->setIcon(QIcon::fromTheme("security-high"));
+	runMenu->addSeparator();
 	m_actActions = runMenu->addAction(tr("&Actions..."));
+	m_actActions->setIcon(QIcon::fromTheme("configure"));
+
 
 	QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
-	QAction *about = helpMenu->addAction(tr("&About ParishBSD"));
+	m_actAbout = helpMenu->addAction(tr("&About ParishBSD"));
+	m_actAbout->setIcon(QIcon::fromTheme("help-about"));
 
 	connect(quit, &QAction::triggered, this, &QWidget::close);
 	connect(about, &QAction::triggered, this, &MainWindow::onAbout);
@@ -95,6 +118,8 @@ void MainWindow::buildMenus()
 	connect(m_actUnlock, &QAction::triggered, this, &MainWindow::onUnlock);
 	connect(m_actLock, &QAction::triggered, this, &MainWindow::onLock);
 	connect(m_actConsole, &QAction::triggered, this, &MainWindow::onConsole);
+	connect(m_actApplications, &QAction::triggered, this, &MainWindow::onApplications);
+	connect(m_actActons, &QAction::triggered, this, &MainWindow::onActions);
 }
 
 void MainWindow::buildToolBar()
@@ -102,6 +127,7 @@ void MainWindow::buildToolBar()
 	QToolBar *tb = addToolBar(tr("Main"));
 	tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	tb->setMovable(false);
+	tb->setIconSize(QSize(20,20));
 
 	auto add = [tb](QAction *a, const QString &iconName) {
 		QIcon icon = QIcon::fromTheme(iconName);
@@ -120,6 +146,7 @@ void MainWindow::buildToolBar()
 	add(m_actLock, QStringLiteral("security-high"));
 	tb->addSeparator();
 	add(m_actConsole, QStringLiteral("utilities-terminal"));
+	add(m_actApplication, QStringLiteral("system-software-install"));
 	add(m_actActions, QStringLiteral("configure"));
 	tb->addSeparator();
 	add(m_actRefresh, QStringLiteral("view-refresh"));

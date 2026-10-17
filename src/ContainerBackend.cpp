@@ -232,6 +232,50 @@ void ContainerBackend::runParishctl(const QString &description, const QStringLis
 	runAsync(description, QStringLiteral("/usr/local/bin/pkexec"), pkArgs);
 }
 
+void ContainerBackend::runInTerminal(const QString &title, const QString &program, const QStringList &args)
+{
+	emit operationStarted(title);
+	emit terminalLaunched(title);
+
+	// Build a shell line by single-quoting every argument, so that
+	// paths and user data cannot inject shell metacharacters
+	QStringList quoted;
+	for (const QString &a : args) {
+		QString esc = a;
+		esc.replace("'", "'\\''");
+		quoted.append("'" + esc + "'");
+	}
+	const QString shellLine = quoted.join(' ');
+
+	// run the command, then wait for Enter for visible output
+	const QString wrapped = QStringLiteral("%1; echo; echo '[press Enter to close]'; read _").arg(shellLine);
+
+	auto *proc = new QProcess(this);
+	proc->setProgram(program);
+	proc->setArguments({ QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), wrapped });
+
+	connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, proc, title](int code, QProcess::ExitStatus status) {
+		const bool ok = (status == QProcess::NormalExit && code == 0);
+		QString err;
+		if (!ok) {
+			err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+			if (err.isEmpty())
+				err = tr("Command failed (exit %1)").arg(code);
+		}
+		emit operationFinished(title, ok, err);
+		emit terminalClosed(title);
+		proc->deleteLater();
+	});
+
+	connect(proc, &QProcess::errorOccurred, this, [this,proc,title](QProcess::ProcessError) {
+		emit operationFinished(title,false,proc->errorString());
+		emit terminalClosed(title);
+		proc->deleteLater();
+	});
+
+	proc->start();
+}
+
 ////////////
 /// Actions
 ////////////
@@ -431,7 +475,7 @@ QList<CustomApp> ContainerBackend::listCustomApps(const QString &jail) const
 
 void ContainerBackend::upgradePackages(const QString &jail)
 {
-	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' 'env ASSUME_ALWAYS_YES=yes pkg upgrade'; echo; echo 'Press Enter to close...'; read _").arg(jail);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps upgrade '%1'").arg(jail);
 
 	runInTerminal(tr("Upgrading packages in %1").arg(jail), QStringLiteral("/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"), tr("Upgrade: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
@@ -446,86 +490,30 @@ void ContainerBackend::installPackage(const QString 245jail, const QString 245pa
 		return;
 	}
 
-	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' sh -c 'env ASSUME_ALWAYS_YES=yes pkg install %2'; echo; echo 'Press Enter to close...'; read _").arg(jail, package);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps install '%1' '%2'").arg(jail, package);
 
-	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"), tr("Upgrade: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
+	runInTerminal(tr("Installing %1 in %2").arg(package, jail), QStringLiteral("/usr/local/bin/xfce4-terminal"), { QStringLiteral("--title"), tr("Install: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
 void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType)
 
 	const QString typeKey = detectedType.section(':', 0, 0);
+i
+	const bool interactive = (typeKey == QLatin1String("windows-installer") || typeKey == QLatin1String("linux-installer"));
 
-	const QString fileName = QFileInfo(file).fileName();
-	const QString exchangeHelper = m_root + "/parishctl/parish-exchaneg";
+	const QStringList cliArgs = {"apps","install-file",jail,file};
 
-	runAsync(tr("Copying $1 to %2").arg(fileName, jail), "/usr/local/bin/pkexec", { exchangeHelper, "put", file, jail });
-
-	auto *conn = newQMetaObject::Connection;
-*conn = connect(this, &ContainerBacked::operationFinished,
-		this, [this,conn,jail,fileName,detectedType,typeKey]
-		(const QString &desc, bool ok, const QString &) {
-			if (!desc.startsWith(tr("Copying"))) return;
-			disconnect(*conn);
-			delete conn;
-
-			if (!ok) {
-				emit operationFinished(tr("Install %1").arg(fileName), false, tr("Copy failed"));
-				return;
-			}
-			dispatchInstall(jail, fileName, detectedType, typeKey);
-		});
-}
-
-void ContainerBackend::dispatchInstall(const QString &jail, const QString &fileName, const QString &detectedType, const QString &typeKey)
-{
-	QString innerCmd;
-	const QString typeKey = detectedType.section(':', 0,0);
-
-	QString innerCmd;
-	if (typeKey == QLatin1String("freebsd-pkg")) {
-		innerCmd = QStringLiteral("pkg add /exchange/%1").arg(fileName);
+	if (interactive) {
+		const QString script = QStringLiteral(
+			"/usr/local/bin/pkexec /usr/local/binsh/parishctl "
+			"apps install-file '%1' '%2'; "
+			"echo; echo 'Installer finished - press Enter to close'; read _").arg(jail,file);
+		runInTerminal(tr"Installing %1").arg(QFIleInfo(file).fileName()),
+			"/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
 	}
-	else if (typeKey == QLatin1String("windows-installer")) {
-		innerCmd = QStringLiteral("wine /exchange/%1").arg(fileName);
-	}
-	else if (typeKey == QLatin1String("linux-installer")) {
-		innerCmd = QStringLiteral("/compat/linux/bin/sh /exchange/%1").arg(fileName);
-	}
-	else if (typeKey == QLatin1String("windows-portable-archive")) {
-		innerCmd = QStringLiteral(
-			"mkdir -p /opt/parish-apps/%1 && "
-			"cd /opt/parish-apps/%1 && "
-			"case '%2' in "
-			"  *.zip) unzip -q /exchange/%2 ;; "
-			"  *.tar.gz|*.tgz) tar -xzf /exchange/%2 ;; "
-			"  *.tar.xz) tar -xJf /exchange/%2 ;; "
-			"  *.tar.bz2) tar -xjf /exchange/%2 ;; "
-			"esac && "
-			"echo 'Extracted to /opt/parish-apps/%1'; "
-			"ls -la /opt/parish-apps/%1")
-			.arg(QFileInfo(fileName).baseName(), fileName);}
-	else if (typeKey == QLatin1String("linux-portable-archive")) {
-		innerCmd = QStringLiteral(
-			"mkdir -p /opt/parish-apps/%1 && "
-			"cd /opt/parish-apps/%1 && "
-			"case '%2' in "
-			"  *.zip) unzip -q /exchange/%2 ;; "
-			"  *.tar.gz|*.tgz) tar -xzf /exchange/%2 ;; "
-			"  *.tar.xz) tar -xJf /exchange/%2 ;; "
-			"  *.tar.bz2) tar -xjf /exchange/%2 ;; "
-			"esac && "
-			"chmod +x bin/* 2>/dev/null || true; "
-			"echo 'Extracted to /opt/parish-apps/%1'")
-			.arg(QFileInfo(fileName).baseName(), fileName);
 	else {
-		emit operationFinished(tr("Install %1").arg(fileName), false,
-			tr("Unsupported file type: %1").arg(detectedType));
-		return;
+		emit installRequested(tr("Installing %1").arg(QFileInfo(file).fileName()), "pkexec", QStringList{ "/usr/local/bin/parishctl" } + cliArgs);
 	}
-
-	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec %1 sh -c '%2'").arg(jail, innerCmd);
-	runInTerminal(tr("Installing %1 in %2").arg(fileName, jail), "/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
-			
 }
 
 void ContainerBackend::removePackage(const QString 354jail, const QString 354package) {
@@ -537,9 +525,9 @@ void ContainerBackend::removePackage(const QString 354jail, const QString 354pac
 		return;
 	}
 
-	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/sbin/jexec '%1' sh -c 'env ASSUME_ALWAYS_YES=yes pkg delete -y %2'; echo; echo 'Press Enter to close...'; read _").arg(jail, package);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps remove '%1' '%2'").arg(jail, package);
 
-	runInTerminal(tr("Installing %1 in %2").arg(package, jail), "/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"),tr("Remove: %1").arg(jail) QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
+	runInTerminal(tr("Removing %1 from %2").arg(package, jail), QStringLiteral("/usr/local/bin/xfce4-terminal"), { QStringLiteral("--title"),tr("Remove: %1").arg(jail) QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
 void ContainerBackend::removeCustomApp(const QString &jail, const QString &appName) {

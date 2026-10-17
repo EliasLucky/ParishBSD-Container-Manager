@@ -7,6 +7,8 @@ class QTableView;
 class QSortFilterProxyModel;
 class QAction;
 class QLabel;
+class Qtimer;
+class QSocketNotifier;
 
 class ContainerBackend;
 class ContainerModel;
@@ -27,6 +29,7 @@ private slots:
 	void onUnlock();
 	void onLock();
 	void onConsole();
+	void onApplications();
 	void onActions();
 	void onAbout();
 
@@ -41,13 +44,12 @@ private:
 	void buildToolBar();
 	void buildCentralWidget();
 	void buildStatusBar();
+	void setupUsbListener();
+	void showUsbAttachDialog(const QString &device);
 
 	struct ContainerInfo selectedContainer() const;
 
 	void updateActionStates();
-
-	void setupUsbListener();
-	void showUsbAttachDialog(const QString &device);
 
 	QString selectedName() const;
 
@@ -67,7 +69,9 @@ private:
 	QAction *m_actUnlock = nullptr;
 	QAction *m_actLock = nullptr;
 	QAction *m_actConsole = nullptr;
+	QAction *m_actApplications = nullptr;
 	QAction *m_actActions = nullptr;
+	QAction *m_actAbout = nullptr;
 
 	QSocketNotifier *m_usbNotifier = nullptr;
 

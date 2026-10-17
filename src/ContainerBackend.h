@@ -6,6 +6,8 @@
 #include <QStringList>
 
 #include "ContainerInfo.h"
+#include "PackageInfo.h"
+#include "CustomApp.h"
 
 class QProcess;
 
@@ -52,7 +54,7 @@ signals:
 
 private:
 	void runParishctl(const QString &description, const QStringList &args);
-
+	void runInTerminal(const QString &title, const QString &program, const QStringList &args);
 	void runAsync(const QString &description, const QString &program, const QStringList &args);
 
 	QString runSync(const QString &program, const QStringList &args, int *exitCode = nullptr) const;
