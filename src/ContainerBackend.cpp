@@ -18,7 +18,7 @@ ContainerBackend::ContainerBackend(QObject *parent) : QObject(parent)
 	m_root = qEnvironmentVariable("PARISHBSD_ROOT", QStringLiteral("/usr/local/parishbsd"));
 	m_parishctlPath = m_root + QStringLiteral("/parishctl/parishctl");
 	m_jailsDir = QStringLiteral("/usr/local/jails");
-	m_vaultDataDir = QStringLiteral("/zrot/vault-data");
+	m_vaultDataDir = QStringLiteral("/zroot/vault-data");
 }
 
 /////////////////////////////////////////////
@@ -85,8 +85,12 @@ QString ContainerBackend::kindFromPersonality(const QString &personality)
 QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 {
 	QList<ContainerInfo> result;
+int jlsRc = 0;
+	const QString jlsOut = runAsync(QStringLiteral("/usr/sbin/jls"), { QStringLiteral("name") }, &jlsRc);
+	const QStringList runningJails = jlsOut.split('\n', Qt::SkipEmptyParts);
 
 	const QStringList tiers = { QStringLiteral("app"), QStringLiteral("vault") };
+
 	for (const QString &tier : tiers) {
 		const QString tierDir = m_jailsDir + QLatin1Char('/') + tier;
 		QDir d(tierDir);
@@ -108,7 +112,6 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 			info.kind = kindFromPersonality(info.personality);
 			info.isCompatibility = info.personality.startsWith(QStringLiteral("apps-compatible"));
 
-			// is jail running?
 			int jlsRc = 0;
 			const QString jlsOut = runSync(QStringLiteral("/usr/sbin/jls"), { QStringLiteral("name") }, &jlsRc);
 			const QStringList running = jlsOut.split('\n', Qt::SkipEmptyParts);
@@ -130,15 +133,15 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 			if (isRunning) {
 				info.state = info.isVault ? QStringLiteral("unlocked") : QStringLiteral("running");
 			}
-			else {
-				if (info.isVault && keystatus == QLatin1String("available"))
+			else if (info.isVault) {
+				if (keystatus == QLatin1String("available"))
 					info.state = QStringLiteral("unlocked");
-				else if (info.isVault) {
+				else {
 					info.state = QStringLiteral("locked");
 				}
-				else {
-					info.state = QStringLiteral("stopped");
-				}
+			}
+			else {
+				info.state = QStringLiteral("stopped");
 			}
 
 			// disk usage
@@ -149,7 +152,6 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 				{ QStringLiteral("list"), QStringLiteral("-H"), QStringLiteral("-o"), QStringLiteral("used"), ds },	
 				&zrc);
 			if (zrc == 0) {
-				// kind of unnecessary perhaps?
 				QString s = used.trimmed();
 				quint64 multiplier = 1;
 				QChar last = s.isEmpty() ? QChar() : s.back().toUpper();
@@ -345,12 +347,12 @@ void ContainerBackend::openConsole(const QString &name)
 		QStringLiteral("/usr/local/bin/xfce4-terminal"),
 		{ QStringLiteral("--title"), tr("Console: %1").arg(name),
 	        QStringLiteral("-x"),
-		QStringLiteral("jexec"), name, QStringLiteral("/bin/sh") });
+		QStringLiteral("sh"), QStringLiteral("-c"), cmd });
 }
 
 void ContainerBackend::openVaultFiles(const QString &name) {
 	runAsync(tr("Opening files for '%1'").arg(name),
-		m_root + QStringLiteral("/parishctl/parish-vault-files"),
+		QStringLiteral("/usr/local/bin/parish-vault-files"),
 		{ name });
 }
 
@@ -378,7 +380,7 @@ QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *
 		const QString comment = line.mid(sp).trimmed();
 
 		int dashPos = -1;
-		for (int i = 0 nameVer.size()-1; i > 0; --i) {
+		for (int i = nameVer.size()-1; i > 0; --i) {
 			if (nameVer.at(i) == '-' && i+1 < nameVer.size()
 				&& nameVer.at(i+1).isDigit()) {
 				dashPos = i;
@@ -431,7 +433,7 @@ QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *
 		p.version = a.version;
 		p.installDate = a.installDate;
 		p.installMethod = a.installMethod;
-		p.orgiin = a.installPath;
+		p.origin = a.installPath;
 		result.append(p);
 	}
 
@@ -447,27 +449,34 @@ QList<CustomApp> ContainerBackend::listCustomApps(const QString &jail) const
 	QDir d(dir);
 	if (!d.exists()) return result;
 
-	for (const QString &fname : d.entryList({ "*.json" }, QDir::Files)) {
-		QfILE f(d.filePath(fname));
+	for (const QString &fname : d.entryList({ "*.conf" }, QDir::Files)) {
+		QFile f(d.filePath(fname));
 		if (!f.open(QIODevice::ReadOnly)) continue;
-		const QByteArray raw = f.readAll();
-		QJsonParseError err;
-		const QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
-		if (err.error != QJsonParseError::NoError || !doc.isObject())
-			continue;
-
-		const QJsonObject o = doc.object();
+	
 		CustomApp app;
-		app.name = o.value("name").toString();
-		app.vrsion = o.value("version").toString();
-		app.installPath = o.value("install_path").toString();
-		app.launcherCommand = o.value("launcher_command").toString();
-		app.sourceFile = o.value("source_file").toString();
-		app.installMethod = o.value("install_method").toString();
-		app.installDate = o.value("install_data").toString();
-		app.iconName = o.value("icon_name").toString();
+QTextStream in(&f);
+		while (!in.atEnd()) {
+			QString line = in.readLine().trimmed();
+			if (line.isEmpty() || line.startsWith('#')) continue;
+			const int eq = line.indexOf('=');
+			if (eq <= 0) continue;
+			const QString key = line.left(eq).trimmed();
+			QString val = line.mid(eq+1).trimmed();
+			if (val.size() >= 2 && val.startsWith('"') && val.endsWith('"'))
+				 val = val.mid(1,val.size()-2);
+
+			if (key == QLatin1String("NAME")) app.name = val;
+			else if (key == QLatin1String("VERSION")) app.version = val;
+			else if (key == QLatin1String("INSTALL_METHOD")) app.installMethod = val;
+			else if (key == QLatin1String("INSTALL_PATH")) app.installPath = val;
+			else if (key == QLatin1String("LAUNCHER_COMMAND")) app.launcherCommand = val;
+			else if (key == QLatin1String("ICON_NAME")) app.iconName = val;
+			else if (key == QLatin1String("INSTALL_DATE")) app.installDate = val;
+		}
+
+		app.sourceFile =fname; 
 		app.metadataFile = d.filePath(fname);
-		if (app.isVaid())
+		if (app.isValid())
 			result.append(app);
 	}
 	return result;
@@ -475,12 +484,12 @@ QList<CustomApp> ContainerBackend::listCustomApps(const QString &jail) const
 
 void ContainerBackend::upgradePackages(const QString &jail)
 {
-	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps upgrade '%1'").arg(jail);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps upgrade '%1'; echo; echo 'Press Enter to close...'; read _").arg(jail);
 
 	runInTerminal(tr("Upgrading packages in %1").arg(jail), QStringLiteral("/usr/local/bin/xfce4-terminal", { QStringLiteral("--title"), tr("Upgrade: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
-void ContainerBackend::installPackage(const QString 245jail, const QString 245package)
+void ContainerBackend::installPackage(const QString &jail, const QString &package)
 {
 	// FreeBSD packages names are alphanumeric plus a small set of punctuation.
 	// Validate to prevent command injection.
@@ -490,33 +499,30 @@ void ContainerBackend::installPackage(const QString 245jail, const QString 245pa
 		return;
 	}
 
-	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps install '%1' '%2'").arg(jail, package);
+	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps install '%1' '%2'; echo; echo 'Press Enter to close...'; read _").arg(jail, package);
 
 	runInTerminal(tr("Installing %1 in %2").arg(package, jail), QStringLiteral("/usr/local/bin/xfce4-terminal"), { QStringLiteral("--title"), tr("Install: %1").arg(jail),QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
-void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType, const QString e5launcherMode)
-
+void ContainerBackend::installFromFile(const QString &jail, const QString &file, const QString &detectedType, const QString &launcherMode)
+{
 	const QString typeKey = detectedType.section(':', 0, 0);
-i
+
 	const bool interactive = (typeKey == QLatin1String("windows-installer") || typeKey == QLatin1String("linux-installer"));
+	const QString modeStr = typeKey.contains(QLatin1String("portable")) ? QStringLiteral("portable") : QStringLiteral("installer");
+	const QStringList pkArgs ={QStringLiteral("/usr/local/bin/parishctl"), QStringLiteral("apps"),QStringLiteral("install-file"),jail,file, QStringLiteral("--mode=%1").arg(eis), QStringLiteral("--launcher=%1").arg(launcherMode)};
 
-	const QStringList cliArgs = {"apps","install-file",jail,file, QStringLiteral("--mode=%1").arg(typeKey.contains("portable") ? "portable" : "installer"), QStringLiteral("--launcher=%1").arg(launcherMode)};
-
-	QStringList fullArgs;
-	fullArgs << QStringLiteral("/usr/local/bin/pkexec ") << args;
+	const QString fileName = QFileInfo(file).fileName();
 
 	if (interactive) {
 		const QString script = QStringLiteral(
-			"/usr/local/bin/pkexec ")
-			+ fullArgs.join(' ')
-			+ "echo; echo 'Press Enter to close'; read _";
-		runInTerminal(tr"Installing %1").arg(QFileInfo(file).fileName()),
-			"/usr/local/bin/xfce4-terminal", { "-x", "sh", "-c", script });
+			"/usr/local/bin/pkexec "
+			"echo; echo 'Press Enter to close'; read _").arg(pkArgs.join(' '));
+		runInTerminal(tr("Installing %1").arg(fileName),
+			QStringLiteral("/usr/local/bin/xfce4-terminal", {QStringLiteral("--title"),tr("Install: %1").arg(fileName), QStringLiteral("--geometry"), QStringLiteral("100x30"),  QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 	}
 	else {
-		emit installRequested(tr("Installing %1").arg(QFileInfo(file).fileName()), QStringList{ "/usr/local/bin/pkexec" + fullArgs);
-	}
+		emit installRequested(tr("Installing %1").arg(fileName), QStringLiteral("/usr/local/bin/pkexec"),pkArgs});
 }
 
 void ContainerBackend::removePackage(const QString &jail, const QString &package) {
@@ -530,7 +536,7 @@ void ContainerBackend::removePackage(const QString &jail, const QString &package
 
 	const QString script = QStringLiteral("/usr/local/bin/pkexec /usr/local/bin/parishctl apps remove '%1' '%2'").arg(jail, package);
 
-	runInTerminal(tr("Removing %1 from %2").arg(package, jail), QStringLiteral("/usr/local/bin/xfce4-terminal"), { QStringLiteral("--title"),tr("Remove: %1").arg(jail) QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
+	runInTerminal(tr("Removing %1 from %2").arg(package, jail), QStringLiteral("/usr/local/bin/xfce4-terminal"), { QStringLiteral("--title"),tr("Remove: %1").arg(jail), QStringLiteral("--geometry"), QStringLiteral("100x28"), QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), script });
 }
 
 void ContainerBackend::removeCustomApp(const QString &jail, const QString &appName) {
@@ -542,19 +548,29 @@ void ContainerBackend::removeCustomApp(const QString &jail, const QString &appNa
 		return;
 	}
 
-	for (const QString &name : d.entryList({ "*.json" }, QDir::Files)) {
+	for (const QString &fname : d.entryList({ "*.conf" }, QDir::Files)) {
 		QFile f(d.filePath(fname));
-		if (!f.open(QIODevice::ReadOnly)) continue;
-		const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+		if (!f.open(QIODevice::ReadOnly | QUIODevice::Text)) continue;
+		QTextStream in(&f);
+		while (!in.atEnd()) {
+			QString line = in.readLine().trimmed();
+			if (line.startsWith("NAME="))) {
+				metaName = line.mid(5);
+				if(metaName.startsWith('"') && metaName.endsWidth('"'))
+					metaName = metaName.mid(1,metaName.size()-2);
+				break;
+				}
+			}
+		}
 		f.close();
-		if (!doc.isObject()) continue;
-		if (doc.object().value("name").toString() != appName) continue;
 
-		if (QFile::remove(d.filePath(fname))) {
-			emit operationFinished(tr("Removed %1 metadata").arg(appName), true, QString());
+		if (metaName != appName)
+			continue;
+		if (QFIle::remove(d.filePath(fname))) {
+			emit operationFinished(tr("Rmoved %1").arg(appName), true, QString());
 		}
 		else {
-			emit operationFinished(tr("Removed %1").arg(appName), false, tr("Cannot delete %1").arg(f.fileName()));
+			emit operationFinished(tr("Remove %1").arg(appName), false, tr("Cannot delete %1").arg(fname));
 		}
 		return;
 	}

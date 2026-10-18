@@ -40,17 +40,18 @@ public:
 
 	QList<PackageInfo> listPackages(const QString &jail, QString *errorOut = nullptr) const;
 	QList<CustomApp> listCustomApps(const QString &jail) const;
-	void updatePackages(const QString &jail);
+	void upgradePackages(const QString &jail);
 	void installPackage(const QString &jail, const QString &package);
 	void installFromFile(const QString &jail, const QString &file, const QString &detectedType);
 	void removePackage(const QString &jail, const QString &package);
 	void removeCustomApp(const QString &jail, const QString &appName);
+	void setLauncherCommand(const QString &jail, const QString &appName, const QStringList &command);
 signals:
-
 	void operationStarted(const QString &description);
 	void operationFinished(const QString &description, bool success, const QString &errorMessage);
 	void terminalLaunched(const QString &description);
 	void terminalClosed(const QString &descrpition);
+	void installRequested(const QString &title, const QString &program, const QStringList &args);
 
 private:
 	void runParishctl(const QString &description, const QStringList &args);
