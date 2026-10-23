@@ -1,6 +1,0 @@
-# ninja log v7
-7	13081	1792576796031146000	parish-manager_autogen/timestamp	eb2efdb67a2c0c5f
-7	13081	1792576796031146000	parish-manager_autogen/mocs_compilation.cpp	eb2efdb67a2c0c5f
-7	13081	1792576796031146000	/root/parishbsd/parishbsd-container-manager/build/parish-manager_autogen/timestamp	eb2efdb67a2c0c5f
-7	13081	1792576796031146000	/root/parishbsd/parishbsd-container-manager/build/parish-manager_autogen/mocs_compilation.cpp	eb2efdb67a2c0c5f
-13095	46858	1792576796072449000	CMakeFiles/parish-manager.dir/src/main.cpp.o	4de4c0ce4d1d6e6a
