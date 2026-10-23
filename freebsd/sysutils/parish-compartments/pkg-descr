@@ -1,7 +1,0 @@
-ParishBSD Container Manager
-
-A graphical application for managing ParishBSD containers (jails).
-Create, start, stop, and destroy containers. Manage vaults and
-lock/unlock encrypted storage. Install applications into containers.
-
-Part of the ParishBSD project.
