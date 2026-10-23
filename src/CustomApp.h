@@ -1,4 +1,4 @@
-#pragmaa once
+#pragma once
 #include <QString>
 
 struct CustomApp {
@@ -14,4 +14,4 @@ struct CustomApp {
 	QString metadataFile;
 
 	bool isValid() const { return !name.isEmpty(); }
-}
+};

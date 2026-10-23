@@ -16,7 +16,7 @@ class ContainerModel : public QAbstractTableModel
 public:
 	enum Column {
 		IconColumn = 0,
-		NameColumn
+		NameColumn,
 		KindColumn,
 		StateColumn,
 		TemplateColumn,
