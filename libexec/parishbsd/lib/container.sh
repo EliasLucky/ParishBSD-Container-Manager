@@ -203,10 +203,11 @@ EOF
             || { printf 'parishctl: failed to start "%s"\n' "$_name" >&2; return 1; }
     fi
 
-    # Post-condition (P5/A8): start reported success; verify state.
+    # start reported success; verify state.
     _state_after="$(parish_jail_state "$_name")"
     case "$_state_after" in
         running|running-other-contained)
+            printf 'Container "%s" started.\n' "$_name"
             return 0
             ;;
         containing|contained|contained-but-running|containment-failed|stopped-maybe-contained)
