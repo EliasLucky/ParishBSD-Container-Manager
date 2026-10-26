@@ -1,88 +1,139 @@
 #!/bin/sh
-# parish-app-create-launcher  create .desktop launchers for an app
-# or a native FreeBSD package.
+# parish-app-create-launcher  create .desktop launchers for an app.
 #
 # Called by:
 #   - parish-apps install-file (after successful install)
 #   - parish-apps pkg-launcher (from GUI)
 #   - parish-apps create-launcher (from CLI)
 #
-# Runs as the invoking user (writes to $HOME). No root needed.
+# Runs as the invoking user. If invoked via pkexec/sudo (from parishctl),
+# the target user's home directory is resolved from PKEXEC_UID/SUDO_UID
+# so the .desktop lands where the user will see it (B7=c).
+#
+# Creates a .desktop file whose Exec line is:
+#   /usr/local/bin/parish-app-launch <jail> <app-name>
+# The .desktop contains no jail-originated text (S4 fix). The actual
+# launch command is read from the metadata at launch time by
+# parish-app-launch.
 
 set -eu
+umask 077
+
+. /usr/local/libexec/parishbsd/lib/validate.sh
 
 jail="${1:?usage: parish-app-create-launcher <jail> <name> [menu|desktop|both]}"
 name="${2:?usage: parish-app-create-launcher <jail> <name> [where]}"
 where="${3:-menu}"
 
-# H1: strict validation
-validate_name() {
-    [ -n "$1" ] || { echo "ERROR: empty name" >&2; exit 1; }
-    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' \
-        || { echo "ERROR: invalid name: '$1'" >&2; exit 1; }
+validate_jail_name_existing "$jail" || {
+    printf 'parish-app-create-launcher: invalid jail name\n' >&2
+    exit 4
 }
-validate_name "$jail"
-validate_name "$name"
 
-apps_dir="$HOME/.local/share/applications"
-desk_dir="$HOME/Desktop"
-mkdir -p "$apps_dir" "$desk_dir"
+case "$name" in
+    ''|*/*|*..*)
+        printf 'parish-app-create-launcher: invalid app name: %s\n' "$name" >&2
+        exit 4
+        ;;
+esac
 
-safe_name="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9._-]/_/g')"
+# --- Resolve target user's home (B7=c) ---
 
-# H2: escape for .desktop values
+if [ -n "${PKEXEC_UID:-}" ]; then
+    target_uid="$PKEXEC_UID"
+elif [ -n "${SUDO_UID:-}" ]; then
+    target_uid="$SUDO_UID"
+else
+    target_uid="$(id -u)"
+fi
+
+target_home="$(pw usershow -u "$target_uid" -7 2>/dev/null | cut -d: -f9)"
+if [ -z "$target_home" ] || [ ! -d "$target_home" ]; then
+    printf 'parish-app-create-launcher: cannot determine home directory for uid %s\n' "$target_uid" >&2
+    exit 4
+fi
+
+apps_dir="$target_home/.local/share/applications"
+desk_dir="$target_home/Desktop"
+
+mkdir -p "$apps_dir" 2>/dev/null || true
+if [ -d "$apps_dir" ] && [ "$(stat -f %u "$apps_dir" 2>/dev/null)" != "$target_uid" ]; then
+    chown "$target_uid" "$apps_dir" 2>/dev/null || true
+fi
+
+if [ "$where" = "desktop" ] || [ "$where" = "both" ]; then
+    mkdir -p "$desk_dir" 2>/dev/null || true
+    if [ -d "$desk_dir" ] && [ "$(stat -f %u "$desk_dir" 2>/dev/null)" != "$target_uid" ]; then
+        chown "$target_uid" "$desk_dir" 2>/dev/null || true
+    fi
+fi
+
+safe_slug="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9._-]/_/g')"
+[ -n "$safe_slug" ] || safe_slug="app"
+
 escape_desktop() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 create_one() {
-    display="$1"
-    command="$2"
-    icon="$3"
-    slug="$4"
+    _display="$1"
+    _icon="$2"
 
-    # H2: escape Name and Exec
-    esc_display="$(escape_desktop "$display")"
-    esc_command="$(escape_desktop "$command")"
-    esc_icon="$(escape_desktop "$icon")"
+    esc_display="$(escape_desktop "$_display")"
+    esc_icon="$(escape_desktop "$_icon")"
+    esc_jail="$(escape_desktop "$jail")"
+    esc_name="$(escape_desktop "$name")"
 
+    # No jail-originated text on the Exec line. Only the app-name
+    # argument (a user-chosen identifier) reaches parish-app-launch.
+    # The actual launch command lives in the metadata and is resolved
+    # by parish-app-launch at launch time.
     entry="[Desktop Entry]
 Type=Application
 Name=$esc_display
-Comment=ParishBSD application in compartment '$jail'
-Exec=/usr/local/parishbsd/parishctl/parish-jail-run $jail $esc_command
+Comment=ParishBSD application in compartment $esc_jail
+Exec=/usr/local/bin/parish-app-launch \"$esc_jail\" \"$esc_name\"
+TryExec=/usr/local/bin/parish-app-launch
 Icon=$esc_icon
 Terminal=false
 Categories=Application;
 StartupNotify=true"
 
+    _install_one() {
+        _target="$1"
+        _mode="$2"
+        _tmp="${_target}.tmp.$$"
+        printf '%s\n' "$entry" > "$_tmp"
+        chmod "$_mode" "$_tmp"
+        if [ "$(id -u)" -eq 0 ] && [ "$target_uid" != "0" ]; then
+            chown "$target_uid" "$_tmp" 2>/dev/null || true
+        fi
+        mv -f "$_tmp" "$_target"
+        if [ "$(id -u)" -eq 0 ] && [ "$target_uid" != "0" ]; then
+            chown "$target_uid" "$_target" 2>/dev/null || true
+        fi
+        printf 'Created: %s\n' "$_target"
+    }
+
     if [ "$where" = "menu" ] || [ "$where" = "both" ]; then
-        target="$apps_dir/parish-$jail-$slug.desktop"
-        tmp="${target}.tmp.$$"
-        printf '%s\n' "$entry" > "$tmp"
-        chmod 0755 "$tmp"
-        mv -f "$tmp" "$target"
-        printf 'Created: %s\n' "$target"
+        _install_one "$apps_dir/parish-$jail-$safe_slug.desktop" 0644
     fi
     if [ "$where" = "desktop" ] || [ "$where" = "both" ]; then
-        target="$desk_dir/parish-$jail-$slug.desktop"
-        tmp="${target}.tmp.$$"
-        printf '%s\n' "$entry" > "$tmp"
-        chmod 0755 "$tmp"
-        mv -f "$tmp" "$target"
-        printf 'Created: %s\n' "$target"
+        _install_one "$desk_dir/parish-$jail-$safe_slug.desktop" 0755
     fi
 }
 
-# Case 1: custom app metadata exists.
+# --- Case 1: custom app metadata exists ---
+
 meta_dir="/usr/local/jails/app/$jail/usr/local/etc/parishbsd/custom-apps"
 meta_file=""
+
 if [ -d "$meta_dir" ]; then
     for f in "$meta_dir"/*.conf; do
         [ -f "$f" ] || continue
-        [ ! -L "$f" ] || continue   # H3: reject symlinks
-        n="$(awk -F'"' '/^NAME=/{print $2; exit}' "$f")"
-        if [ "$n" = "$name" ]; then
+        [ ! -L "$f" ] || continue
+        _n="$(awk -F'"' '/^NAME=/{print $2; exit}' "$f")"
+        if [ "$_n" = "$name" ]; then
             meta_file="$f"
             break
         fi
@@ -90,32 +141,53 @@ if [ -d "$meta_dir" ]; then
 fi
 
 if [ -n "$meta_file" ]; then
-    # Parse metadata safely instead of sourcing it
-    NAME="$(awk -F'"' '/^NAME=/{print $2; exit}' "$meta_file")"
-    LAUNCHER_COMMAND="$(awk -F'"' '/^LAUNCHER_COMMAND=/{print $2; exit}' "$meta_file")"
-    ICON_NAME="$(awk -F'"' '/^ICON_NAME=/{print $2; exit}' "$meta_file")"
-    [ -n "$LAUNCHER_COMMAND" ] || { echo "ERROR: LAUNCHER_COMMAND missing in $meta_file" >&2; exit 1; }
-    create_one "${NAME:-$name}" "$LAUNCHER_COMMAND" "${ICON_NAME:-parish-container-app}" "$safe_name"
+    _display="$(awk -F'"' '/^NAME=/{print $2; exit}' "$meta_file")"
+    _icon="$(awk -F'"' '/^ICON_NAME=/{print $2; exit}' "$meta_file")"
+    create_one "${_display:-$name}" "${_icon:-parish-container-app}"
     update-desktop-database "$apps_dir" 2>/dev/null || true
     exit 0
 fi
 
-# Case 2: native package  discover .desktop files inside the jail.
-found=0
-for d in $(jexec "$jail" sh -c "
-    for f in /usr/local/share/applications/*.desktop; do
-        [ -f \"\$f\" ] || continue
-        bin=\$(grep '^Exec=' \"\$f\" | head -1 | cut -d= -f2 | awk '{print \$1}')
-        [ -n \"\$bin\" ] || continue
-        owner=\$(pkg which -q \"\$bin\" 2>/dev/null | awk '{print \$1}')
-        [ \"\$owner\" = '$name' ] && echo \"\$f\"
-    done
-"); do
-    display="$(jexec "$jail" sh -c "grep '^Name=' '$d' | head -1 | cut -d= -f2-")"
-    command="$(jexec "$jail" sh -c "grep '^Exec=' '$d' | head -1 | cut -d= -f2-")"
-    icon="$(jexec "$jail" sh -c "grep '^Icon=' '$d' | head -1 | cut -d= -f2-")"
-    create_one "$display" "$command" "$icon" "$safe_name"
-    found=1
-done
+# --- Case 2: native package ---
+#
+# The inner sh script is passed as a single argument (single-quoted at the outer level), with $name reaching the inner sh as $1 via
+# the "sh -c '...' _ \"$name\"" argv passthrough idiom. The value is never interpolated into the script text.
+#
+# Inside the inner script, awk's `$1` field reference is written as `\$1` so the outer single quotes preserve the backslash; the inner
+# sh parses the backslash-dollar inside double quotes as a literal dollar, and awk sees `$1`.
 
-[ "$found" -eq 1 ] || { echo "ERROR: no launcher source found for '$name' in '$jail'" >&2; exit 1; }
+_listing="$(jexec "$jail" sh -c '
+    name="$1"
+    for f in /usr/local/share/applications/*.desktop; do
+        [ -f "$f" ] || continue
+        bin=$(grep "^Exec=" "$f" | head -1 | cut -d= -f2 | awk "{print \$1}")
+        [ -n "$bin" ] || continue
+        owner=$(pkg which -q "$bin" 2>/dev/null | awk "{print \$1}")
+        [ "$owner" = "$name" ] && echo "$f"
+    done
+' _ "$name" 2>/dev/null)"
+
+if [ -z "$_listing" ]; then
+    printf 'parish-app-create-launcher: no launcher source found for "%s" in "%s"\n' "$name" "$jail" >&2
+    exit 1
+fi
+
+found=0
+while IFS= read -r _desktop; do
+    [ -n "$_desktop" ] || continue
+    # Same argv passthrough for the two reads below.
+    _display="$(jexec "$jail" sh -c 'grep "^Name=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
+    _icon="$(jexec "$jail" sh -c 'grep "^Icon=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
+    create_one "${_display:-$name}" "${_icon:-parish-container-app}"
+    found=1
+done <<LAUNCHER_LIST_END
+$_listing
+LAUNCHER_LIST_END
+
+if [ "$found" -eq 0 ]; then
+    printf 'parish-app-create-launcher: no launcher created\n' >&2
+    exit 1
+fi
+
+update-desktop-database "$apps_dir" 2>/dev/null || true
+exit 0
