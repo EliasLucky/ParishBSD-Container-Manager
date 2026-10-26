@@ -1,1 +1,31 @@
-P
+#!/bin/sh
+# parishctl-unschedule-lock - remove a scheduled lock.
+#
+# Runs via pkexec. Polkit action .unschedule-lock at auth_admin_keep.
+
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl unschedule-lock <vault>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+cfg=/usr/local/etc/parishbsd/lock-schedules
+
+if [ ! -f "$cfg" ] || \
+   ! awk -v n="$name" '$1 "" == n {found=1; exit} END{exit !found}' "$cfg"; then
+    printf 'parishctl: no schedule exists for "%s"\n' "$name" >&2
+    exit 1
+fi
+
+# $1 "" coercion preserves string comparison.
+awk -v n="$name" '$1 "" != n' "$cfg" > "$cfg.tmp"
+mv "$cfg.tmp" "$cfg"
+
+printf 'Removed schedule for "%s".\n' "$name"
