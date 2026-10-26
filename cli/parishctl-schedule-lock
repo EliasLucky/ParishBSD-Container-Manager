@@ -1,2 +1,54 @@
 #!/bin/sh
+# parishctl-schedule-lock - add or update a scheduled lock for a vault.
+#
+# Runs via pkexec. Polkit action .schedule-lock at auth_admin_keep
+# (routine admin config; easily reversed by unschedule-lock).
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+
+if [ "$#" -ne 2 ]; then
+    printf 'usage: parishctl schedule-lock <vault> <HH:MM>\n' >&2
+    exit 2
+fi
+
+name="$1"
+time_in="$2"
+
+validate_jail_name_existing "$name" || exit 2
+
+jailroot="$(container_path "$name")" || {
+    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
+    exit 1
+}
+
+personality="$(container_personality "$jailroot")"
+container_is_vault "$personality" || {
+    printf 'parishctl: "%s" is not a vault (kind: %s)\n' \
+        "$name" "$(container_kind "$personality")" >&2
+    exit 1
+}
+
+case "$time_in" in
+    [0-2][0-9]:[0-5][0-9]) : ;;
+    *) printf 'parishctl: time must be in 24-hour HH:MM format (e.g. 17:30)\n' >&2; exit 2 ;;
+esac
+
+cfg=/usr/local/etc/parishbsd/lock-schedules
+install -d "$(dirname "$cfg")"
+
+if [ -f "$cfg" ]; then
+    # S7 fix: $1 "" forces string comparison in awk, not numeric.
+    awk -v n="$name" '$1 "" != n' "$cfg" > "$cfg.tmp" || true
+    mv "$cfg.tmp" "$cfg"
+else
+    printf '# Vault lock schedules. Format: <vault-name> <HH:MM>\n' > "$cfg"
+fi
+printf '%s %s\n' "$name" "$time_in" >> "$cfg"
+
+printf 'Vault "%s" will be locked daily at %s.\n\n' "$name" "$time_in"
+printf 'The idle-lock daemon reads this file every minute; no restart needed.\n'
+printf 'To remove the schedule:  pkexec parishctl unschedule-lock %s\n' "$name"
