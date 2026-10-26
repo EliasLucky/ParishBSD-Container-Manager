@@ -1,20 +1,27 @@
 #!/bin/sh
-# parish-app-create-launcher  create .desktop launchers for an app.
+# parish-app-create-launcher — create .desktop launchers for an app.
 #
 # Called by:
 #   - parish-apps install-file (after successful install)
 #   - parish-apps pkg-launcher (from GUI)
 #   - parish-apps create-launcher (from CLI)
 #
-# Runs as the invoking user. If invoked via pkexec/sudo (from parishctl),
-# the target user's home directory is resolved from PKEXEC_UID/SUDO_UID
+# Runs as the invoking user, or as root under pkexec/sudo. When invoked
+# as root, the target user's home is resolved from PKEXEC_UID/SUDO_UID
 # so the .desktop lands where the user will see it (B7=c).
 #
-# Creates a .desktop file whose Exec line is:
-#   /usr/local/bin/parish-app-launch <jail> <app-name>
-# The .desktop contains no jail-originated text (S4 fix). The actual
-# launch command is read from the metadata at launch time by
-# parish-app-launch.
+# TWO outputs:
+#   1. Host-side launcher metadata at
+#        /var/db/parishbsd/launchers/<jail>/<name>.conf
+#      root-owned 0644, jail-invisible. This is the ONLY metadata
+#      parish-app-launch reads. It cannot be modified by the jail
+#      (see parish-app-launch's trust model header for the phishing
+#      scenario this prevents).
+#
+#   2. A .desktop file in the user's menu (and optionally Desktop) with
+#        Exec=/usr/local/bin/parish-app-launch <jail> <name>
+#      No jail-originated text appears on the Exec line. The .desktop
+#      is a fixed template; only the two validated identifiers differ.
 
 set -eu
 umask 077
@@ -25,17 +32,8 @@ jail="${1:?usage: parish-app-create-launcher <jail> <name> [menu|desktop|both]}"
 name="${2:?usage: parish-app-create-launcher <jail> <name> [where]}"
 where="${3:-menu}"
 
-validate_jail_name_existing "$jail" || {
-    printf 'parish-app-create-launcher: invalid jail name\n' >&2
-    exit 4
-}
-
-case "$name" in
-    ''|*/*|*..*)
-        printf 'parish-app-create-launcher: invalid app name: %s\n' "$name" >&2
-        exit 4
-        ;;
-esac
+validate_jail_name_existing "$jail" || exit 4
+validate_app_name "$name" || exit 4
 
 # --- Resolve target user's home (B7=c) ---
 
@@ -53,108 +51,26 @@ if [ -z "$target_home" ] || [ ! -d "$target_home" ]; then
     exit 4
 fi
 
-apps_dir="$target_home/.local/share/applications"
-desk_dir="$target_home/Desktop"
+# --- Case 1 gate: refuse custom-app metadata ---
 
-mkdir -p "$apps_dir" 2>/dev/null || true
-if [ -d "$apps_dir" ] && [ "$(stat -f %u "$apps_dir" 2>/dev/null)" != "$target_uid" ]; then
-    chown "$target_uid" "$apps_dir" 2>/dev/null || true
-fi
-
-if [ "$where" = "desktop" ] || [ "$where" = "both" ]; then
-    mkdir -p "$desk_dir" 2>/dev/null || true
-    if [ -d "$desk_dir" ] && [ "$(stat -f %u "$desk_dir" 2>/dev/null)" != "$target_uid" ]; then
-        chown "$target_uid" "$desk_dir" 2>/dev/null || true
-    fi
-fi
-
-safe_slug="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9._-]/_/g')"
-[ -n "$safe_slug" ] || safe_slug="app"
-
-escape_desktop() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-create_one() {
-    _display="$1"
-    _icon="$2"
-
-    esc_display="$(escape_desktop "$_display")"
-    esc_icon="$(escape_desktop "$_icon")"
-    esc_jail="$(escape_desktop "$jail")"
-    esc_name="$(escape_desktop "$name")"
-
-    # No jail-originated text on the Exec line. Only the app-name
-    # argument (a user-chosen identifier) reaches parish-app-launch.
-    # The actual launch command lives in the metadata and is resolved
-    # by parish-app-launch at launch time.
-    entry="[Desktop Entry]
-Type=Application
-Name=$esc_display
-Comment=ParishBSD application in compartment $esc_jail
-Exec=/usr/local/bin/parish-app-launch \"$esc_jail\" \"$esc_name\"
-TryExec=/usr/local/bin/parish-app-launch
-Icon=$esc_icon
-Terminal=false
-Categories=Application;
-StartupNotify=true"
-
-    _install_one() {
-        _target="$1"
-        _mode="$2"
-        _tmp="${_target}.tmp.$$"
-        printf '%s\n' "$entry" > "$_tmp"
-        chmod "$_mode" "$_tmp"
-        if [ "$(id -u)" -eq 0 ] && [ "$target_uid" != "0" ]; then
-            chown "$target_uid" "$_tmp" 2>/dev/null || true
-        fi
-        mv -f "$_tmp" "$_target"
-        if [ "$(id -u)" -eq 0 ] && [ "$target_uid" != "0" ]; then
-            chown "$target_uid" "$_target" 2>/dev/null || true
-        fi
-        printf 'Created: %s\n' "$_target"
-    }
-
-    if [ "$where" = "menu" ] || [ "$where" = "both" ]; then
-        _install_one "$apps_dir/parish-$jail-$safe_slug.desktop" 0644
-    fi
-    if [ "$where" = "desktop" ] || [ "$where" = "both" ]; then
-        _install_one "$desk_dir/parish-$jail-$safe_slug.desktop" 0755
-    fi
-}
-
-# --- Case 1: custom app metadata exists ---
-
-meta_dir="/usr/local/jails/app/$jail/usr/local/etc/parishbsd/custom-apps"
-meta_file=""
-
-if [ -d "$meta_dir" ]; then
-    for f in "$meta_dir"/*.conf; do
+for _tier in app vault containers; do
+    _meta_dir="/usr/local/jails/${_tier}/${jail}/usr/local/etc/parishbsd/custom-apps"
+    [ -d "$_meta_dir" ] || continue
+    [ ! -L "$_meta_dir" ] || continue
+    for f in "$_meta_dir"/*.conf; do
         [ -f "$f" ] || continue
         [ ! -L "$f" ] || continue
         _n="$(awk -F'"' '/^NAME=/{print $2; exit}' "$f")"
         if [ "$_n" = "$name" ]; then
-            meta_file="$f"
-            break
+            printf 'parish-app-create-launcher: application "%s" in "%s" was installed by an older version.\n' "$name" "$jail" >&2
+            printf 'Its launcher command is stored in a format that cannot be safely used.\n' >&2
+            printf 'Reinstall the application from the Compartments Manager to create a working launcher.\n' >&2
+            exit 1
         fi
     done
-fi
+done
 
-if [ -n "$meta_file" ]; then
-    _display="$(awk -F'"' '/^NAME=/{print $2; exit}' "$meta_file")"
-    _icon="$(awk -F'"' '/^ICON_NAME=/{print $2; exit}' "$meta_file")"
-    create_one "${_display:-$name}" "${_icon:-parish-container-app}"
-    update-desktop-database "$apps_dir" 2>/dev/null || true
-    exit 0
-fi
-
-# --- Case 2: native package ---
-#
-# The inner sh script is passed as a single argument (single-quoted at the outer level), with $name reaching the inner sh as $1 via
-# the "sh -c '...' _ \"$name\"" argv passthrough idiom. The value is never interpolated into the script text.
-#
-# Inside the inner script, awk's `$1` field reference is written as `\$1` so the outer single quotes preserve the backslash; the inner
-# sh parses the backslash-dollar inside double quotes as a literal dollar, and awk sees `$1`.
+# --- Case 2: native package (find .desktop inside jail) ---
 
 _listing="$(jexec "$jail" sh -c '
     name="$1"
@@ -172,22 +88,167 @@ if [ -z "$_listing" ]; then
     exit 1
 fi
 
-found=0
-while IFS= read -r _desktop; do
-    [ -n "$_desktop" ] || continue
-    # Same argv passthrough for the two reads below.
-    _display="$(jexec "$jail" sh -c 'grep "^Name=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
-    _icon="$(jexec "$jail" sh -c 'grep "^Icon=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
-    create_one "${_display:-$name}" "${_icon:-parish-container-app}"
-    found=1
-done <<LAUNCHER_LIST_END
-$_listing
-LAUNCHER_LIST_END
+# Take the first .desktop. Multiple .desktop files per package is rare
+# and would need per-app selection UI; out of Phase 1 scope.
+_desktop="$(printf '%s\n' "$_listing" | head -1)"
 
-if [ "$found" -eq 0 ]; then
-    printf 'parish-app-create-launcher: no launcher created\n' >&2
+_display_out="$(jexec "$jail" sh -c 'grep "^Name=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
+_icon_out="$(jexec "$jail" sh -c 'grep "^Icon=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
+_exec_out="$(jexec "$jail" sh -c 'grep "^Exec=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop" 2>/dev/null)"
+
+if [ -z "$_exec_out" ]; then
+    printf 'parish-app-create-launcher: the .desktop file for "%s" has no Exec= line\n' "$name" >&2
     exit 1
 fi
 
+# Strip .desktop field codes (%f, %U, %i, %c, %k, %%) — they are the
+# spec's mechanism for the launcher to pass filenames; parish-app-launch
+# does not use them.
+_exec_clean="$(printf '%s' "$_exec_out" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
+
+# Build argv[n] from the cleaned Exec=. Word-splitting here is
+# acceptable because:
+#   (a) it happens ONCE, at creation time, not at every launch;
+#   (b) the result is written host-side (jail-invisible), so the jail
+#       cannot retarget it after;
+#   (c) it matches the .desktop spec's own Exec= parsing rules for
+#       the common case (simple whitespace-separated tokens);
+#   (d) a package whose Exec= has embedded quotes or escapes will
+#       produce a broken launcher (not an injection — the argv goes
+#       to `pkexec -- parish-jail-run` which does no interpretation).
+#       We do not build a general parser; the case is rare enough
+#       that fixing the specific app is better than a parser we
+#       cannot test exhaustively.
+_i=0
+_argv_lines=""
+for _arg in $_exec_clean; do
+    _argv_lines="${_argv_lines}ARGV[${_i}]=\"${_arg}\"
+"
+    _i=$((_i + 1))
+done
+
+if [ -z "$_argv_lines" ]; then
+    printf 'parish-app-create-launcher: no argv could be determined for "%s"\n' "$name" >&2
+    exit 1
+fi
+
+# --- Write host-side launcher metadata (B7=(iii)-no-fallback) ---
+
+if ! install -d -m 0755 -o root -g wheel /var/db/parishbsd/launchers 2>/dev/null; then
+    if [ ! -d /var/db/parishbsd/launchers ]; then
+        printf 'parish-app-create-launcher: cannot create /var/db/parishbsd/launchers\n' >&2
+        printf 'This directory should be created by the parishbsd-compartments package.\n' >&2
+        printf 'Check with: ls -ld /var/db/parishbsd /var/db/parishbsd/launchers\n' >&2
+        exit 1
+    fi
+fi
+
+store_dir="/var/db/parishbsd/launchers/${jail}"
+if ! install -d -m 0755 -o root -g wheel "$store_dir" 2>/dev/null; then
+    if [ ! -d "$store_dir" ]; then
+        printf 'parish-app-create-launcher: cannot create %s\n' "$store_dir" >&2
+        exit 1
+    fi
+fi
+
+launcher_file="${store_dir}/${name}.conf"
+launcher_tmp="${launcher_file}.tmp.$$"
+
+{
+    printf '# ParishBSD launcher metadata — written by parish-app-create-launcher\n'
+    printf '# Do not edit; reinstall the application from the Compartments Manager\n'
+    printf '# to regenerate.\n'
+    printf 'jail=%s\n' "$jail"
+    printf 'slug=%s\n' "$name"
+    printf 'written_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s' "$_argv_lines"
+} > "$launcher_tmp"
+
+chmod 0644 "$launcher_tmp"
+if [ "$(id -u)" -eq 0 ]; then
+    if ! chown root:wheel "$launcher_tmp" 2>/dev/null; then
+        printf 'parish-app-create-launcher: cannot set owner root:wheel on %s\n' "$launcher_tmp" >&2
+        rm -f "$launcher_tmp"
+        exit 1
+    fi
+else
+    printf 'parish-app-create-launcher: warning: running as uid %s; launcher metadata will be user-owned and readable only by that user\n' "$(id -u)" >&2
+fi
+
+if ! mv -f "$launcher_tmp" "$launcher_file"; then
+    printf 'parish-app-create-launcher: cannot install %s\n' "$launcher_file" >&2
+    rm -f "$launcher_tmp"
+    exit 1
+fi
+
+# --- Create the .desktop file(s) ---
+
+apps_dir="$target_home/.local/share/applications"
+desk_dir="$target_home/Desktop"
+
+mkdir -p "$apps_dir" 2>/dev/null || true
+if [ -d "$apps_dir" ] && [ "$(stat -f %u "$apps_dir" 2>/dev/null)" != "$target_uid" ]; then
+    chown "$target_uid" "$apps_dir" 2>/dev/null || true
+fi
+
+if [ "$where" = "desktop" ] || [ "$where" = "both" ]; then
+    mkdir -p "$desk_dir" 2>/dev/null || true
+    if [ -d "$desk_dir" ] && [ "$(stat -f %u "$desk_dir" 2>/dev/null)" != "$target_uid" ]; then
+        chown "$target_uid" "$desk_dir" 2>/dev/null || true
+    fi
+fi
+
+safe_slug="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9._+-]/_/g')"
+[ -n "$safe_slug" ] || safe_slug="app"
+
+escape_desktop() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+esc_display="$(escape_desktop "${_display_out:-$name}")"
+esc_icon="$(escape_desktop "${_icon_out:-parish-container-app}")"
+esc_jail="$(escape_desktop "$jail")"
+esc_name="$(escape_desktop "$name")"
+
+entry="[Desktop Entry]
+Type=Application
+Name=$esc_display
+Comment=ParishBSD application in compartment $esc_jail
+Exec=/usr/local/bin/parish-app-launch \"$esc_jail\" \"$esc_name\"
+TryExec=/usr/local/bin/parish-app-launch
+Icon=$esc_icon
+Terminal=false
+Categories=Application;
+StartupNotify=true"
+
+_install_one() {
+    _target="$1"
+    _mode="$2"
+    _tmp="${_target}.tmp.$$"
+    printf '%s\n' "$entry" > "$_tmp"
+    chmod "$_mode" "$_tmp"
+    if [ "$(id -u)" -eq 0 ] && [ "$target_uid" != "0" ]; then
+        if ! chown "$target_uid" "$_tmp" 2>/dev/null; then
+            printf 'parish-app-create-launcher: warning: cannot chown %s to uid %s; file will be root-owned\n' "$_tmp" "$target_uid" >&2
+        fi
+    fi
+    mv -f "$_tmp" "$_target"
+    if [ "$(id -u)" -eq 0 ] && [ "$target_uid" != "0" ]; then
+        if ! chown "$target_uid" "$_target" 2>/dev/null; then
+            printf 'parish-app-create-launcher: warning: cannot chown %s to uid %s\n' "$_target" "$target_uid" >&2
+        fi
+    fi
+    printf 'Created: %s\n' "$_target"
+}
+
+if [ "$where" = "menu" ] || [ "$where" = "both" ]; then
+    _install_one "$apps_dir/parish-$jail-$safe_slug.desktop" 0644
+fi
+if [ "$where" = "desktop" ] || [ "$where" = "both" ]; then
+    _install_one "$desk_dir/parish-$jail-$safe_slug.desktop" 0755
+fi
+
 update-desktop-database "$apps_dir" 2>/dev/null || true
+
+printf 'Launcher metadata written to: %s\n' "$launcher_file"
 exit 0
