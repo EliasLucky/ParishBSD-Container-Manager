@@ -1,2 +1,55 @@
 #!/bin/sh
+# parishctl-lock  lock a vault (stop jail, unmount, unload key).
+#
+# Runs via pkexec. Polkit action .lock at auth_admin_keep. Locking
+# is reversible by unlock, which prompts every time (auth_admin).
+# The 5-minute cache on .lock does not extend the unlock cache.
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+PARISH_SCRIPTS=/usr/local/libexec/parishbsd
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl lock <name>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+jailroot="$(container_path "$name")" || {
+    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
+    exit 1
+}
+
+personality="$(container_personality "$jailroot")"
+container_is_vault "$personality" || {
+    printf 'parishctl: "%s" is not a vault (kind: %s)\n' \
+        "$name" "$(container_kind "$personality")" >&2
+    exit 1
+}
+
+state="$(parish_jail_state "$name")"
+case "$state" in
+    containing|containment-failed|contained-but-running)
+        parish_jail_state_message "$name" "$state" >&2
+        exit 1
+        ;;
+    contained)
+        # Locking a contained vault that is already stopped is a
+        # no-op on the jail side; but the vault may be unlocked.
+        # Refuse: contained state means "do not touch" pending review.
+        parish_jail_state_message "$name" "$state" >&2
+        exit 1
+        ;;
+esac
+
+sh "$PARISH_SCRIPTS/28-lock-vault.sh" "$name" \
+    || { printf 'parishctl: failed to lock "%s"\n' "$name" >&2; exit 1; }
+
+printf 'Vault "%s" is locked.\n' "$name"
