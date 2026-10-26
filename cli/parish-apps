@@ -1,47 +1,74 @@
 #!/bin/sh
-# parish-apps  manage applications in a jail.
+# parish-apps  manage applications in a compartment.
 #
 # Usage:
 #   parish-apps list <jail>
 #   parish-apps install <jail> <package>
 #   parish-apps install-file <jail> <file> [--mode=auto|installer|portable]
-#                                            [--launcher=menu|desktop|both|none]
+#                                           [--launcher=menu|desktop|both|none]
 #   parish-apps remove <jail> <package>
-#   parish-apps remove-custom <jail> <app-name>
+#   parish-apps remove-custom <jail> <app>
 #   parish-apps upgrade <jail> [package]
-#   parish-apps set-launcher <jail> <app-name> <command>
-#   parish-apps launch <jail> <app-name>
-#   parish-apps create-launcher <jail> <name> [menu|desktop|both]
-#   parish-apps pkg-launcher <jail> <package> [menu|desktop|both]
+#   parish-apps launch <jail> <app>
+#   parish-apps create-launcher <jail> <name> [where]
+#   parish-apps pkg-launcher <jail> <package> [where]
+#
+# Runs as root (invoked via pkexec from parishctl-apps-<verb>).
+#
+# LAUNCHER METADATA
+# -----------------
+# Custom applications' launcher metadata lives host-side at
+# /var/db/parishbsd/launchers/<jail>/<slug>.conf (root-owned 0644).
+# The format is a header (jail=, slug=, name=, version=, method=,
+# install_path=, written_at=) followed by ARGV[n]="..." lines.
+#
+# The host-side location is not visible to the jail.
+#
+# Only parish-apps install-file and parish-app-create-launcher write
+# to /var/db/parishbsd/launchers/. Any new writer is a design question
+# requiring review.
+#
+# LEGACY IN-JAIL METADATA
+# -----------------------
+# Pre-rework installs wrote <jailroot>/usr/local/etc/parishbsd/custom-apps/<slug>.conf
+# with a LAUNCHER_COMMAND="..." line. That format cannot be safely
+# migrated (reading the jail-writable file to write host-side metadata
+# would carry the phishing vector forward). Any operation on a
+# pre-rework custom app refuses with an instruction to reinstall.
+# Migration is reinstall.
 
 set -eu
 
 JAILS_DIR="/usr/local/jails"
 EXCHANGE_ROOT="/var/parishbsd/exchange"
-BIN_DIR="/usr/local/parishbsd/parishctl"
+LAUNCHER_STORE="/var/db/parishbsd/launchers"
+PARISH_BIN=/usr/local/bin
+LIBDIR=/usr/local/libexec/parishbsd/lib
+
+. "$LIBDIR/validate.sh"
 
 log() { printf ' %s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-# H1
-validate_jail_name() {
-    [ -n "$1" ] || err "jail name required"
-    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' \
-        || err "invalid jail name: '$1'"
+require_root() {
+    [ "$(id -u)" -eq 0 ] || err "must be run as root (invoke via pkexec)"
 }
 
-require_jail() {
-    validate_jail_name "$1"
-    jls name 2>/dev/null | grep -qx "$1" || err "jail '$1' is not running"
-}
+# --------------------------------------------------------------------
+# Validation
+# --------------------------------------------------------------------
 
-# H2
 validate_package_name() {
+    [ -n "${1-}" ] || err "package name required"
     printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9._+-]+$' \
         || err "invalid package name: '$1'"
 }
 
-# H3
+require_jail() {
+    validate_jail_name_existing "$1"
+    jls name 2>/dev/null | grep -qxF "$1" || err "jail '$1' is not running"
+}
+
 canonical_path() {
     local path="$1" real
     real=$(realpath "$path" 2>/dev/null) || err "cannot resolve: $path"
@@ -49,48 +76,107 @@ canonical_path() {
     echo "$real"
 }
 
-# H4
 safe_meta_filename() {
     printf '%s' "$1" | tr ' /' '__' | sed 's/[^A-Za-z0-9._-]//g'
 }
 
-escape_quotes() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
+# --------------------------------------------------------------------
+# Host-side launcher metadata writer
+# --------------------------------------------------------------------
 
-# =====================================================================
-# Metadata  the .conf format that parish-app-launch and the GUI read
-# =====================================================================
+# write_host_launcher_metadata <jail> <slug> <name> <version> <method> <install_path> <argv0> [argv1 ...]
+#
+# Writes /var/db/parishbsd/launchers/<jail>/<slug>.conf atomically.
+# Rejects ARGV values containing " or \n (either breaks the format the
+# reader expects). Rejects header values containing \n (would create
+# spurious lines).
+write_host_launcher_metadata() {
+    _jail="$1"
+    _slug="$2"
+    _name="$3"
+    _version="$4"
+    _method="$5"
+    _install_path="$6"
+    shift 6
 
-write_metadata() {
-    jail="$1" app="$2" version="$3" method="$4" install_path="$5" launcher_cmd="$6" icon="${7:-parish-container-app}"
-    validate_jail_name "$jail"
-    meta_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
-    mkdir -p "$meta_dir"
-    safe="$(safe_meta_filename "$app")"
-    meta_file="$meta_dir/$safe.conf"
-    tmp="${meta_file}.tmp.$$"
+    [ "$#" -ge 1 ] || err "at least one argv element required"
+
+    validate_jail_name_existing "$_jail"
+    validate_app_name "$_slug" || err "invalid slug: '$_slug'"
+
+    # Reject newlines in header values — would create spurious lines.
+    for _hdr_val in "$_name" "$_version" "$_method" "$_install_path"; do
+        case "$_hdr_val" in
+            *'
+'*) err "launcher metadata value contains a newline; refusing to write" ;;
+        esac
+    done
+
+    _launcher_dir="$LAUNCHER_STORE/$_jail"
+    install -d -m 0755 -o root -g wheel "$LAUNCHER_STORE" 2>/dev/null || true
+    [ -d "$LAUNCHER_STORE" ] || err "cannot create $LAUNCHER_STORE (should be created by the port)"
+    install -d -m 0755 -o root -g wheel "$_launcher_dir" 2>/dev/null || true
+    [ -d "$_launcher_dir" ] || err "cannot create $_launcher_dir"
+
+    _meta_file="$_launcher_dir/$_slug.conf"
+    _tmp="${_meta_file}.tmp.$$"
+
     {
-        printf 'NAME="%s"\n'       "$(escape_quotes "$app")"
-        printf 'VERSION="%s"\n'    "$(escape_quotes "$version")"
-        printf 'INSTALL_METHOD="%s"\n' "$(escape_quotes "$method")"
-        printf 'INSTALL_PATH="%s"\n'   "$(escape_quotes "$install_path")"
-        printf 'LAUNCHER_COMMAND="%s"\n' "$(escape_quotes "$launcher_cmd")"
-        printf 'ICON_NAME="%s"\n'  "$(escape_quotes "$icon")"
-    } > "$tmp"
-    chmod 0644 "$tmp"
-    mv -f "$tmp" "$meta_file"
+        printf '# ParishBSD launcher metadata — written by parish-apps install-file\n'
+        printf '# or parish-app-create-launcher. Do not edit.\n'
+        printf 'jail=%s\n'         "$_jail"
+        printf 'slug=%s\n'         "$_slug"
+        printf 'name=%s\n'         "$_name"
+        printf 'version=%s\n'      "$_version"
+        printf 'method=%s\n'       "$_method"
+        printf 'install_path=%s\n' "$_install_path"
+        printf 'written_at=%s\n'   "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        _i=0
+        for _arg in "$@"; do
+            case "$_arg" in
+                *'"'*) err "launcher argv[$_i] contains '\"'; refusing to write" ;;
+                *'
+'*) err "launcher argv[$_i] contains a newline; refusing to write" ;;
+            esac
+            printf 'ARGV[%d]="%s"\n' "$_i" "$_arg"
+            _i=$((_i + 1))
+        done
+    } > "$_tmp"
+
+    chmod 0644 "$_tmp"
+    chown root:wheel "$_tmp"
+    mv -f "$_tmp" "$_meta_file"
+    log "Wrote launcher metadata: $_meta_file"
 }
 
-read_metadata_field() {
-    file="$1"
-    key="$2"
-    awk -F= -v k="$key" '$1==k { v=$0; sub(/^[^=]*=/,"",v); gsub(/^"|"$/,"",v); print v; exit }' "$file"
+# --------------------------------------------------------------------
+# legacy refusal
+# --------------------------------------------------------------------
+
+# refuse_if_legacy_custom_app <jail> <slug>
+# Refuses with the two-paragraph message if a pre-rework custom app
+# exists for this slug (in-jail custom-apps/<slug>.conf).
+refuse_if_legacy_custom_app() {
+    _jail="$1"
+    _slug="$2"
+    _legacy="$JAILS_DIR/app/$_jail/usr/local/etc/parishbsd/custom-apps/$_slug.conf"
+    if [ -f "$_legacy" ] && [ ! -L "$_legacy" ]; then
+        cat >&2 <<EOF
+The application "$_slug" in compartment "$_jail" was installed by an
+older version of the Compartments Manager. Its launcher metadata is in
+a format that cannot be safely used.
+
+Reinstall the application from the Compartments Manager to create a
+working launcher. The old "set-launcher" command has been removed; to
+change what the application runs, reinstall it with the corrected file.
+EOF
+        exit 1
+    fi
 }
 
-# =====================================================================
+# --------------------------------------------------------------------
 # list
-# =====================================================================
+# --------------------------------------------------------------------
 
 cmd_list() {
     jail="${1:?usage: parish-apps list <jail>}"
@@ -103,25 +189,37 @@ cmd_list() {
         version = $1
         sub(/^.*-/, "", version)
         $1 = ""
-        printf "native\t%s\t%s\t%s\n", name, version, $0
+        printf "native\t%s\t%s\n", name, version
     }'
 
-    # Custom apps
-    meta_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
-    if [ -d "$meta_dir" ]; then
-        for f in "$meta_dir"/*.conf; do
+    # Custom apps (host-side, post-rework)
+    launcher_dir="$LAUNCHER_STORE/$jail"
+    if [ -d "$launcher_dir" ]; then
+        for f in "$launcher_dir"/*.conf; do
             [ -f "$f" ] || continue
-            name="$(read_metadata_field "$f" NAME)"
-            version="$(read_metadata_field "$f" VERSION)"
-            method="$(read_metadata_field "$f" INSTALL_METHOD)"
+            [ ! -L "$f" ] || continue
+            name="$(awk -F= '/^name=/{print substr($0, 6); exit}' "$f")"
+            version="$(awk -F= '/^version=/{print substr($0, 9); exit}' "$f")"
+            method="$(awk -F= '/^method=/{print substr($0, 8); exit}' "$f")"
             printf "custom\t%s\t%s\t%s\n" "${name:-?}" "${version:-?}" "${method:-?}"
+        done
+    fi
+
+    # Legacy in-jail custom apps (pre-rework) — display, but flag them
+    legacy_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
+    if [ -d "$legacy_dir" ]; then
+        for f in "$legacy_dir"/*.conf; do
+            [ -f "$f" ] || continue
+            [ ! -L "$f" ] || continue
+            name="$(awk -F'"' '/^NAME=/{print $2; exit}' "$f")"
+            printf "legacy\t%s\t\t(requires reinstall)\n" "${name:-?}"
         done
     fi
 }
 
-# =====================================================================
+# --------------------------------------------------------------------
 # install (from catalog)
-# =====================================================================
+# --------------------------------------------------------------------
 
 cmd_install() {
     jail="${1:?usage: parish-apps install <jail> <package>}"
@@ -132,9 +230,9 @@ cmd_install() {
     pkg -j "$jail" install -y "$package"
 }
 
-# =====================================================================
+# --------------------------------------------------------------------
 # install-file
-# =====================================================================
+# --------------------------------------------------------------------
 
 cmd_install_file() {
     jail="${1:?usage: parish-apps install-file <jail> <file> [flags]}"
@@ -142,7 +240,6 @@ cmd_install_file() {
     host_file="${1:?usage: parish-apps install-file <jail> <file> [flags]}"
     shift || true
     require_jail "$jail"
-    # H3: file must be canonical and not a symlink
     [ -f "$host_file" ] || err "not a regular file: $host_file"
     [ ! -L "$host_file" ] || err "file is a symlink: $host_file"
     canonical_path "$host_file" >/dev/null
@@ -161,14 +258,10 @@ cmd_install_file() {
         esac
     done
 
-    require_jail "$jail"
-    [ -f "$host_file" ] || err "file not found: $host_file"
-
-    detected="$("$BIN_DIR/parish-detect-installer" "$host_file")"
+    detected="$("$PARISH_BIN/parish-detect-installer" "$host_file")"
     type_key="${detected%%:*}"
     log "Detected: $detected"
 
-    # Resolve ambiguous types via --mode.
     case "$type_key" in
         windows-exe-ambiguous)
             [ "$mode" = "portable" ]  && type_key="windows-portable-archive"
@@ -193,23 +286,23 @@ cmd_install_file() {
 
     if [ -n "$app_name" ] && [ "$launcher" != "none" ]; then
         log "Creating launcher for '$app_name' ($launcher)"
-        "$BIN_DIR/parish-app-create-launcher" "$jail" "$app_name" "$launcher" \
+        "$PARISH_BIN/parish-app-create-launcher" "$jail" "$app_name" "$launcher" \
             || log "WARN: launcher creation failed"
     fi
 
     log "Done"
 }
 
-# =====================================================================
+# --------------------------------------------------------------------
 # Exchange helpers
-# =====================================================================
+# --------------------------------------------------------------------
 
 copy_to_exchange() {
     jail="$1"; file="$2"
     base="$(basename "$file")"
     dest_dir="$(exchange_dir "$jail")"
     mkdir -p "$dest_dir"
-    cp -a "$file" "$dest_dir/$base"
+    cp -a -P "$file" "$dest_dir/$base"
     chmod 0644 "$dest_dir/$base"
     printf '%s' "$base"
 }
@@ -220,45 +313,81 @@ cleanup_exchange() {
     rm -f "$(exchange_dir "$jail")/$base" 2>/dev/null || true
 }
 
-# =====================================================================
+exchange_dir() {
+    jail="$1"
+    validate_jail_name_existing "$jail"
+    d="$EXCHANGE_ROOT/$jail"
+    [ -d "$d" ] || mkdir -p "$d"
+    printf '%s' "$d"
+}
+
+# --------------------------------------------------------------------
 # Install handlers
-# =====================================================================
+# --------------------------------------------------------------------
 
 do_freebsd_pkg() {
     jail="$1"; host_file="$2"
+
+    # read the package's own name before install. This replaces
+    # `pkg info -a -o | tail -1` (which picks the last dependency,
+    # not the target).
+    pkg_name="$(pkg query -F "$host_file" %n 2>/dev/null)"
+    [ -n "$pkg_name" ] || err "cannot determine package name from $host_file (pkg query -F failed)"
+    validate_package_name "$pkg_name"
+
     base="$(copy_to_exchange "$jail" "$host_file")"
     trap "cleanup_exchange '$jail' '$base'" EXIT INT TERM
 
-    log "Installing FreeBSD package $base"
+    log "Installing FreeBSD package $base ($pkg_name)"
     jexec "$jail" pkg add "/exchange/$base"
 
-    # Determine installed package name (last package in pkg's db, or from filename).
-    pkg_name="$(jexec "$jail" pkg info -a -o 2>/dev/null | tail -1 | sed 's|.*/||')"
-    [ -n "$pkg_name" ] || pkg_name="$(echo "$base" | sed 's/-[0-9].*//')"
-
     # Look for a matching .desktop inside the jail to find the exec.
-    launcher="$pkg_name"
+    launcher_argv=""
     for d in /usr/local/share/applications /usr/share/applications; do
         cand="$d/$pkg_name.desktop"
         if jexec "$jail" test -f "$cand" 2>/dev/null; then
             exec_line="$(jexec "$jail" sh -c \
-                "grep '^Exec=' '$cand' | head -1 | cut -d= -f2-")"
-            [ -n "$exec_line" ] && launcher="$exec_line"
+                'grep "^Exec=" "$1" | head -1 | cut -d= -f2-' _ "$cand")"
+            if [ -n "$exec_line" ]; then
+                launcher_argv="$exec_line"
+            fi
             break
         fi
     done
 
     ver="$(jexec "$jail" pkg query %v "$pkg_name" 2>/dev/null || echo 1.0)"
 
-    result="$(write_metadata "$jail" "$pkg_name" "$ver" \
-        "freebsd-pkg" "/usr/local" "$launcher")"
-
     cleanup_exchange "$jail" "$base"
     trap - EXIT INT TERM
+
+    # Build argv from launcher_argv (Exec= line) or fall back to pkg name.
+    # refuse quote/backslash in the Exec= line  cannot safely
+    # split into argv without a full .desktop Exec parser.
+    _argv=
+    if [ -n "$launcher_argv" ]; then
+        case "$launcher_argv" in
+            *[\"\']*|*\\*)
+                err "cannot create launcher: $pkg_name.desktop has quotes or backslashes in its Exec line"
+                ;;
+        esac
+        # Strip field codes and split on whitespace (safe after the
+        # quote/backslash check above)
+        _cleaned="$(printf '%s' "$launcher_argv" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
+        # shellcheck disable=SC2086
+        set -- $_cleaned
+        _argv="$*"
+    else
+        _argv="$pkg_name"
+    fi
+
+    # shellcheck disable=SC2086
+    write_host_launcher_metadata "$jail" "$pkg_name" "$pkg_name" "$ver" \
+        "freebsd-pkg" "/usr/local" $_argv
     log "Package installed"
-    printf '%s' "$result"
+    printf '%s' "$pkg_name"
 }
 
+# (host-side metadata), no jexec sh -c sites here (installer is exec'd directly).
 do_win_installer() {
     jail="$1"; host_file="$2"
     base="$(copy_to_exchange "$jail" "$host_file")"
@@ -268,11 +397,12 @@ do_win_installer() {
     jexec "$jail" wine "/exchange/$base"
 
     # Find the newest .exe outside wine's system directories.
-    exe="$(jexec "$jail" sh -c "
-        find /root/.wine/drive_c -name '*.exe' -type f \
-            -not -path '*windows*' 2>/dev/null \
+    exe="$(jexec "$jail" sh -c '
+        find /root/.wine/drive_c -name "*.exe" -type f \
+            -not -path "*windows*" 2>/dev/null \
             | xargs ls -t 2>/dev/null | head -1
-    ")"
+    ')"
+
     stem="$(echo "$base" | sed 's/\.[^.]*$//; s/-[Ss]etup$//; s/[Ss]etup$//')"
 
     cleanup_exchange "$jail" "$base"
@@ -284,10 +414,10 @@ do_win_installer() {
         return 0
     fi
 
-    result="$(write_metadata "$jail" "$stem" "1.0" \
-        "wine-installer" "$(dirname "$exe")" "wine $exe" "wine")"
+    write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+        "wine-installer" "$(dirname "$exe")" "wine" "$exe"
     log "Installer finished; main program at $exe"
-    printf '%s' "$result"
+    printf '%s' "$stem"
 }
 
 do_win_portable() {
@@ -300,35 +430,34 @@ do_win_portable() {
 
     log "Extracting to $install_dir inside $jail"
 
-    jexec "$jail" sh -c "
+    jexec "$jail" sh -c '
         set -eu
-        mkdir -p '$install_dir'
-        cd '$install_dir'
-        case '$base' in
-            *.zip)           unzip -q /exchange/'$base' ;;
-            *.tar.gz|*.tgz)  tar -xzf /exchange/'$base' ;;
-            *.tar.xz)        tar -xJf /exchange/'$base' ;;
-            *.tar.bz2)       tar -xjf /exchange/'$base' ;;
-            *) echo 'unsupported archive'; exit 1 ;;
+        mkdir -p "$1"
+        cd "$1"
+        case "$2" in
+            *.zip)           unzip -q "/exchange/$2" ;;
+            *.tar.gz|*.tgz)  tar -xzf "/exchange/$2" ;;
+            *.tar.xz)        tar -xJf "/exchange/$2" ;;
+            *.tar.bz2)       tar -xjf "/exchange/$2" ;;
+            *) echo "unsupported archive"; exit 1 ;;
         esac
-    "
+    ' _ "$install_dir" "$base"
 
     exe="$(jexec "$jail" find "$install_dir" -maxdepth 3 -name '*.exe' \
             -type f 2>/dev/null | head -1)"
 
-    if [ -n "$exe" ]; then
-        launcher="wine $exe"
-    else
-        launcher="wine $install_dir"
-    fi
-
-    result="$(write_metadata "$jail" "$stem" "1.0" \
-        "wine-portable" "$install_dir" "$launcher" "wine")"
-
     cleanup_exchange "$jail" "$base"
     trap - EXIT INT TERM
+
+    if [ -n "$exe" ]; then
+        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+            "wine-portable" "$install_dir" "wine" "$exe"
+    else
+        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+            "wine-portable" "$install_dir" "wine" "$install_dir"
+    fi
     log "Portable application installed at $install_dir"
-    printf '%s' "$result"
+    printf '%s' "$stem"
 }
 
 do_linux_portable() {
@@ -341,42 +470,41 @@ do_linux_portable() {
 
     log "Extracting to $install_dir inside $jail"
 
-    jexec "$jail" sh -c "
+    jexec "$jail" sh -c '
         set -eu
-        mkdir -p '$install_dir'
-        cd '$install_dir'
-        case '$base' in
-            *.zip)           unzip -q /exchange/'$base' ;;
-            *.tar.gz|*.tgz)  tar -xzf /exchange/'$base' ;;
-            *.tar.xz)        tar -xJf /exchange/'$base' ;;
-            *.tar.bz2)       tar -xjf /exchange/'$base' ;;
-            *) echo 'unsupported archive'; exit 1 ;;
+        mkdir -p "$1"
+        cd "$1"
+        case "$2" in
+            *.zip)           unzip -q "/exchange/$2" ;;
+            *.tar.gz|*.tgz)  tar -xzf "/exchange/$2" ;;
+            *.tar.xz)        tar -xJf "/exchange/$2" ;;
+            *.tar.bz2)       tar -xjf "/exchange/$2" ;;
+            *) echo "unsupported archive"; exit 1 ;;
         esac
         chmod +x bin/* usr/bin/* 2>/dev/null || true
-    "
+    ' _ "$install_dir" "$base"
 
-    binary="$(jexec "$jail" sh -c "
-        for candidate in '$install_dir/$stem' '$install_dir/bin/$stem' \
-                          '$install_dir/usr/bin/$stem'; do
-            [ -x \"\$candidate\" ] && echo \"\$candidate\" && exit 0
+    binary="$(jexec "$jail" sh -c '
+        for candidate in "$1/$2" "$1/bin/$2" "$1/usr/bin/$2"; do
+            [ -x "$candidate" ] && echo "$candidate" && exit 0
         done
-        [ -d '$install_dir/bin' ] && \
-            find '$install_dir/bin' -maxdepth 1 -type f -perm -u+x | head -1
-    ")"
-
-    if [ -z "$binary" ]; then
-        launcher="sh -c 'cd $install_dir; ./run.sh 2>/dev/null || ./$stem'"
-    else
-        launcher="$binary"
-    fi
-
-    result="$(write_metadata "$jail" "$stem" "1.0" \
-        "linux-portable" "$install_dir" "$launcher" "parish-container-compat")"
+        [ -d "$1/bin" ] && find "$1/bin" -maxdepth 1 -type f -perm -u+x | head -1
+    ' _ "$install_dir" "$stem")"
 
     cleanup_exchange "$jail" "$base"
     trap - EXIT INT TERM
+
+    if [ -z "$binary" ]; then
+        # Fallback: sh -c wrapper. Values passed as positional args so no quoting issues.
+        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+            "linux-portable" "$install_dir" \
+            "sh" "-c" 'cd "$1"; ./run.sh 2>/dev/null || ./"$2"' _ "$install_dir" "$stem"
+    else
+        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+            "linux-portable" "$install_dir" "$binary"
+    fi
     log "Portable application installed at $install_dir"
-    printf '%s' "$result"
+    printf '%s' "$stem"
 }
 
 do_linux_installer() {
@@ -386,69 +514,65 @@ do_linux_installer() {
 
     log "Running Linux installer $base"
 
-    # .run/.bin may be ELF or shell. Try direct execution first,
-    # fall back to sh if the file is a script.
-    if ! jexec "$jail" sh -c "[ -x /exchange/'$base' ] && /exchange/'$base'"; then
+    if ! jexec "$jail" sh -c '[ -x "/exchange/$1" ] && "/exchange/$1"' _ "$base"; then
         jexec "$jail" /compat/linux/bin/sh "/exchange/$base"
     fi
 
     stem="$(echo "$base" | sed 's/\.[^.]*$//; s/-[Ii]nstall.*//')"
 
-    # Linux installers typically put things under /opt/<name> or /usr/local/<name>.
     install_dir="/opt/$stem"
     jexec "$jail" test -d "/opt/$stem" || install_dir="/usr/local/$stem"
     jexec "$jail" test -d "$install_dir" || install_dir=""
 
-    if [ -n "$install_dir" ]; then
-        result="$(write_metadata "$jail" "$stem" "1.0" \
-            "linux-installer" "$install_dir" "$stem" "parish-container-compat")"
-    else
-        log "WARN: could not locate install directory for $stem"
-        result=""
-    fi
-
     cleanup_exchange "$jail" "$base"
     trap - EXIT INT TERM
-    log "Installer finished"
-    printf '%s' "$result"
+
+    if [ -n "$install_dir" ]; then
+        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+            "linux-installer" "$install_dir" "$stem"
+        log "Installer finished"
+        printf '%s' "$stem"
+    else
+        log "WARN: could not locate install directory for $stem"
+        printf ''
+    fi
 }
 
-# =====================================================================
+# --------------------------------------------------------------------
 # remove / remove-custom / upgrade
-# =====================================================================
+# --------------------------------------------------------------------
 
 cmd_remove() {
     jail="${1:?usage: parish-apps remove <jail> <package>}"
     package="${2:?usage: parish-apps remove <jail> <package>}"
     require_jail "$jail"
-
-    case "$package" in
-        *[!A-Za-z0-9._+-]*) err "invalid package name: $package" ;;
-    esac
-
+    validate_package_name "$package"
     log "Removing $package from $jail"
     pkg -j "$jail" delete -y "$package"
 }
 
 cmd_remove_custom() {
-    jail="${1:?usage: parish-apps remove-custom <jail> <app-name>}"
-    app_name="${2:?usage: parish-apps remove-custom <jail> <app-name>}"
+    jail="${1:?usage: parish-apps remove-custom <jail> <app>}"
+    app_name="${2:?usage: parish-apps remove-custom <jail> <app>}"
+    validate_app_name "$app_name" || err "invalid app name: $app_name"
 
-    meta_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
-    [ -d "$meta_dir" ] || err "no custom-apps directory in '$jail'"
+    # remove host-side metadata.
+    _meta="$LAUNCHER_STORE/$jail/$app_name.conf"
+    _removed=0
+    if [ -f "$_meta" ] && [ ! -L "$_meta" ]; then
+        rm -f "$_meta"
+        log "Removed launcher metadata for $app_name"
+        _removed=1
+    fi
 
-    found=0
-    for f in "$meta_dir"/*.conf; do
-        [ -f "$f" ] || continue
-        name="$(read_metadata_field "$f" NAME)"
-        if [ "$name" = "$app_name" ]; then
-            rm -f "$f"
-            log "Removed metadata for $app_name"
-            found=1
-            break
-        fi
-    done
-    [ "$found" -eq 1 ] || err "no metadata found for '$app_name'"
+    # Refuse if a legacy in-jail metadata exists for this app.
+    refuse_if_legacy_custom_app "$jail" "$app_name"
+    # (The above exits if legacy exists. If we reach here, no legacy.)
+
+    if [ "$_removed" -eq 0 ]; then
+        err "no launcher metadata found for '$app_name'"
+    fi
+
     log "Note: installed files under /opt/parish-apps/ were not removed."
 }
 
@@ -458,9 +582,7 @@ cmd_upgrade() {
     require_jail "$jail"
 
     if [ -n "$package" ]; then
-        case "$package" in
-            *[!A-Za-z0-9._+-]*) err "invalid package name: $package" ;;
-        esac
+        validate_package_name "$package"
         log "Upgrading $package in $jail"
         pkg -j "$jail" upgrade -y "$package"
     else
@@ -469,62 +591,40 @@ cmd_upgrade() {
     fi
 }
 
-# =====================================================================
-# set-launcher / launch / create-launcher / pkg-launcher
-# =====================================================================
-
-cmd_set_launcher() {
-    jail="${1:?usage: parish-apps set-launcher <jail> <app> <command>}"
-    app_name="${2:?usage: parish-apps set-launcher <jail> <app> <command>}"
-    command="${3:?usage: parish-apps set-launcher <jail> <app> <command>}"
-
-    meta_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
-    found=0
-    for f in "$meta_dir"/*.conf; do
-        [ -f "$f" ] || continue
-        name="$(read_metadata_field "$f" NAME)"
-        [ "$name" = "$app_name" ] || continue
-
-        tmp="$(mktemp)"
-        awk -v cmd="$command" '
-            /^LAUNCHER_COMMAND=/ { print "LAUNCHER_COMMAND=\"" cmd "\""; next }
-            { print }
-        ' "$f" > "$tmp"
-        mv "$tmp" "$f"
-        chmod 0644 "$f"
-        log "Updated launcher command for '$app_name'"
-        found=1
-        break
-    done
-    [ "$found" -eq 1 ] || err "no metadata for '$app_name' in '$jail'"
-}
+# --------------------------------------------------------------------
+# launch / create-launcher / pkg-launcher (all exec into other binaries)
+# --------------------------------------------------------------------
 
 cmd_launch() {
     jail="${1:?usage: parish-apps launch <jail> <app>}"
     app="${2:?usage: parish-apps launch <jail> <app>}"
-    exec "$BIN_DIR/parish-app-launch" "$jail" "$app"
+    validate_app_name "$app" || err "invalid app name: $app"
+    exec "$PARISH_BIN/parish-app-launch" "$jail" "$app"
 }
 
 cmd_create_launcher() {
     jail="${1:?usage: parish-apps create-launcher <jail> <name> [where]}"
     name="${2:?}"
     where="${3:-menu}"
-    exec "$BIN_DIR/parish-app-create-launcher" "$jail" "$name" "$where"
+    validate_app_name "$name" || err "invalid app name: $name"
+    # If a legacy in-jail metadata exists for this name, refuse.
+    refuse_if_legacy_custom_app "$jail" "$name"
+    exec "$PARISH_BIN/parish-app-create-launcher" "$jail" "$name" "$where"
 }
 
 cmd_pkg_launcher() {
     jail="${1:?usage: parish-apps pkg-launcher <jail> <package> [where]}"
     package="${2:?}"
     where="${3:-menu}"
-    case "$package" in
-        *[!A-Za-z0-9._+-]*) err "invalid package name: $package" ;;
-    esac
-    exec "$BIN_DIR/parish-app-create-launcher" "$jail" "$package" "$where"
+    validate_package_name "$package"
+    exec "$PARISH_BIN/parish-app-create-launcher" "$jail" "$package" "$where"
 }
 
-# =====================================================================
+# --------------------------------------------------------------------
 # Dispatch
-# =====================================================================
+# --------------------------------------------------------------------
+
+require_root
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -534,11 +634,10 @@ case "$cmd" in
     remove)          cmd_remove          "$@" ;;
     remove-custom)   cmd_remove_custom   "$@" ;;
     upgrade)         cmd_upgrade         "$@" ;;
-    set-launcher)    cmd_set_launcher    "$@" ;;
     launch)          cmd_launch          "$@" ;;
     create-launcher) cmd_create_launcher "$@" ;;
     pkg-launcher)    cmd_pkg_launcher    "$@" ;;
     *)
-        err "usage: parish-apps {list|install|install-file|remove|remove-custom|upgrade|set-launcher|launch|create-launcher|pkg-launcher} ..."
+        err "usage: parish-apps {list|install|install-file|remove|remove-custom|upgrade|launch|create-launcher|pkg-launcher} ..."
         ;;
 esac
