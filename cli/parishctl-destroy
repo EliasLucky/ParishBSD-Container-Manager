@@ -1,2 +1,98 @@
 #!/bin/sh
+# parishctl-destroy  destroy a compartment.
+#
+# Runs via pkexec. Polkit action .destroy at auth_admin (no cache):
+# every invocation prompts. Destroy is irreversible.
+#
+# Confirmation:
+#   - Non-vault: this binary performs typed confirmation (name must
+#     match exactly), then re-checks state, then invokes
+#     31-destroy-jail.sh.
+#   - Vault: 32-destroy-vault.sh performs its own typed confirmation
+#     ("destroy-<name>").
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+PARISH_SCRIPTS=/usr/local/libexec/parishbsd
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl destroy <name>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+jailroot="$(container_path "$name")" || {
+    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
+    exit 1
+}
+
+personality="$(container_personality "$jailroot")"
+kind="$(container_kind "$personality")"
+state="$(parish_jail_state "$name")"
+
+case "$state" in
+    stopped)
+        : # proceed
+        ;;
+    running|running-other-contained)
+        printf 'Container "%s" is running.\n' "$name" >&2
+        printf 'Stop it first:\n    pkexec parishctl stop %s\n' "$name" >&2
+        exit 1
+        ;;
+    *)
+        parish_jail_state_message "$name" "$state" >&2
+        exit 1
+        ;;
+esac
+
+if container_is_vault "$personality"; then
+    # Vault: 32-destroy-vault.sh does its own typed confirmation.
+    # No prompt here. State check above ensures we do not invoke
+    # the script on a running jail.
+    printf 'This will destroy container "%s" (%s).\n' "$name" "$kind"
+    printf 'Because it is a vault, the encrypted data will also be destroyed.\n'
+    printf 'This cannot be undone.\n\n'
+    sh "$PARISH_SCRIPTS/32-destroy-vault.sh" "$name" \
+        || { printf 'parishctl: destroy failed for "%s"\n' "$name" >&2; exit 1; }
+else
+    # Non-vault: typed confirmation in this binary (matches pre-split
+    # behavior). The underlying 31-destroy-jail.sh does not prompt.
+    printf 'This will destroy container "%s" (%s).\n' "$name" "$kind"
+    printf 'Its filesystem will be removed. Nothing else is affected.\n\n'
+    printf 'Type the container name to confirm, or press Enter to abort: '
+    read -r answer
+    if [ "$answer" != "$name" ]; then
+        printf 'Aborted.\n'
+        exit 1
+    fi
+
+    # Re-check state after the prompt. The user took time to type;
+    # the jail could have started (by another terminal, or by
+    # Guardian recovering something). Refuse if so.
+    state_after="$(parish_jail_state "$name")"
+    if [ "$state_after" != "stopped" ]; then
+        printf 'Container "%s" state changed to "%s" during confirmation. Nothing was destroyed.\n' \
+            "$name" "$state_after" >&2
+        exit 1
+    fi
+
+    sh "$PARISH_SCRIPTS/31-destroy-jail.sh" "$name" \
+        || { printf 'parishctl: destroy failed for "%s"\n' "$name" >&2; exit 1; }
+fi
+
+# Post-condition: verify the jail is gone.
+if container_path "$name" >/dev/null 2>&1; then
+    printf 'parishctl: destroy reported success but compartment "%s" still exists.\n' "$name" >&2
+    printf 'This is unexpected. Check:\n' >&2
+    printf '  ls -la /usr/local/jails/*/%s\n' "$name" >&2
+    exit 1
+fi
+
+printf 'Container "%s" destroyed.\n' "$name"
