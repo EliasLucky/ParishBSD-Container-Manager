@@ -54,7 +54,7 @@ fi
 
 case "$state" in
     running|contained-but-running)
-        ip="$(jexec "$name" ifconfig 2>/dev/null \
+        ip="$(jexec -- "$name" ifconfig 2>/dev/null \
               | awk '/inet 10\.0\.0\./ {print $2; exit}')"
         [ -n "$ip" ] && printf '  %-18s %s\n' "internal IP" "$ip"
         ;;
