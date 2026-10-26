@@ -1,15 +1,12 @@
 #!/bin/sh
 # parishctl-stop  stop a compartment.
 #
-# Runs via pkexec parishctl-stop. Polkit action .stop has
-# auth_admin_keep.
-#
-# For vaults, stopping the jail does NOT lock the vault (does not
-# unmount the dataset or unload the key). The message says so.
+# Runs via pkexec. Polkit action .stop at auth_admin_keep.
 
 set -eu
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
+
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
@@ -22,34 +19,4 @@ fi
 name="$1"
 validate_jail_name_existing "$name" || exit 2
 
-jailroot="$(container_path "$name")" || {
-    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
-    exit 1
-}
-
-personality="$(container_personality "$jailroot")"
-state="$(parish_jail_state "$name")"
-
-case "$state" in
-    stopped)
-        printf 'Container "%s" is not running.\n' "$name"
-        exit 0
-        ;;
-    containing|contained|containment-failed|contained-but-running|stopped-maybe-contained|unknown)
-        # Stopping a contained/containing compartment is a no-op or a
-        # Guardian-in-flight action. Refuse with the specific message.
-        parish_jail_state_message "$name" "$state" >&2
-        exit 1
-        ;;
-esac
-
-service jail stop "$name" \
-    || { printf 'parishctl: failed to stop "%s"\n' "$name" >&2; exit 1; }
-
-printf 'Container "%s" stopped.\n' "$name"
-
-if container_is_vault "$personality"; then
-    printf '\n'
-    printf 'Note: the vault is still unlocked. To lock it:\n'
-    printf '    pkexec parishctl lock %s\n' "$name"
-fi
+container_stop "$name"
