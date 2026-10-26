@@ -1,1 +1,49 @@
-A
+#!/bin/sh
+# parishctl-restart  restart a compartment.
+#
+# Runs via pkexec. Polkit action .restart at auth_admin_keep.
+#
+# Behaviour: container_stop then container_start, both from
+# container.sh. Single pkexec invocation — one prompt for the
+# combined operation.
+#
+# Failure semantics:
+#   - stop fails  exit 1, jail is in whatever state stop left it
+#   - stop succeeds but start fails  exit 1, jail is stopped
+#   - both succeed  exit 0
+
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl restart <name>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+# Verify the container exists.
+container_path "$name" >/dev/null 2>&1 || {
+    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
+    exit 1
+}
+
+if ! container_stop "$name"; then
+    printf 'parishctl: restart aborted: stop failed for "%s".\n' "$name" >&2
+    exit 1
+fi
+
+if ! container_start "$name"; then
+    printf '\n' >&2
+    printf 'parishctl: restart failed: "%s" is stopped (start failed).\n' "$name" >&2
+    printf 'Check with:\n  pkexec parishctl show %s\n' "$name" >&2
+    exit 1
+fi
+
+printf 'Container "%s" restarted.\n' "$name"
