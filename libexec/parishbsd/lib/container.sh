@@ -25,34 +25,21 @@ container_path() {
 
 # container_personality <jailroot>
 # Echo the personality name. Safe against jail-written metadata.
-#
-# Do NOT source the metadata file. Do NOT trust its
-# value without validation  a jail can write PERSONALITY=../../etc.
-#
-# The ownership check: a jail running as root
-# inside itself can only create files with the host-uid that maps to
-# its own root - for a jailed process that is a *different* host user
-# from root (the jail's uid 0 is not host uid 0). So stat -f %Su
-# returning "root" is a real host-side signal that the file was
-# created by host-root (at jail creation).
-#
-# However, if the jail is running as a *host* root user via jexec
-# (which is the default jexec behavior), files created inside can
-# legitimately be host-uid-0. The ownership check therefore does not
-# fully prevent a jail that has jexec-equivalent access from lying
-# about its personality. The remaining defense is the tier fallback:
-# if PERSONALITY is invalid or the file fails checks, we infer from
-# the directory (/usr/local/jails/app/ vs /usr/local/jails/vault/),
-# which the jail cannot lie about because it is host filesystem
-# structure outside the jail's writable area.
 container_personality() {
     _jailroot="${1-}"
-    _meta="$_jailroot/usr/local/etc/parishbsd/metadata"
 
-    if [ -f "$_meta" ] && [ ! -L "$_meta" ] \
-       && [ "$(stat -f %Su "$_meta" 2>/dev/null)" = "root" ] \
-       && [ "$(stat -f %Lp "$_meta" 2>/dev/null)" = "644" ]; then
-        _personality=""
+    # Tier class.
+    case "$_jailroot" in
+        /usr/local/jails/app/*)        _tier_class=app ;;
+        /usr/local/jails/containers/*) _tier_class=app ;;
+        /usr/local/jails/vault/*)      _tier_class=vault ;;
+        *) printf 'unknown'; return ;;
+    esac
+
+    # Metadata is advisory (may narrow within tier; never cross).
+    _meta="$_jailroot/usr/local/etc/parishbsd/metadata"
+    _personality=""
+    if [ -f "$_meta" ] && [ ! -L "$_meta" ]; then
         while IFS='=' read -r _key _val; do
             case "$_key" in
                 PERSONALITY) _personality="$_val" ;;
@@ -63,17 +50,20 @@ container_personality() {
             validate_personality_name "$_personality" 2>/dev/null \
                 || _personality=""
         fi
-        if [ -n "$_personality" ]; then
-            printf '%s' "$_personality"
-            return
-        fi
     fi
 
-    # Tier fallback. Cannot be influenced by the jail.
-    case "$_jailroot" in
-        /usr/local/jails/app/*)        printf 'app-xpra' ;;
-        /usr/local/jails/containers/*) printf 'app-xpra' ;;
-        /usr/local/jails/vault/*)
+    # Cross-check. Metadata is trusted only if consistent with tier.
+    # Any mismatch  fall back to tier-derived personality.
+    case "$_tier_class:$_personality" in
+        app:app-*|app:)
+            printf '%s' "${_personality:-app-xpra}"
+            ;;
+        vault:vault-*)
+            printf '%s' "$_personality"
+            ;;
+        vault:)
+            # Empty/invalid metadata; infer sub-kind from marker dirs
+            # (also host-side, cannot be faked).
             if [ -d "$_jailroot/var/vault-data" ]; then
                 printf 'vault-files'
             elif [ -d "$_jailroot/var/db/postgres" ]; then
@@ -82,7 +72,14 @@ container_personality() {
                 printf 'vault-unknown'
             fi
             ;;
-        *) printf 'unknown' ;;
+        *)
+            # Tier/metadata mismatch. The jail is lying or metadata
+            # is stale. Trust the tier.
+            case "$_tier_class" in
+                app)   printf 'app-xpra' ;;
+                vault) printf 'vault-unknown' ;;
+            esac
+            ;;
     esac
 }
 
