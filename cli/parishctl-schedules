@@ -1,1 +1,23 @@
+#!/bin/sh
+# parishctl-schedules - list scheduled vault locks.
 #
+# Runs via pkexec. Polkit action .schedules at allow_active=yes
+# (read-only; no prompt on the console). The file is root-owned; the
+# privileged path is what lets us read it without making the
+# schedules file world-readable (which would expose the vault names
+# and their scheduled times to any local user).
+
+set -eu
+
+cfg=/usr/local/etc/parishbsd/lock-schedules
+
+if [ ! -f "$cfg" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$cfg"; then
+    printf 'No scheduled locks configured.\n\n'
+    printf 'Add one with:  pkexec parishctl schedule-lock <vault> <HH:MM>\n'
+    exit 0
+fi
+
+printf '%-22s %s\n' "VAULT" "LOCK TIME"
+grep -vE '^[[:space:]]*(#|$)' "$cfg" | while read -r vault at _; do
+    printf '%-22s %s\n' "$vault" "$at"
+done
