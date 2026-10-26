@@ -1,24 +1,11 @@
 #!/bin/sh
-# parishctl-start  start a compartment.
+# parishctl-start — start a compartment.
 #
-# Runs via pkexec parishctl-start. Polkit action .start has
-# auth_admin_keep (5-minute cache). Starts are routine and reversible
-# by `parishctl stop`.
-#
-# For vaults, "start" means unlock + start (passphrase prompt is on
-# the terminal - pkexec gives us a TTY for this flow via the
-# `exec.allow_gui` annotation, or the user is at a terminal).
-#
-# Post-condition: after the start command reports success, we
-# verify via parish_jail_state that the jail is actually running.
-# A jail can be rejected by the subsystem while its exec.start
-# script exits 0. Reporting success on a stopped jail would mislead
-# the caller (parish-app-launch proceeds on exit 0).
+# Runs via pkexec. Polkit action .start at auth_admin_keep.
 
 set -eu
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
-PARISH_SCRIPTS=/usr/local/libexec/parishbsd
 
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/container.sh"
@@ -32,96 +19,4 @@ fi
 name="$1"
 validate_jail_name_existing "$name" || exit 2
 
-jailroot="$(container_path "$name")" || {
-    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
-    exit 1
-}
-
-personality="$(container_personality "$jailroot")"
-state="$(parish_jail_state "$name")"
-
-case "$state" in
-    running|running-other-contained)
-        printf 'Container "%s" is already running.\n' "$name"
-        exit 0
-        ;;
-    stopped)
-        : # proceed
-        ;;
-    *)
-        parish_jail_state_message "$name" "$state" >&2
-        exit 1
-        ;;
-esac
-
-if container_is_vault "$personality"; then
-    # Vault: must not need an interactive passphrase under pkexec.
-    # If the key is already loaded, 27-unlock-vault.sh is safe.
-    # If not, we cannot prompt for it here.
-    _ds="zroot/vault-data/$name"
-    _keystatus="$(zfs get -H -o value keystatus "$_ds" 2>/dev/null)"
-    case "$_keystatus" in
-        available) : ;;
-        unavailable)
-            if [ ! -t 0 ]; then
-                cat >&2 <<EOF
-The vault "$name" is locked.
-
-A vault needs a passphrase to unlock. Starting it from the desktop
-does not give you a place to type the passphrase.
-
-To unlock it:
-  1. Open a terminal (in the applications menu, under System or Utilities).
-  2. Run: pkexec parishctl unlock $name
-  3. Type the passphrase when prompted.
-  4. Start the compartment again.
-EOF
-                exit 1
-            fi
-            ;;
-        *)
-            cat >&2 <<EOF
-Cannot determine the state of vault "$name".
-The ZFS dataset is "$_ds" and "zfs get keystatus" did not return a
-usable value (got '${_keystatus:-<empty>}').
-
-This usually means one of:
-  - The dataset does not exist (was the vault destroyed?).
-  - The ZFS pool is not imported (try: zpool import).
-  - The dataset is not encrypted (was it created correctly?).
-  - ZFS is not working correctly on this system.
-
-Check the state with:
-  zfs get keystatus $_ds
-  zpool status
-EOF
-            exit 1
-            ;;
-    esac
-
-    sh "$PARISH_SCRIPTS/27-unlock-vault.sh" "$name" \
-        || { printf 'parishctl: failed to unlock and start vault "%s"\n' "$name" >&2; exit 1; }
-else
-    service jail start "$name" \
-        || { printf 'parishctl: failed to start "%s"\n' "$name" >&2; exit 1; }
-fi
-
-# Post-condition (P5 / A8).
-_state_after="$(parish_jail_state "$name")"
-case "$_state_after" in
-    running|running-other-contained) : ;;
-    containing|contained|contained-but-running|containment-failed|stopped-maybe-contained)
-        parish_jail_state_message "$name" "$_state_after" >&2
-        exit 1
-        ;;
-    *)
-        printf 'parishctl: start command returned success but the container is "%s".\n' \
-            "$_state_after" >&2
-        printf 'This is unexpected. Check:\n' >&2
-        printf '  service jail status %s\n' "$name" >&2
-        printf '  tail /var/log/messages\n' >&2
-        exit 1
-        ;;
-esac
-
-printf 'Container "%s" started.\n' "$name"
+container_start "$name"
