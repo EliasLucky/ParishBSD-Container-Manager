@@ -1,5 +1,5 @@
 #!/bin/sh
-# parish-app-create-launcher — create .desktop launchers for an app.
+# parish-app-create-launcher - create .desktop launchers for an app.
 #
 # Called by:
 #   - parish-apps install-file (after successful install)
@@ -8,7 +8,7 @@
 #
 # Runs as the invoking user, or as root under pkexec/sudo. When invoked
 # as root, the target user's home is resolved from PKEXEC_UID/SUDO_UID
-# so the .desktop lands where the user will see it (B7=c).
+# so the .desktop lands where the user will see it.
 #
 # TWO outputs:
 #   1. Host-side launcher metadata at
@@ -35,15 +35,25 @@ where="${3:-menu}"
 validate_jail_name_existing "$jail" || exit 4
 validate_app_name "$name" || exit 4
 
-# --- Resolve target user's home (B7=c) ---
-
-if [ -n "${PKEXEC_UID:-}" ]; then
-    target_uid="$PKEXEC_UID"
-elif [ -n "${SUDO_UID:-}" ]; then
-    target_uid="$SUDO_UID"
-else
-    target_uid="$(id -u)"
+# --- Resolve target user's home ---
+if [ "$(id -u)" -ne 0 ]; then
+    printf 'parish-app-create-launcher: must be run as root, via pkexec, or via sudo.\n' >&2
+    printf 'Run it from the Compartments Manager, or via:\n' >&2
+    printf '  pkexec parish-app-create-launcher ...\n' >&2
+    exit 1
 fi
+
+if [ -z "${PKEXEC_UID:-}" ] && [ -z "${SUDO_UID:-}" ]; then
+    printf 'parish-app-create-launcher: invoked as root without pkexec or sudo.\n' >&2
+    printf 'The target user cannot be determined, so the launcher would be\n' >&2
+    printf 'created in /root instead of the intended user'"'"'s home.\n' >&2
+    printf '\n' >&2
+    printf 'To create a launcher for a user, invoke via pkexec or sudo:\n' >&2
+    printf '  pkexec parish-app-create-launcher ...\n' >&2
+    exit 1
+fi
+
+target_uid="${PKEXEC_UID:-${SUDO_UID}}"
 
 target_home="$(pw usershow -u "$target_uid" -7 2>/dev/null | cut -d: -f9)"
 if [ -z "$target_home" ] || [ ! -d "$target_home" ]; then
@@ -101,11 +111,35 @@ if [ -z "$_exec_out" ]; then
     exit 1
 fi
 
-# Strip .desktop field codes (%f, %U, %i, %c, %k, %%) — they are the
+# Strip .desktop field codes (%f, %U, %i, %c, %k, %%) - they are the
 # spec's mechanism for the launcher to pass filenames; parish-app-launch
 # does not use them.
 _exec_clean="$(printf '%s' "$_exec_out" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
 
+# refuse Exec lines with quotes or backslashes
+#
+# .desktop files can legally quote arguments with spaces:
+#   Exec=wine "C:\Program Files\Foo\foo.exe"
+#
+# The simple word-splitting loop below cannot parse this safely. If we
+# proceed, the resulting argv is corrupted:
+#   ["wine", "\"C:\\Program", "Files\\Foo\\foo.exe\""]
+# and the launcher fails at runtime with an obscure exec error.
+case "$_exec_clean" in
+    *[\"\']*|*\\*)
+        printf 'parish-app-create-launcher: the .desktop file for "%s" in "%s" contains quotes or backslashes in its Exec line.\n' "$name" "$jail" >&2
+        printf 'These cannot be parsed safely; no launcher was created.\n' >&2
+        printf '\n' >&2
+        printf 'To investigate the application, open a shell in the compartment:\n' >&2
+        printf '  pkexec parishctl console %s\n' "$jail" >&2
+        printf '\n' >&2
+        printf 'Inside the shell, look in /usr/local/share/applications/ for the\n' >&2
+        printf 'application'"'"'s launcher definition. If the Exec line uses quotes\n' >&2
+        printf 'or backslashes, the application needs to be launched manually\n' >&2
+        printf 'from inside the compartment. Ask an administrator for help if needed.\n' >&2
+        exit 1
+        ;;
+esac
 # Build argv[n] from the cleaned Exec=. Word-splitting here is
 # acceptable because:
 #   (a) it happens ONCE, at creation time, not at every launch;
@@ -114,7 +148,7 @@ _exec_clean="$(printf '%s' "$_exec_out" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')
 #   (c) it matches the .desktop spec's own Exec= parsing rules for
 #       the common case (simple whitespace-separated tokens);
 #   (d) a package whose Exec= has embedded quotes or escapes will
-#       produce a broken launcher (not an injection — the argv goes
+#       produce a broken launcher (not an injection - the argv goes
 #       to `pkexec -- parish-jail-run` which does no interpretation).
 #       We do not build a general parser; the case is rare enough
 #       that fixing the specific app is better than a parser we
@@ -155,7 +189,7 @@ launcher_file="${store_dir}/${name}.conf"
 launcher_tmp="${launcher_file}.tmp.$$"
 
 {
-    printf '# ParishBSD launcher metadata — written by parish-app-create-launcher\n'
+    printf '# ParishBSD launcher metadata - written by parish-app-create-launcher\n'
     printf '# Do not edit; reinstall the application from the Compartments Manager\n'
     printf '# to regenerate.\n'
     printf 'jail=%s\n' "$jail"
