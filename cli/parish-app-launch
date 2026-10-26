@@ -1,22 +1,20 @@
 #!/bin/sh
-# parish-app-launch  launch an application inside a compartment.
+# parish-app-launch - launch an application inside a compartment.
 #
 # Called by .desktop shortcuts and by the Compartments Manager.
 #
-# This tool orchestrates the launch. It does not jail anything itself;
-# parish-jail-run does that (as root, via pkexec). Its job is:
+# TRUST MODEL
+# -----------
+# Launcher metadata is read ONLY from the host-side store at
+# /var/db/parishbsd/launchers/<jail>/<slug>.conf. It is root-owned,
+# 0644, and jail-invisible (the jail cannot see /var/db/parishbsd/).
+# A jail that retargets the launcher command (e.g., "Firefox" ->
+# "/usr/local/bin/lookalike") cannot do so: the metadata file is not
+# on the jail's filesystem.
 #
-#   1. Check compartment state. Refuse if contained, in-flight, or unclear.
-#   2. Refuse if it is a vault and the vault is locked (no TTY for prompt).
-#   3. Prompt the user to start the compartment if it is stopped.
-#   4. Start the compartment (pkexec parishctl start).
-#   5. Ensure the display server is running (pkexec parishctl xpra start).
-#   6. Attach a display client (parish-xpra attach, background).
-#   7. Launch the application (pkexec parish-jail-run).
-#
-# Failure paths are honest. If step 4 succeeds and step 5 fails, the
-# compartment stays running. We do not auto-stop a successfully-started
-# compartment.
+# The metadata file has a `jail=<name>` header. parish-app-launch
+# verifies it matches the jail it was invoked for. A mismatch refuses
+# with a message rather than executing the wrong commands.
 
 set -eu
 umask 077
@@ -27,7 +25,7 @@ readonly PKEXEC=/usr/bin/pkexec
 readonly PARISHCTL=/usr/local/sbin/parishctl
 readonly PARISH_JAIL_RUN=/usr/local/sbin/parish-jail-run
 readonly PARISH_XPRA=/usr/local/bin/parish-xpra
-readonly DISPLAY_NUM=":100"
+readonly LAUNCHER_STORE=/var/db/parishbsd/launchers
 
 . "${LIBDIR}/validate.sh"
 . "${LIBDIR}/state.sh"
@@ -43,92 +41,96 @@ jail="$1"
 app_name="$2"
 
 validate_jail_name_existing "$jail" || exit 4
+validate_app_name "$app_name" || exit 4
 
-case "$app_name" in
-    ''|*/*|*..*|*[!A-Za-z0-9._+-]*)
-        printf 'parish-app-launch: invalid application name: %s\n' "$app_name" >&2
-        exit 4
-        ;;
-esac
-
-# --- Dialog helper wrapper: consistent exit-code handling ---
+# --- Dialog helper ---
 #
-# The dialog prints a numeric ID on stdout and exits 0 on normal click,
+# The dialog prints a numeric ID on stdout, exits 0 on normal click,
 # non-zero on window-manager close. A non-zero exit or empty output is
-# treated as cancel (0).
+# treated as cancel (0). Trim whitespace without removing interior
+# characters that could be digits.
+
 _dialog_choice() {
     _out="$("$DIALOG" "$@" 2>/dev/null)" || _out=0
-    _out="$(printf '%s' "$_out" | tr -d '[:space:]')"
+    _out="$(printf '%s' "$_out" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [ -n "$_out" ] || _out=0
     printf '%s' "$_out"
 }
 
-# --- Locate the metadata file (parsed, never sourced) ---
+# --- Read launcher metadata (host-side only) ---
 
-meta_dir="/usr/local/jails/app/${jail}/usr/local/etc/parishbsd/custom-apps"
-meta_file=""
+launcher_meta="${LAUNCHER_STORE}/${jail}/${app_name}.conf"
 
-if [ -d "$meta_dir" ]; then
-    for f in "$meta_dir"/*.conf; do
-        [ -f "$f" ] || continue
-        [ ! -L "$f" ] || continue
-        _n="$(awk -F'"' '/^NAME=/{print $2; exit}' "$f")"
-        if [ "$_n" = "$app_name" ]; then
-            meta_file="$f"
-            break
-        fi
-    done
-fi
-
-if [ -z "$meta_file" ]; then
+if [ ! -f "$launcher_meta" ] || [ -L "$launcher_meta" ]; then
     _choice="$(_dialog_choice --type=error --title="Application not found" \
-        --text="The application \"${app_name}\" is not installed in the compartment \"${jail}\"." \
+        --text="The application \"${app_name}\" has no launcher metadata for compartment \"${jail}\".
+
+This usually means the launcher was created by an older version of the Compartments Manager. Reinstall the application from the Compartments Manager to create the launcher." \
         --button="Close:0")"
     exit 5
 fi
 
-# --- Read the launch command as argv (B8=a) ---
-#
-# Metadata format: one ARGV[n]="..." per line, in order. No single
-# LAUNCHER_COMMAND string. No shell splitting. No glob expansion.
-#
-# The awk below:
-#   - matches only lines of the exact form ARGV[n]="value"
-#   - orders by n regardless of file order
-#   - rejects malformed lines (no end quote) silently — they produce
-#     no output, which means the argv list is incomplete, and the
-#     launch refuses with "no launch command"
-#   - no eval, no source
+# Verify the jail= header matches. A path-mismatch read is refused
+# rather than executed.
+_meta_jail="$(awk -F= '/^jail=/{print substr($0, 6); exit}' "$launcher_meta")"
+if [ "$_meta_jail" != "$jail" ]; then
+    _choice="$(_dialog_choice --type=error --title="Launcher metadata mismatch" \
+        --text="The launcher metadata for \"${app_name}\" belongs to a different compartment (found: \"${_meta_jail}\", expected: \"${jail}\").
 
+This is a system error. Reinstall the application from the Compartments Manager, or contact support." \
+        --button="Close:0")"
+    exit 5
+fi
+
+# Parse ARGV[n]="..." lines. Fails closed on malformed / duplicate /
+# gap. Comment lines (#) and header lines (jail=, slug=, written_at=) are ignored by the pattern.
 _argv_string="$(awk '
-    {
-        if ($0 ~ /^ARGV\[[0-9]+\]=".*"$/) {
-            n_str = substr($0, 6, index($0, "]") - 6)
-            v_start = index($0, "\"") + 1
-            v_end = length($0) - 1
-            n = n_str + 0
-            v = substr($0, v_start, v_end - v_start + 1)
-            values[n] = v
-            if (n > max) max = n
+    BEGIN { max = -1 }
+    /^#/ { next }
+    /^ARGV\[/ {
+        if ($0 !~ /^ARGV\[[0-9]+\]=".*"$/) {
+            print "MALFORMED: " $0 > "/dev/stderr"
+            exit 2
         }
+        n_str = substr($0, 6, index($0, "]") - 6)
+        v_start = index($0, "\"") + 1
+        v_end = length($0) - 1
+        n = n_str + 0
+        if (n in values) {
+            print "DUPLICATE index " n > "/dev/stderr"
+            exit 3
+        }
+        values[n] = substr($0, v_start, v_end - v_start + 1)
+        if (n > max) max = n
     }
     END {
         for (i = 0; i <= max; i++) {
-            if (i in values) print values[i]
+            if (!(i in values)) {
+                print "GAP at index " i > "/dev/stderr"
+                exit 4
+            }
+            print values[i]
         }
     }
-' "$meta_file")"
+' "$launcher_meta")" || {
+    _choice="$(_dialog_choice --type=error --title="Launcher metadata is malformed" \
+        --text="The launch information for \"${app_name}\" in compartment \"${jail}\" is malformed and cannot be used.
+
+Reinstall the application from the Compartments Manager." \
+        --button="Close:0")"
+    exit 5
+}
 
 if [ -z "$_argv_string" ]; then
-    _choice="$(_dialog_choice --type=error --title="Application is not launchable" \
-        --text="The application \"${app_name}\" in \"${jail}\" has no launch command. Reinstall it from the Compartments Manager." \
+    _choice="$(_dialog_choice --type=error --title="Application has no launch command" \
+        --text="The application \"${app_name}\" in compartment \"${jail}\" has no launch command.
+
+Reinstall the application from the Compartments Manager." \
         --button="Close:0")"
     exit 5
 fi
 
-# Convert newline-separated values into positional parameters. Each line
-# is one argv element. Values containing embedded newlines are rejected
-# by the awk pattern above (they cannot match a line ending in ").
+# Convert newline-separated values into positional parameters.
 set --
 while IFS= read -r _arg; do
     set -- "$@" "$_arg"
@@ -150,9 +152,7 @@ case "$state" in
         exit 2
         ;;
     running|running-other-contained)
-        : # proceed (C1: silent allow; running compartment is already a
-          # safety decision the user made; adding a process does not
-          # change the attack surface)
+        : # proceed (C1: silent allow for a running compartment)
         ;;
     stopped)
         _choice="$(_dialog_choice --type=question \
@@ -164,28 +164,25 @@ To launch \"${app_name}\", the compartment must be started first. Starting a com
 Start the compartment and launch \"${app_name}\"?" \
             --button="Start and launch:10" \
             --button="Cancel:0")"
-        if [ "$_choice" != "10" ]; then
-            exit 1
-        fi
+        [ "$_choice" = "10" ] || exit 1
 
-        if ! "$PKEXEC" "$PARISHCTL" start "$jail"; then
-            _rc=$?
+        _rc=0
+        "$PKEXEC" -- "$PARISHCTL" start "$jail" || _rc=$?
+        if [ "$_rc" -ne 0 ]; then
             case "$_rc" in
                 126) _sentence="Authentication was cancelled. The compartment was not started. Launch the application again if this was accidental." ;;
                 127) _sentence="The parishctl command could not be run. Check that parishbsd-compartments is installed correctly." ;;
                 *)   _sentence="The compartment \"${jail}\" could not be started.
 
-Run: pkexec parishctl show ${jail}
-for details." ;;
+Run for details:
+  pkexec parishctl show ${jail}" ;;
             esac
             _choice="$(_dialog_choice --type=error --title="Could not start compartment" \
                 --text="$_sentence" --button="Close:0")"
             exit 5
         fi
 
-        # Re-check state after start. parishctl start performs its own
-        # post-condition check (item 6); we re-check here so a containment
-        # that fired during startup is caught before we proceed to launch.
+        # Re-check state after start (a containment may have fired).
         state="$(parish_jail_state "$jail")"
         case "$state" in
             running|running-other-contained) : ;;
@@ -206,7 +203,7 @@ for details." ;;
 esac
 
 # --- Vault-locked pre-check (defense in depth; parishctl start has the
-#     second layer per item 6) ---
+#     second layer) ---
 
 if [ -d "/usr/local/jails/vault/${jail}" ]; then
     _keystatus="$(zfs get -H -o value keystatus "zroot/vault-data/$jail" 2>/dev/null || true)"
@@ -239,12 +236,15 @@ Check with:
     esac
 fi
 
-# --- Start the display server (idempotent; no-op if already running) ---
+# --- Start display server ---
 
-if ! "$PKEXEC" "$PARISHCTL" xpra start "$jail"; then
-    _rc=$?
+_rc=0
+"$PKEXEC" -- "$PARISHCTL" xpra start "$jail" || _rc=$?
+if [ "$_rc" -ne 0 ]; then
     case "$_rc" in
-        126) _sentence="Authentication was cancelled, so the display session was not started. The compartment is still running. Launch the application again if this was accidental." ;;
+        126) _sentence="Authentication was cancelled, so the display session was not started.
+
+The compartment is still running. Launch the application again if this was accidental." ;;
         127) _sentence="The parishctl command could not be run. Check that parishbsd-compartments is installed correctly." ;;
         *)   _sentence="The compartment \"${jail}\" is running, but its display session could not be started.
 
@@ -257,22 +257,16 @@ To check manually:
     esac
     _choice="$(_dialog_choice --type=error --title="Display session failed" \
         --text="$_sentence" --button="Close:0")"
-    # Do NOT auto-stop the compartment. It started successfully; the
-    # display session failed. Per P3, side effects surprise the user.
-    # Per P5, name the partial state honestly.
+    # Do NOT auto-stop the compartment. P3 (no surprise side effects);
+    # P5 (name the partial state honestly).
     exit 5
 fi
 
 # --- Attach display client (background, best-effort) ---
 #
-# parish-xpra attach runs as the user (no pkexec) and opens a display
-# window on the user's desktop. It stays connected to the compartment's
-# Xpra session until the session ends or the user closes the window.
-#
-# Best-effort: if it fails immediately, the app still launches and the
-# user can attach manually with `parish-xpra attach <jail>`. The 0.3 s
-# delay gives the attach a chance to fail before we proceed; if it is
-# still running after 0.3 s, we assume success.
+# 0.3 s heuristic: if the process is still alive after 0.3 s, assume
+# it connected. A better check would look for the Xpra socket path
+# The user can attach manually with `parish-xpra attach <jail>` if the heuristic fails.
 
 "$PARISH_XPRA" attach "$jail" >/dev/null 2>&1 &
 _attach_pid=$!
@@ -291,10 +285,13 @@ fi
 
 # --- Launch the application ---
 
-if ! "$PKEXEC" "$PARISH_JAIL_RUN" "$jail" "$@"; then
-    _rc=$?
+_rc=0
+"$PKEXEC" -- "$PARISH_JAIL_RUN" "$jail" "$@" || _rc=$?
+if [ "$_rc" -ne 0 ]; then
     case "$_rc" in
-        126) _sentence="Authentication was cancelled, so the application was not started. The compartment and its display session are still running." ;;
+        126) _sentence="Authentication was cancelled, so the application was not started.
+
+The compartment and its display session are still running." ;;
         127) _sentence="The parish-jail-run command could not be run. Check that parishbsd-compartments is installed correctly." ;;
         *)   _sentence="The application \"${app_name}\" could not be started in the compartment \"${jail}\".
 
