@@ -1,1 +1,68 @@
-D
+#!/bin/sh
+# parishctl-show  show details for one compartment.
+#
+# Runs via pkexec parishctl-show. Polkit action .show has
+# allow_active=yes (same reasoning as parishctl-list).
+
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl show <name>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+jailroot="$(container_path "$name")" || {
+    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
+    exit 1
+}
+
+personality="$(container_personality "$jailroot")"
+kind="$(container_kind "$personality")"
+state="$(parish_jail_state "$name")"
+
+printf 'Compartment: %s\n' "$name"
+printf '  %-18s %s\n' "kind"        "$kind"
+printf '  %-18s %s\n' "personality" "$personality"
+printf '  %-18s %s\n' "path"        "$jailroot"
+
+case "$state" in
+    running)            printf '  %-18s running\n' "state" ;;
+    stopped)            printf '  %-18s stopped\n' "state" ;;
+    containing)         printf '  %-18s containing (in progress)\n' "state" ;;
+    contained)          printf '  %-18s CONTAINED by Guardian\n' "state" ;;
+    containment-failed) printf '  %-18s CONTAINMENT FAILED\n' "state" ;;
+    contained-but-running) printf '  %-18s CONTAINED (running again - investigate)\n' "state" ;;
+    stopped-maybe-contained) printf '  %-18s may be contained (another compartment was contained this boot)\n' "state" ;;
+    *)                  printf '  %-18s unknown\n' "state" ;;
+esac
+
+if container_is_vault "$personality"; then
+    _vls="$(container_vault_lock_state "$name")"
+    case "$_vls" in
+        unlocked) printf '  %-18s unlocked\n' "vault" ;;
+        locked)   printf '  %-18s locked\n' "vault" ;;
+    esac
+fi
+
+case "$state" in
+    running|contained-but-running)
+        ip="$(jexec "$name" ifconfig 2>/dev/null \
+              | awk '/inet 10\.0\.0\./ {print $2; exit}')"
+        [ -n "$ip" ] && printf '  %-18s %s\n' "internal IP" "$ip"
+        ;;
+esac
+
+case "$state" in
+    contained|containment-failed|contained-but-running|stopped-maybe-contained|containing|unknown)
+        printf '\n'
+        parish_jail_state_message "$name" "$state"
+        ;;
+esac
