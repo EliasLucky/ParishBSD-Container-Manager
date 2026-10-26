@@ -1,1 +1,74 @@
-D
+#!/bin/sh
+# parishctl-list  list compartments and their state.
+#
+# Runs via pkexec parishctl-list (see the dispatcher). The polkit
+# action .list has allow_active=yes, so a console user does not see
+# a password prompt. Remote users (allow_inactive=no) are refused.
+#
+# Requires root because parish_jail_state reads /var/run/parishbsd/
+# detection.conf and incident.*.conf, both written root:root 0600.
+
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+# Terminal colors only if stdout is a tty (we're under pkexec; stdout may or may not be a terminal).
+if [ -t 1 ]; then
+    BOLD="$(printf '\033[1m')"
+    DIM="$(printf '\033[2m')"
+    GREEN="$(printf '\033[32m')"
+    YELLOW="$(printf '\033[33m')"
+    RED="$(printf '\033[31m')"
+    RESET="$(printf '\033[0m')"
+else
+    BOLD=""; DIM=""; GREEN=""; YELLOW=""; RED=""; RESET=""
+fi
+
+names="$(container_list_names)"
+
+if [ -z "$names" ]; then
+    printf '%sNo compartments yet.%s\n\n' "$DIM" "$RESET"
+    printf 'Create one with:  parishctl create <name>\n'
+    exit 0
+fi
+
+printf '%s%-22s %-18s %s%s\n' "$BOLD" "NAME" "KIND" "STATE" "$RESET"
+
+for name in $names; do
+    jailroot="$(container_path "$name")"
+    personality="$(container_personality "$jailroot")"
+    kind="$(container_kind "$personality")"
+
+    state="$(parish_jail_state "$name")"
+    case "$state" in
+        running|running-other-contained)
+            state_disp="${GREEN}running${RESET}" ;;
+        stopped)
+            state_disp="${DIM}stopped${RESET}" ;;
+        containing)
+            state_disp="${YELLOW}containing${RESET}" ;;
+        contained)
+            state_disp="${RED}CONTAINED${RESET}" ;;
+        containment-failed)
+            state_disp="${RED}CONTAINMENT FAILED${RESET}" ;;
+        contained-but-running)
+            state_disp="${RED}CONTAINED (running)${RESET}" ;;
+        stopped-maybe-contained)
+            state_disp="${YELLOW}may be contained${RESET}" ;;
+        *)
+            state_disp="${RED}unknown${RESET}" ;;
+    esac
+
+    if container_is_vault "$personality"; then
+        _vls="$(container_vault_lock_state "$name")"
+        case "$_vls" in
+            locked)
+                state_disp="$state_disp (${YELLOW}vault locked${RESET})" ;;
+        esac
+    fi
+
+    printf '%-22s %-18s %b\n' "$name" "$kind" "$state_disp"
+done
