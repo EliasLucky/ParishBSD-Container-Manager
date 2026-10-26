@@ -1,1 +1,80 @@
+#!/bin/sh
+# parishctl-unlock  unlock a vault and start its jail.
 #
+# Runs via pkexec. Polkit action .unlock at auth_admin (no cache):
+# every invocation prompts. The vault key is the sensitive resource.
+#
+# Passphrase prompt: 27-unlock-vault.sh calls "zfs load-key", which
+# reads the passphrase from stdin. pkexec preserves stdin/stdout/
+# stderr by default, so the prompt reaches the user's terminal.
+# exec.allow_gui is NOT set on this action  it would preserve
+# DISPLAY/XAUTHORITY for a display interaction this command does
+# not perform. The TTY comes from pkexec's stdio preservation, not
+# from exec.allow_gui.
+
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+PARISH_SCRIPTS=/usr/local/libexec/parishbsd
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl unlock <name>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+jailroot="$(container_path "$name")" || {
+    printf 'parishctl: no compartment named "%s"\n' "$name" >&2
+    exit 1
+}
+
+personality="$(container_personality "$jailroot")"
+container_is_vault "$personality" || {
+    printf 'parishctl: "%s" is not a vault (kind: %s)\n' \
+        "$name" "$(container_kind "$personality")" >&2
+    exit 1
+}
+
+state="$(parish_jail_state "$name")"
+case "$state" in
+    containing|contained|contained-but-running|containment-failed|stopped-maybe-contained)
+        parish_jail_state_message "$name" "$state" >&2
+        exit 1
+        ;;
+esac
+
+# Under pkexec invoked without exec.allow_gui, stdin is preserved
+# but there is no TTY guarantee from the process perspective — the
+# stdin/stdout/stderr triple is passed through, and the prompt will
+# reach whatever terminal the caller had. If that terminal is not
+# a TTY, "zfs load-key" will hang. Refuse proactively if stdin is
+# not a terminal.
+if [ ! -t 0 ]; then
+    printf 'parishctl: cannot unlock "%s" without a terminal.\n' "$name" >&2
+    printf 'The passphrase prompt requires an interactive terminal.\n' >&2
+    printf 'Run from a terminal:\n  pkexec parishctl unlock %s\n' "$name" >&2
+    exit 1
+fi
+
+sh "$PARISH_SCRIPTS/27-unlock-vault.sh" "$name" \
+    || { printf 'parishctl: failed to unlock "%s"\n' "$name" >&2; exit 1; }
+
+# Post-condition: the jail should be running after unlock.
+_state_after="$(parish_jail_state "$name")"
+case "$_state_after" in
+    running|running-other-contained) : ;;
+    *)
+        printf 'parishctl: unlock reported success but state is "%s".\n' "$_state_after" >&2
+        printf 'The vault key may be loaded; the jail may not be running.\n' >&2
+        printf 'Check:\n  pkexec parishctl show %s\n' "$name" >&2
+        exit 1
+        ;;
+esac
+
+printf 'Vault "%s" is unlocked and running.\n' "$name"
