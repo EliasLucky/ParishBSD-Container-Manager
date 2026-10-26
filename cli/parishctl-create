@@ -1,2 +1,146 @@
 #!/bin/sh
+# parishctl-create  create a compartment.
+#
+# Runs via pkexec. Polkit action .create at auth_admin_keep
+# (5-minute cache; creation is reversible by destroy).
+#
+# Usage forms:
+#   parishctl-create <name> <kind>   no prompts (GUI, scripts)
+#   parishctl-create <name>          prompts for kind (CLI)
+#   parishctl-create                 prompts for both (CLI)
+#
+# Interactive prompts require a TTY on stdin. Under pkexec, stdin
+# is preserved, so a CLI user gets prompts. The GUI must pass
+# explicit arguments; there is no display-side prompt fallback.
+#
+# Vault creation runs 26-create-vault-data.sh FIRST (which prompts
+# for the passphrase on the TTY), then 30-create-jail.sh, then
+# 27-unlock-vault.sh for vaults (which is a no-op if the key is
+# already loaded by the create step).
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+PARISH_SCRIPTS=/usr/local/libexec/parishbsd
+PERSONALITIES=/usr/local/share/parishbsd/personalities
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/state.sh"
+
+name="${1-}"
+kind_in="${2-}"
+
+# Prompt for name if missing.
+if [ -z "$name" ]; then
+    [ -t 0 ] || { printf 'parishctl: container name is required (no terminal for prompt)\n' >&2; exit 2; }
+    printf 'Container name: '
+    read -r name
+fi
+[ -n "$name" ] || { printf 'parishctl: container name is required\n' >&2; exit 2; }
+
+# Strict creation-time validation.
+# with constraints; the permissive validator is for existing jails.
+validate_jail_name "$name" || exit 2
+
+# Prompt for kind if missing.
+if [ -z "$kind_in" ]; then
+    [ -t 0 ] || { printf 'parishctl: container kind is required (no terminal for prompt)\n' >&2; exit 2; }
+    cat >&2 <<'EOF'
+
+What kind of container?
+
+  1) Application     — general-purpose jailed apps (browser, office, etc.)
+  2) File Vault      — encrypted storage for documents
+  3) Database Vault  — encrypted PostgreSQL database
+
+EOF
+    printf 'Choose [1-3]: ' >&2
+    read -r choice
+    case "$choice" in
+        1) kind_in="app" ;;
+        2) kind_in="vault-files" ;;
+        3) kind_in="vault-postgres" ;;
+        *) printf 'parishctl: invalid choice: %s\n' "$choice" >&2; exit 2 ;;
+    esac
+fi
+
+personality="$(container_kind_to_personality "$kind_in")"
+validate_personality_name "$personality" \
+    || { printf 'parishctl: invalid container kind: %s\n' "$kind_in" >&2; exit 2; }
+
+[ -d "$PERSONALITIES/$personality" ] \
+    || { printf 'parishctl: unknown container kind: %s (no personality %s)\n' \
+            "$kind_in" "$personality" >&2; exit 2; }
+
+if container_path "$name" >/dev/null 2>&1; then
+    printf 'parishctl: container "%s" already exists\n' "$name" >&2
+    exit 1
+fi
+
+kind_label="$(container_kind "$personality")"
+printf '\nCreating container "%s" (%s)...\n\n' "$name" "$kind_label"
+
+if container_is_vault "$personality"; then
+    # Vault: create encrypted storage first. zfs create with
+    # keyformat=passphrase prompts on the TTY for the passphrase.
+    # pkexec preserves the TTY, so this works interactively.
+    printf 'Step 1 of 2: configuring encrypted storage\n'
+    sh "$PARISH_SCRIPTS/26-create-vault-data.sh" "$name" \
+        || { printf 'parishctl: failed to create encrypted storage for "%s"\n' "$name" >&2; exit 1; }
+    printf '\n'
+fi
+
+printf 'Step 2 of 2: installing container\n'
+sh "$PARISH_SCRIPTS/30-create-jail.sh" "$name" "$personality" \
+    || { printf 'parishctl: failed to create container "%s"\n' "$name" >&2; exit 1; }
+
+# Post-condition: the jail filesystem must exist.
+if ! container_path "$name" >/dev/null 2>&1; then
+    printf 'parishctl: 30-create-jail.sh reported success, but the filesystem for "%s" is not present.\n' "$name" >&2
+    printf 'This indicates a partial creation. Check:\n' >&2
+    printf '  ls -la /usr/local/jails/*/%s\n' "$name" >&2
+    exit 1
+fi
+
+printf '\n'
+
+# Start (and unlock, for vaults).
+if container_is_vault "$personality"; then
+    printf 'Starting and unlocking...\n'
+    if ! sh "$PARISH_SCRIPTS/27-unlock-vault.sh" "$name"; then
+        printf '\nparishctl: container "%s" was created but failed to start.\n' "$name" >&2
+        printf 'The vault key may be loaded but the jail is not running. Check:\n' >&2
+        printf '  pkexec parishctl show %s\n' "$name" >&2
+        printf 'To retry start:\n' >&2
+        printf '  pkexec parishctl start %s\n' "$name" >&2
+        exit 1
+    fi
+else
+    if ! service jail start "$name" >/dev/null 2>&1; then
+        printf '\nparishctl: container "%s" was created but failed to start.\n' "$name" >&2
+        printf 'Check with:\n' >&2
+        printf '  service jail status %s\n' "$name" >&2
+        printf 'To retry:\n' >&2
+        printf '  pkexec parishctl start %s\n' "$name" >&2
+        exit 1
+    fi
+
+    # Post-condition: the jail should be running.
+    _state_after="$(parish_jail_state "$name")"
+    case "$_state_after" in
+        running|running-other-contained) : ;;
+        *)
+            printf '\nparishctl: start reported success but state is "%s".\n' "$_state_after" >&2
+            printf 'To retry:\n  pkexec parishctl start %s\n' "$name" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+printf '\nContainer "%s" is ready.\n\n' "$name"
+printf '  pkexec parishctl console %s    Open a shell inside\n' "$name"
+printf '  parishctl show %s             Show details\n' "$name"
+if container_is_vault "$personality"; then
+    printf '  pkexec parishctl lock %s      Lock the vault\n' "$name"
+fi
