@@ -1,2 +1,41 @@
 #!/bin/sh
+# parishctl-console  open a shell in a compartment.
+#
+# Runs via pkexec. Polkit action .console at auth_admin (no cache):
+# every invocation prompts. A shell runs as root INSIDE the jail and
+# is open-ended; caching authorization for 5 minutes would let any
+# person at the console become root inside a compartment without a
+# fresh prompt.
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl console <name>\n' >&2
+    exit 2
+fi
+
+name="$1"
+validate_jail_name_existing "$name" || exit 2
+
+state="$(parish_jail_state "$name")"
+case "$state" in
+    running|running-other-contained)
+        : # proceed
+        ;;
+    stopped)
+        printf 'parishctl: container "%s" is not running.\n' "$name" >&2
+        printf 'Start it first:\n  pkexec parishctl start %s\n' "$name" >&2
+        exit 1
+        ;;
+    *)
+        parish_jail_state_message "$name" "$state" >&2
+        exit 1
+        ;;
+esac
+
+exec jexec -- "$name" /bin/sh
