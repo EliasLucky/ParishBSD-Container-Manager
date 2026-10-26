@@ -93,7 +93,18 @@ container_kind() {
         *)              printf '%s' "${1-}" ;;
     esac
 }
-
+# container_kind_to_personality <kind>
+# Map user-facing kind aliases to personality names. Inverse of
+# container_kind for alias inputs; identity for personality names
+# already in canonical form.
+container_kind_to_personality() {
+    case "${1-}" in
+        app|application)                           printf 'app-xpra' ;;
+        vault-files|file-vault|files|files-vault)  printf 'vault-files' ;;
+        vault-postgres|vault-pg|database|db)       printf 'vault-postgres' ;;
+        *)                                         printf '%s' "${1-}" ;;
+    esac
+}
 # container_is_vault <personality>
 container_is_vault() {
     case "${1-}" in vault-*) return 0 ;; *) return 1 ;; esac
@@ -111,7 +122,147 @@ container_vault_lock_state() {
         *)         printf 'locked' ;;
     esac
 }
+# container_start <name>
+# Start a compartment. Handles vault unlock, TTY refusals, and
+# post-condition verification. Prints user-facing messages.
+#
+# Returns 0 on success (jail verified running), 1 on any failure.
+# Callers should propagate the exit code.
+container_start() {
+    _name="${1-}"
+    [ -n "$_name" ] || return 1
 
+    _jailroot="$(container_path "$_name")" || {
+        printf 'parishctl: no compartment named "%s"\n' "$_name" >&2
+        return 1
+    }
+
+    _personality="$(container_personality "$_jailroot")"
+    _state="$(parish_jail_state "$_name")"
+
+    case "$_state" in
+        running|running-other-contained)
+            printf 'Container "%s" is already running.\n' "$_name"
+            return 0
+            ;;
+        stopped)
+            : # proceed
+            ;;
+        *)
+            parish_jail_state_message "$_name" "$_state" >&2
+            return 1
+            ;;
+    esac
+
+    if container_is_vault "$_personality"; then
+        _ds="zroot/vault-data/$_name"
+        _keystatus="$(zfs get -H -o value keystatus "$_ds" 2>/dev/null)"
+        case "$_keystatus" in
+            available) : ;;
+            unavailable)
+                if [ ! -t 0 ]; then
+                    cat >&2 <<EOF
+The vault "$_name" is locked.
+
+A vault needs a passphrase to unlock. Starting it from the desktop
+does not give you a place to type the passphrase.
+
+To unlock it:
+  1. Open a terminal (in the applications menu, under System or Utilities).
+  2. Run: pkexec parishctl unlock $_name
+  3. Type the passphrase when prompted.
+  4. Start the compartment again.
+EOF
+                    return 1
+                fi
+                ;;
+            *)
+                cat >&2 <<EOF
+Cannot determine the state of vault "$_name".
+The ZFS dataset is "$_ds" and "zfs get keystatus" did not return a
+usable value (got '${_keystatus:-<empty>}').
+
+This usually means one of:
+  - The dataset does not exist (was the vault destroyed?).
+  - The ZFS pool is not imported (try: zpool import).
+  - The dataset is not encrypted (was it created correctly?).
+  - ZFS is not working correctly on this system.
+
+Check the state with:
+  zfs get keystatus $_ds
+  zpool status
+EOF
+                return 1
+                ;;
+        esac
+
+        sh /usr/local/libexec/parishbsd/27-unlock-vault.sh "$_name" \
+            || { printf 'parishctl: failed to unlock and start vault "%s"\n' "$_name" >&2; return 1; }
+    else
+        service jail start "$_name" \
+            || { printf 'parishctl: failed to start "%s"\n' "$_name" >&2; return 1; }
+    fi
+
+    # Post-condition (P5/A8): start reported success; verify state.
+    _state_after="$(parish_jail_state "$_name")"
+    case "$_state_after" in
+        running|running-other-contained)
+            return 0
+            ;;
+        containing|contained|contained-but-running|containment-failed|stopped-maybe-contained)
+            parish_jail_state_message "$_name" "$_state_after" >&2
+            return 1
+            ;;
+        *)
+            printf 'parishctl: start command returned success but the container is "%s".\n' \
+                "$_state_after" >&2
+            printf 'This is unexpected. Check:\n' >&2
+            printf '  service jail status %s\n' "$_name" >&2
+            printf '  tail /var/log/messages\n' >&2
+            return 1
+            ;;
+    esac
+}
+
+# container_stop <name>
+# Stop a compartment. Prints user-facing messages. Returns 0 on
+# success (jail verified stopped), 1 on any failure.
+container_stop() {
+    _name="${1-}"
+    [ -n "$_name" ] || return 1
+
+    _jailroot="$(container_path "$_name")" || {
+        printf 'parishctl: no compartment named "%s"\n' "$_name" >&2
+        return 1
+    }
+
+    _personality="$(container_personality "$_jailroot")"
+    _state="$(parish_jail_state "$_name")"
+
+    case "$_state" in
+        stopped)
+            printf 'Container "%s" is not running.\n' "$_name"
+            return 0
+            ;;
+        containing|contained|containment-failed|contained-but-running|stopped-maybe-contained|unknown)
+            parish_jail_state_message "$_name" "$_state" >&2
+            return 1
+            ;;
+    esac
+
+    service jail stop "$_name" \
+        || { printf 'parishctl: failed to stop "%s"\n' "$_name" >&2; return 1; }
+
+    printf 'Container "%s" stopped.\n' "$_name"
+
+    if container_is_vault "$_personality"; then
+        printf '\n'
+        printf 'Note: the vault is still unlocked. To lock it:\n'
+        printf '    pkexec parishctl lock %s\n' "$_name"
+    fi
+
+    return 0
+}
 # container_list_names
 # All container names, sorted. Scans app, vault, containers tiers.
 container_list_names() {
