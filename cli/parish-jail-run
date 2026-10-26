@@ -1,1 +1,40 @@
+#!/bin/sh
+# parish-jail-run - run a command inside a compartment. No shell, no parsing.
 #
+# Usage: parish-jail-run <jail> <argv...>
+#
+# Called by parish-app-launch via pkexec (root required for jexec).
+# Launches an application inside a jail. The application runs as a
+# member of the jail and is subject to the jail's isolation rules.
+#
+# This tool does ONE thing: pass argv through to jexec. No shell.
+# No argument joining. No interpretation. The privilege boundary is
+# the jexec call itself; everything else is argv passthrough.
+#
+# DISPLAY is set to :100 so graphical applications connect to the
+# Xpra display server started by `parish-xpra start` (which also
+# defaults to :100). Non-graphical applications ignore DISPLAY. If
+# parish-xpra's default changes, update this in the same commit.
+
+set -eu
+umask 077
+
+. /usr/local/libexec/parishbsd/lib/validate.sh
+
+jail="${1:?usage: parish-jail-run <jail> <argv...>}"
+shift
+
+if [ "$#" -lt 1 ]; then
+    printf 'parish-jail-run: no command\n' >&2
+    exit 1
+fi
+
+validate_jail_name_existing "$jail" || {
+    printf 'parish-jail-run: invalid jail name: %s\n' "$jail" >&2
+    exit 2
+}
+
+DISPLAY=":100"
+export DISPLAY
+
+exec jexec "$jail" "$@"
