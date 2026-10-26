@@ -41,8 +41,13 @@ cfg=/usr/local/etc/parishbsd/lock-schedules
 install -d "$(dirname "$cfg")"
 
 if [ -f "$cfg" ]; then
-    # S7 fix: $1 "" forces string comparison in awk, not numeric.
-    awk -v n="$name" '$1 "" != n' "$cfg" > "$cfg.tmp" || true
+    if ! awk -v n="$name" '$1 "" != n' "$cfg" > "$cfg.tmp"; then
+        printf 'parishctl: failed to update the schedule file; nothing was changed.\n' >&2
+        printf 'The schedules file is unchanged. Check with:\n' >&2
+        printf '  pkexec parishctl schedules\n' >&2
+        rm -f "$cfg.tmp"
+        exit 1
+    fi
     mv "$cfg.tmp" "$cfg"
 else
     printf '# Vault lock schedules. Format: <vault-name> <HH:MM>\n' > "$cfg"
