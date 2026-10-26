@@ -116,6 +116,17 @@ if container_is_vault "$personality"; then
         printf '  pkexec parishctl start %s\n' "$name" >&2
         exit 1
     fi
+    _state_after="$(parish_jail_state "$name")"
+    case "$_state_after" in
+        running|running-other-contained) : ;;
+        *)
+            printf '\nparishctl: unlock reported success but state is "%s".\n' \
+                "$_state_after" >&2
+            printf 'The vault key may be loaded; the jail may not be running.\n' >&2
+            printf 'Check:\n  pkexec parishctl show %s\n' "$name" >&2
+            exit 1
+            ;;
+    esac
 else
     if ! service jail start "$name" >/dev/null 2>&1; then
         printf '\nparishctl: container "%s" was created but failed to start.\n' "$name" >&2
