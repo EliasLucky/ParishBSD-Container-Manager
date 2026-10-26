@@ -167,7 +167,7 @@ Start the compartment and launch \"${app_name}\"?" \
         [ "$_choice" = "10" ] || exit 1
 
         _rc=0
-        "$PKEXEC" -- "$PARISHCTL" start "$jail" || _rc=$?
+        "$PKEXEC" "$PARISHCTL" start "$jail" || _rc=$?
         if [ "$_rc" -ne 0 ]; then
             case "$_rc" in
                 126) _sentence="Authentication was cancelled. The compartment was not started. Launch the application again if this was accidental." ;;
@@ -239,7 +239,7 @@ fi
 # --- Start display server ---
 
 _rc=0
-"$PKEXEC" -- "$PARISHCTL" xpra start "$jail" || _rc=$?
+"$PKEXEC" "$PARISHCTL" xpra start "$jail" || _rc=$?
 if [ "$_rc" -ne 0 ]; then
     case "$_rc" in
         126) _sentence="Authentication was cancelled, so the display session was not started.
@@ -286,7 +286,7 @@ fi
 # --- Launch the application ---
 
 _rc=0
-"$PKEXEC" -- "$PARISH_JAIL_RUN" "$jail" "$@" || _rc=$?
+"$PKEXEC" "$PARISH_JAIL_RUN" "$jail" "$@" || _rc=$?
 if [ "$_rc" -ne 0 ]; then
     case "$_rc" in
         126) _sentence="Authentication was cancelled, so the application was not started.
