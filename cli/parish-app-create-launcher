@@ -34,6 +34,7 @@ LAUNCHER_STORE="/var/db/parishbsd/launchers"
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
 . "$LIBDIR/desktop.sh"
 . "$LIBDIR/launcher.sh"
 
@@ -47,6 +48,7 @@ where="${3:-menu}"
 validate_jail_name_existing "$jail" || exit 2
 validate_app_name "$name" || exit 2
 
+parish_require_not_contained "$jail" || exit 1
 case "$where" in
     menu|desktop|both) : ;;
     *) err "invalid --where value: $where" ;;
