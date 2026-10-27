@@ -19,6 +19,17 @@ if [ ! -d /exchange ]; then
     log "WARN: /exchange is not mounted"
 fi
 
+# Xvfb is required for headless xpra start
+# Verify it is present. If not, warn so the user knows
+# the headless path will not work.
+#
+# The install hint names the FreeBSD package. A VNC-based Xvfb
+# variant (if the personality switches) would need its own check.
+if ! command -v Xvfb >/dev/null 2>&1 && [ ! -x /usr/local/bin/Xvfb ]; then
+    log "WARN: Xvfb is not installed - headless Xpra mode will not work"
+    log "      Install it in this container: pkg install -y xorg-vfbserver"
+fi
+
 # --- Point applications at the exchange directory for downloads ---
 # XDG_DOWNLOAD_DIR
 cat > /usr/local/etc/profile.d/parishbsd-downloads.sh <<'EOF'
