@@ -252,6 +252,7 @@ cmd_install() {
     jail="${1:?usage: parish-apps install <jail> <package>}"
     package="${2:?usage: parish-apps install <jail> <package>}"
     require_jail "$jail"
+    parish_require_not_contained "$jail" || exit 1
     validate_package_name "$package"
     log "Installing $package in $jail"
     pkg -j "$jail" install -y "$package" || return $?
@@ -297,6 +298,7 @@ cmd_install_file() {
     host_file="${1:?usage: parish-apps install-file <jail> <file> [flags]}"
     shift || true
     require_jail "$jail"
+    parish_require_not_contained "$jail" || exit 1
     [ -f "$host_file" ] || err "not a regular file: $host_file"
     [ ! -L "$host_file" ] || err "file is a symlink: $host_file"
     canonical_path "$host_file" >/dev/null
@@ -624,6 +626,7 @@ cmd_remove() {
     jail="${1:?usage: parish-apps remove <jail> <package>}"
     package="${2:?usage: parish-apps remove <jail> <package>}"
     require_jail "$jail"
+    parish_require_not_contained "$jail" || exit 1
     validate_package_name "$package"
     log "Removing $package from $jail"
     pkg -j "$jail" delete -y "$package"
@@ -633,6 +636,7 @@ cmd_remove_custom() {
     jail="${1:?usage: parish-apps remove-custom <jail> <app>}"
     app_name="${2:?usage: parish-apps remove-custom <jail> <app>}"
     validate_app_name "$app_name" || err "invalid app name: $app_name"
+    parish_require_not_contained "$jail" || exit 1
 
     _removed=0
 
@@ -663,6 +667,7 @@ cmd_upgrade() {
     jail="${1:?usage: parish-apps upgrade <jail> [package]}"
     package="${2:-}"
     require_jail "$jail"
+    parish_require_not_contained "$jail" || exit 1
 
     if [ -n "$package" ]; then
         validate_package_name "$package"
@@ -682,6 +687,7 @@ cmd_launch() {
     jail="${1:?usage: parish-apps launch <jail> <app>}"
     app="${2:?usage: parish-apps launch <jail> <app>}"
     validate_app_name "$app" || err "invalid app name: $app"
+    parish_require_not_contained "$jail" || exit 1
     exec "$PARISH_BIN/parish-app-launch" "$jail" "$app"
 }
 
@@ -690,6 +696,7 @@ cmd_create_launcher() {
     name="${2:?}"
     where="${3:-menu}"
     validate_app_name "$name" || err "invalid app name: $name"
+    parish_require_not_contained "$jail" || exit 1
     # create-launcher's refusal is intentional (the user is trying to
     # install/configure; legacy presence means they must reinstall to
     # migrate).
@@ -702,6 +709,7 @@ cmd_pkg_launcher() {
     package="${2:?}"
     where="${3:-menu}"
     validate_package_name "$package"
+    parish_require_not_contained "$jail" || exit 1
     exec "$PARISH_APP_CREATE_LAUNCHER" "$jail" "$package" "$where"
 }
 
