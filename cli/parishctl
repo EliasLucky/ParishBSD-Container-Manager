@@ -51,12 +51,19 @@ SCHEDULES
   parishctl unschedule-lock <v>     Remove a schedule
 
 APPLICATIONS
-  parishctl apps list <jail>        List installed apps
-  parishctl apps install <jail> <pkg>
+  parishctl apps list <jail>              List installed apps
+  parishctl apps install <jail> <pkg>     Install a FreeBSD package
   parishctl apps install-file <jail> <file>
-  parishctl apps remove <jail> <pkg>
-  parishctl apps upgrade <jail>
-  parishctl detect <file>           Identify a file's type
+                                          Install from a local file
+  parishctl apps remove <jail> <pkg>      Remove a package
+  parishctl apps remove-custom <jail> <app>
+                                          Remove a custom app
+  parishctl apps upgrade <jail> [pkg]     Upgrade packages
+  parishctl apps launch <jail> <app>      Launch an app
+  parishctl apps create-launcher <jail> <name> [where]
+                                          Create a launcher
+  parishctl apps pkg-launcher <jail> <pkg> [where]
+                                          Create a launcher (alias)
 
 USB
   parishctl usb list                List attached devices
