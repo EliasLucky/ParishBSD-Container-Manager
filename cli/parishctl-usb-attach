@@ -1,2 +1,43 @@
 #!/bin/sh
+# parishctl-usb-attach  attach a USB device to a compartment.
+#
+# Runs via pkexec. Polkit action .usb-attach at auth_admin (no cache;
+# mounting arbitrary block devices into a jail is a
+# higher-risk operation than install).
+#
+# Wrapper-layer state check: refuse on containment states. Allow
+# stopped (attach/detach work on stopped jails).
+#
+# Device validation is delegated to parish-usb (`validate_dev`,
+# `validate_fs`). The wrapper validates jail name (needed for the
+# state check).
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    printf 'usage: parishctl usb attach <jail> <dev> [fstype]\n' >&2
+    exit 2
+fi
+
+jail="$1"
+shift
+# $@ now is: <dev> [fstype]
+
+validate_jail_name_existing "$jail" || exit 2
+
+state="$(parish_jail_state "$jail")"
+case "$state" in
+    running|running-other-contained|stopped)
+        : # proceed — attach works on stopped jails
+        ;;
+    *)
+        parish_jail_state_message "$jail" "$state" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/local/bin/parish-usb attach "$jail" "$@"
