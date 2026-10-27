@@ -2,6 +2,9 @@
 # parish-usb  attach/detach/list removable media.
 set -eu
 
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
 JAIL_ROOT_APP="/usr/local/jails/app"
 JAIL_ROOT_VAULT="/usr/local/jails/vault"
 HOST_MNT_ROOT="/var/parishbsd/media"
@@ -45,15 +48,9 @@ ensure_dir() {
     esac
 }
 
-validate_jail_name() {
-    [ -n "$1" ] || err "empty jail name"
-    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' \
-        || err "invalid jail name: '$1'"
-}
-
 resolve_jail_root() {
     local jail="$1"
-    validate_jail_name "$jail"
+    validate_jail_name_existing "$jail"
     if [ -d "$JAIL_ROOT_APP/$jail" ]; then
         echo "$JAIL_ROOT_APP/$jail"
     elif [ -d "$JAIL_ROOT_VAULT/$jail" ]; then
@@ -95,6 +92,18 @@ cmd_attach() {
     require_root
     validate_dev "$dev"
 
+    # containment state check.
+    state="$(parish_jail_state "$jail")"
+    case "$state" in
+        running|running-other-contained|stopped)
+            : # proceed
+            ;;
+        *)
+            parish_jail_state_message "$jail" "$state" >&2
+            exit 1
+            ;;
+    esac
+
     local dev_path="/dev/$dev"
     [ -b "$dev_path" ] || err "not a block device: $dev_path"
 
@@ -107,6 +116,20 @@ cmd_attach() {
             || err "cannot determine filesystem of $dev_path (specify explicitly)"
     fi
     validate_fs "$fstype"
+
+    # verify the mount helper for fusefs types is installed.
+    # RUN_DEPENDS installs them, but a user who removed the package
+    # gets an honest message instead of "unknown filesystem type".
+    case "$fstype" in
+        exfat)
+            command -v mount.exfat >/dev/null 2>&1 \
+                || err "exfat support requires sysutils/fusefs-exfat (pkg install fusefs-exfat)"
+            ;;
+        ntfs)
+            command -v mount.ntfs >/dev/null 2>&1 \
+                || err "ntfs support requires sysutils/fusefs-ntfs (pkg install fusefs-ntfs)"
+            ;;
+    esac
 
     # build mount points with canonical + no-symlink checks
     ensure_dir "$HOST_MNT_ROOT" "/var/parishbsd"
@@ -130,12 +153,13 @@ cmd_attach() {
     if is_mounted "$jail_mnt"; then
         log "jail side already exposed: $host_mnt -> $jail_mnt"
     else
-        if ! mount_nullfs "$host_mnt" "$jail_mnt"; then
+        # harden the nullfs mount.
+        if ! mount_nullfs -o ro,nosuid,noexec,nodev "$host_mnt" "$jail_mnt"; then
             umount "$host_mnt" 2>/dev/null || true
             log "rolled back host mount after jail-mount failure: $host_mnt"
             err "cannot expose $host_mnt inside jail $jail"
         fi
-        log "exposed $host_mnt -> $jail_mnt (jail: $jail)"
+        log "exposed $host_mnt -> $jail_mnt (jail: $jail, ro,nosuid,noexec,nodev)"
     fi
 
     echo "Attached: $dev ($fstype, read-only) -> $jail:/$JAIL_MNT_SUBDIR/$dev"
@@ -147,6 +171,18 @@ cmd_detach() {
     require_root
     validate_dev "$dev"
 
+    # ontainment state check.
+    state="$(parish_jail_state "$jail")"
+    case "$state" in
+        running|running-other-contained|stopped)
+            : # proceed
+            ;;
+        *)
+            parish_jail_state_message "$jail" "$state" >&2
+            exit 1
+            ;;
+    esac
+ 
     local jail_root
     jail_root=$(resolve_jail_root "$jail")
     validate_jail_root "$jail_root"
