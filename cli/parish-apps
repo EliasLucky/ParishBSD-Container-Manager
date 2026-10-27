@@ -53,9 +53,11 @@ JAILS_DIR="/usr/local/jails"
 EXCHANGE_ROOT="/var/parishbsd/exchange"
 LAUNCHER_STORE="/var/db/parishbsd/launchers"
 PARISH_BIN=/usr/local/bin
+PARISH_APP_CREATE_LAUNCHER=/usr/local/sbin/parish-app-create-launcher
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/launcher.sh"
 
 log() { printf ' %s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -91,74 +93,50 @@ canonical_path() {
     echo "$real"
 }
 
-# --------------------------------------------------------------------
-# Host-side launcher metadata writer
-# --------------------------------------------------------------------
-
-write_host_launcher_metadata() {
+# _locate_desktop_argv_and_version <jail> <pkg_name>
+#
+# Sets three globals:
+#   _found_exec      Exec= line from the package's .desktop, or empty
+#   _found_icon      Icon= line (validated, may be "" on invalid)
+#   _found_version   pkg version, or "1.0" fallback
+#
+# Searches /usr/local/share/applications and /usr/share/applications
+# in the jail, matching <pkg_name>.desktop. First match wins.
+#
+# Used by do_freebsd_pkg (install-file) and cmd_install (catalog).
+# Same extraction logic in one place.
+_locate_desktop_argv_and_version() {
     _jail="$1"
-    _slug="$2"
-    _name="$3"
-    _version="$4"
-    _method="$5"
-    _install_path="$6"
-    shift 6
+    _pkg="$2"
 
-    [ "$#" -ge 1 ] || err "at least one argv element required"
+    _found_exec=""
+    _found_icon=""
 
-    validate_jail_name_existing "$_jail"
-    validate_app_name "$_slug" || err "invalid slug: '$_slug'"
-
-    # reject ANY control character (not just \n) in header values.
-    # CR in a .desktop Exec= line (CRLF-origin files) would otherwise
-    # be embedded in the metadata and confuse the reader.
-    for _hdr_val in "$_name" "$_version" "$_method" "$_install_path"; do
-        case "$_hdr_val" in
-            *[[:cntrl:]]*)
-                err "launcher metadata value contains a control character; refusing to write"
-                ;;
-        esac
+    for _d in /usr/local/share/applications /usr/share/applications; do
+        _cand="$_d/$_pkg.desktop"
+        if jexec "$_jail" test -f "$_cand" 2>/dev/null; then
+            _found_exec="$(jexec "$_jail" sh -c \
+                'grep "^Exec=" "$1" | head -1 | cut -d= -f2-' _ "$_cand")"
+            _found_icon="$(jexec "$_jail" sh -c \
+                'grep "^Icon=" "$1" | head -1 | cut -d= -f2-' _ "$_cand")"
+            break
+        fi
     done
 
-    _launcher_dir="$LAUNCHER_STORE/$_jail"
-    install -d -m 0755 -o root -g wheel "$LAUNCHER_STORE" 2>/dev/null || true
-    [ -d "$LAUNCHER_STORE" ] || err "cannot create $LAUNCHER_STORE (should be created by the port)"
-    install -d -m 0755 -o root -g wheel "$_launcher_dir" 2>/dev/null || true
-    [ -d "$_launcher_dir" ] || err "cannot create $_launcher_dir"
+    # Validate icon name; warn and drop if invalid (writer would reject).
+    case "$_found_icon" in
+        '') : ;;
+        */*|*..*)
+            log "WARN: icon for $_pkg is a path, using generic"
+            _found_icon=""
+            ;;
+        *[!A-Za-z0-9._+-]*)
+            log "WARN: icon for $_pkg has invalid characters, using generic"
+            _found_icon=""
+            ;;
+    esac
 
-    _meta_file="$_launcher_dir/$_slug.conf"
-    _tmp="${_meta_file}.tmp.$$"
-
-    # also reject control characters per argv element.
-    {
-        printf '# ParishBSD launcher metadata written by parish-apps install-file\n'
-        printf '# or parish-app-create-launcher. Do not edit.\n'
-        printf 'jail=%s\n'         "$_jail"
-        printf 'slug=%s\n'         "$_slug"
-        printf 'name=%s\n'         "$_name"
-        printf 'version=%s\n'      "$_version"
-        printf 'method=%s\n'       "$_method"
-        printf 'install_path=%s\n' "$_install_path"
-        printf 'written_at=%s\n'   "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        _i=0
-        for _arg in "$@"; do
-            case "$_arg" in
-                *[[:cntrl:]]*)
-                    err "launcher argv[$_i] contains a control character; refusing to write"
-                    ;;
-                *'"'*)
-                    err "launcher argv[$_i] contains '\"'; refusing to write"
-                    ;;
-            esac
-            printf 'ARGV[%d]="%s"\n' "$_i" "$_arg"
-            _i=$((_i + 1))
-        done
-    } > "$_tmp"
-
-    chmod 0644 "$_tmp"
-    chown root:wheel "$_tmp"
-    mv -f "$_tmp" "$_meta_file"
-    log "Wrote launcher metadata: $_meta_file"
+    _found_version="$(jexec "$_jail" pkg query %v "$_pkg" 2>/dev/null || echo 1.0)"
 }
 
 # --------------------------------------------------------------------
@@ -263,7 +241,37 @@ cmd_install() {
     require_jail "$jail"
     validate_package_name "$package"
     log "Installing $package in $jail"
-    pkg -j "$jail" install -y "$package"
+    pkg -j "$jail" install -y "$package" || return $?
+
+    # write host-side metadata immediately after install.
+    # Small window (milliseconds) between pkg install and .desktop
+    # extraction; attacker must be actively running in the jail at
+    # that exact moment.
+    _locate_desktop_argv_and_version "$jail" "$package"
+
+    if [ -n "$_found_exec" ]; then
+        case "$_found_exec" in
+            *[\"\']*|*\\*)
+                log "WARN: $package.desktop has quotes or backslashes in Exec=; metadata not written"
+                log "To retry later: parishctl apps create-launcher $jail $package"
+                return 0
+                ;;
+        esac
+        _cleaned="$(printf '%s' "$_found_exec" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
+        set -f
+        set -- $_cleaned
+        set +f
+        if [ "$#" -lt 1 ]; then
+            log "WARN: $package.desktop has no usable Exec= (only field codes); metadata not written"
+            log "To retry later: parishctl apps create-launcher $jail $package"
+            return 0
+        fi
+    else
+        set -- "$package"
+    fi
+
+    write_host_launcher_metadata "$jail" "$package" "$package" "$_found_version" \
+        "freebsd-pkg" "/usr/local" "$_found_icon" "$@"
 }
 
 # --------------------------------------------------------------------
@@ -291,9 +299,6 @@ cmd_install_file() {
             --launcher=desktop) launcher="desktop" ;;
             --launcher=both)    launcher="both" ;;
             --launcher=none)    launcher="none" ;;
-            # RF7: unknown flags are errors, not silently ignored.
-            # A typo like --mode=instaler previously fell through
-            # silently, leaving mode="auto". P2 (refusal is a feature).
             *)                  err "unknown option: $arg" ;;
         esac
     done
@@ -326,7 +331,7 @@ cmd_install_file() {
 
     if [ -n "$app_name" ] && [ "$launcher" != "none" ]; then
         log "Creating launcher for '$app_name' ($launcher)"
-        "$PARISH_BIN/parish-app-create-launcher" "$jail" "$app_name" "$launcher" \
+        "$PARISH_APP_CREATE_LAUNCHER" "$jail" "$app_name" "$launcher" \
             || log "WARN: launcher creation failed"
     fi
 
@@ -374,7 +379,7 @@ do_freebsd_pkg() {
     validate_package_name "$pkg_name"
 
     base="$(copy_to_exchange "$jail" "$host_file")"
-    # RF2: trap function, not trap string.
+    # trap function, not trap string.
     _cleanup_jail="$jail"
     _cleanup_base="$base"
     trap _exchange_cleanup EXIT INT TERM
@@ -382,33 +387,19 @@ do_freebsd_pkg() {
     log "Installing FreeBSD package $base ($pkg_name)"
     jexec "$jail" pkg add "/exchange/$base"
 
-    launcher_argv=""
-    for d in /usr/local/share/applications /usr/share/applications; do
-        cand="$d/$pkg_name.desktop"
-        if jexec "$jail" test -f "$cand" 2>/dev/null; then
-            exec_line="$(jexec "$jail" sh -c \
-                'grep "^Exec=" "$1" | head -1 | cut -d= -f2-' _ "$cand")"
-            if [ -n "$exec_line" ]; then
-                launcher_argv="$exec_line"
-            fi
-            break
-        fi
-    done
-
-    ver="$(jexec "$jail" pkg query %v "$pkg_name" 2>/dev/null || echo 1.0)"
+    _locate_desktop_argv_and_version "$jail" "$pkg_name"
 
     cleanup_exchange "$jail" "$base"
     _cleanup_base=""
     trap - EXIT INT TERM
 
-    # build argv with globbing disabled, then pass "$@" (not a re-split $_argv string) to the writer.
-    if [ -n "$launcher_argv" ]; then
-        case "$launcher_argv" in
+    if [ -n "$_found_exec" ]; then
+        case "$_found_exec" in
             *[\"\']*|*\\*)
                 err "cannot create launcher: $pkg_name.desktop has quotes or backslashes in its Exec line"
                 ;;
         esac
-        _cleaned="$(printf '%s' "$launcher_argv" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
+        _cleaned="$(printf '%s' "$_found_exec" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
         set -f
         set -- $_cleaned
         set +f
@@ -419,8 +410,8 @@ do_freebsd_pkg() {
         set -- "$pkg_name"
     fi
 
-    write_host_launcher_metadata "$jail" "$pkg_name" "$pkg_name" "$ver" \
-        "freebsd-pkg" "/usr/local" "$@"
+    write_host_launcher_metadata "$jail" "$pkg_name" "$pkg_name" "$_found_version" \
+        "freebsd-pkg" "/usr/local" "$_found_icon" "$@"
     log "Package installed"
     printf '%s' "$pkg_name"
 }
@@ -455,7 +446,7 @@ do_win_installer() {
     fi
 
     write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-        "wine-installer" "$(dirname "$exe")" "wine" "$exe"
+        "wine-installer" "$(dirname "$exe")" "" "wine" "$exe"
     log "Installer finished; main program at $exe"
     printf '%s' "$stem"
 }
@@ -502,7 +493,7 @@ do_win_portable() {
     fi
 
     write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-        "wine-portable" "$install_dir" "wine" "$exe"
+        "wine-portable" "$install_dir" "" "wine" "$exe"
     log "Portable application installed at $install_dir"
     printf '%s' "$stem"
 }
@@ -555,7 +546,7 @@ do_linux_portable() {
     fi
 
     write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-        "linux-portable" "$install_dir" "$binary"
+        "linux-portable" "$install_dir" "" "$binary"
     log "Portable application installed at $install_dir"
     printf '%s' "$stem"
 }
@@ -584,15 +575,32 @@ do_linux_installer() {
     _cleanup_base=""
     trap - EXIT INT TERM
 
-    if [ -n "$install_dir" ]; then
-        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-            "linux-installer" "$install_dir" "$stem"
-        log "Installer finished"
-        printf '%s' "$stem"
-    else
-        log "WARN: could not locate install directory for $stem"
+    if [ -z "$install_dir" ]; then
+        log "WARN: could not locate install directory for $stem; metadata not written"
+        log "You can still launch the app from a console."
         printf ''
+        return 0
     fi
+
+    # locate the executable INSIDE install_dir.
+    exe="$(jexec "$jail" sh -c '
+        for candidate in "$1/$2" "$1/bin/$2" "$1/usr/bin/$2"; do
+            [ -x "$candidate" ] && echo "$candidate" && exit 0
+        done
+        [ -d "$1/bin" ] && find "$1/bin" -maxdepth 1 -type f -perm -u+x | head -1
+    ' _ "$install_dir" "$stem")"
+
+    if [ -z "$exe" ]; then
+        log "WARN: no executable found in $install_dir; metadata not written"
+        log "You can still launch the app from a console."
+        printf ''
+        return 0
+    fi
+
+    write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+        "linux-installer" "$install_dir" "" "$exe"
+    log "Installer finished"
+    printf '%s' "$stem"
 }
 
 # --------------------------------------------------------------------
@@ -673,7 +681,7 @@ cmd_create_launcher() {
     # install/configure; legacy presence means they must reinstall to
     # migrate).
     refuse_if_legacy_custom_app "$jail" "$name"
-    exec "$PARISH_BIN/parish-app-create-launcher" "$jail" "$name" "$where"
+    exec "$PARISH_APP_CREATE_LAUNCHER" "$jail" "$name" "$where"
 }
 
 cmd_pkg_launcher() {
@@ -681,7 +689,7 @@ cmd_pkg_launcher() {
     package="${2:?}"
     where="${3:-menu}"
     validate_package_name "$package"
-    exec "$PARISH_BIN/parish-app-create-launcher" "$jail" "$package" "$where"
+    exec "$PARISH_APP_CREATE_LAUNCHER" "$jail" "$package" "$where"
 }
 
 # --------------------------------------------------------------------
