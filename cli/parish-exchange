@@ -20,12 +20,6 @@ err() { logger -t parish-exchange -p user.err -- "$*" 2>/dev/null || true; \
         echo "parish-exchange: $*" >&2; exit 1; }
 require_root() { [ "$(id -u)" -eq 0 ] || err "must be run as root"; }
 
-validate_name() {
-    [ -n "$1" ] || err "empty name"
-    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' \
-        || err "invalid name: '$1' (must match [A-Za-z0-9][A-Za-z0-9._-]{0,63})"
-}
-
 ensure_exchange_root() {
     [ -d "$EXCHANGE_ROOT" ] || err "exchange root missing: $EXCHANGE_ROOT"
     local real
@@ -36,7 +30,7 @@ ensure_exchange_root() {
 
 jail_exchange_dir() {
     local jail="$1"
-    validate_name "$jail"
+    validate_jail_name_existing "$jail"
     ensure_exchange_root
     local dir="$EXCHANGE_ROOT/$jail"
     [ -d "$dir" ] || err "exchange dir not found for jail: $jail"
@@ -126,10 +120,10 @@ cmd_list() {
         [ -d "$dir" ] || continue
         [ -L "$dir" ] && continue
         jail=$(basename "$dir")
-        # display-only filter; validate_name would reject anything invalid
-        printf '%s\n' "$jail" \
-            | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' \
-            && echo "  $jail"
+        # display-only filter;
+        if validate_jail_name_existing "$jail" 2>/dev/null; then
+            echo "  $jail"
+        fi
     done
 }
 
