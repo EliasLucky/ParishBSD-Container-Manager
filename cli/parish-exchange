@@ -8,6 +8,10 @@
 #   parish-exchange put <host-file> <dst-jail>     Copy a host file into a jail's exchange
 #   parish-exchange get <src-jail> <file> <dest>   Copy a jail file out to the host
 set -eu
+ 
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
 
 EXCHANGE_ROOT="/var/parishbsd/exchange"
 
@@ -133,6 +137,7 @@ cmd_copy() {
     [ $# -eq 4 ] || err "usage: parish-exchange copy <srcjail> <srcpath> <dstjail> <dstpath>"
     local srcjail="$1" srcpath="$2" dstjail="$3" dstpath="$4"
     require_root
+    parish_require_not_contained "$dstjail" || exit 1
     local srcbase dstbase src dst
     srcbase=$(jail_exchange_dir "$srcjail")
     dstbase=$(jail_exchange_dir "$dstjail")
@@ -148,6 +153,8 @@ cmd_move() {
     [ $# -eq 4 ] || err "usage: parish-exchange move <srcjail> <srcpath> <dstjail> <dstpath>"
     local srcjail="$1" srcpath="$2" dstjail="$3" dstpath="$4"
     require_root
+    parish_require_not_contained "$srcjail" || exit 1
+    parish_require_not_contained "$dstjail" || exit 1
     local srcbase dstbase src dst
     srcbase=$(jail_exchange_dir "$srcjail")
     dstbase=$(jail_exchange_dir "$dstjail")
@@ -165,6 +172,7 @@ cmd_put() {
     [ $# -eq 3 ] || err "usage: parish-exchange put <srcfile> <jail> <dstpath>"
     local srcfile="$1" jail="$2" dstpath="$3"
     require_root
+    parish_require_not_contained "$jail" || exit 1
     [ -e "$srcfile" ] || err "source not found: $srcfile"
     [ ! -L "$srcfile" ] || err "source is a symlink: $srcfile"
     local dstbase dst
@@ -179,6 +187,7 @@ cmd_get() {
     [ $# -eq 3 ] || err "usage: parish-exchange get <jail> <srcpath> <dstfile>"
     local jail="$1" srcpath="$2" dstfile="$3"
     require_root
+    parish_require_not_contained "$jail" || exit 1
     local srcbase src
     srcbase=$(jail_exchange_dir "$jail")
     src=$(resolve_rel_path "$srcbase" "$srcpath")
