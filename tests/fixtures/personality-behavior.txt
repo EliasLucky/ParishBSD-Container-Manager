@@ -1,14 +1,17 @@
----
-# Calamares shellprocess module configuration.
-# Runs parishbsd-postinstall.sh inside the target chroot after unpackfs
-# has copied the filesystem and before umount.
-#
-# dontChroot: false  ->  run inside the target root, not the live system
-# timeout:    300    ->  five minutes is enough for user creation,
-#                        sysrc, and theme detection.
-# script:     absolute path inside the target root
-
-dontChroot: false
-timeout: 300
-script:
-  - "/usr/local/etc/scripts/parishbsd-postinstall.sh"
+# tier	metadata_personality	marker_dir	expected	note
+app	app-xpra	none	app-xpra	common app case
+app	apps-compatible	none	apps-compatible	compatible app
+app		none	app-xpra	empty metadata, tier default
+app	vault-files	none	app-xpra	cross-tier spoof refused
+app	vault-postgres	none	app-xpra	cross-tier spoof refused
+app	badpersonality	none	app-xpra	unknown app tier, tier default
+app	app-typo	none	app-typo	app-prefixed typo, honest display
+vault	vault-files	vault-data	vault-files	matched metadata, matched marker
+vault	vault-postgres	db-postgres	vault-postgres	matched metadata, matched marker
+vault		vault-data	vault-files	empty metadata, marker inference
+vault		db-postgres	vault-postgres	empty metadata, marker inference
+vault		none	vault-unknown	empty metadata, no marker
+vault	app-xpra	vault-data	vault-unknown	cross-tier spoof refused
+vault	app-xpra	none	vault-unknown	cross-tier spoof, no marker
+containers	app-xpra	none	app-xpra	containers tier behaves as app
+containers		none	app-xpra	containers, empty metadata
