@@ -1,32 +1,30 @@
-# Calamares settings for ParishBSD (v1.1).
-modules-search: [ local, /usr/local/lib/calamares/modules ]
-sequence:
-  - show:
-      - welcome
-      - locale
-      - keyboard
-      - partition
-      - users
-      - summary
-  - exec:
-      - partition
-      - mount
-      - unpackfs
-      - machineid
-      - fstab
-      - locale
-      - keyboard
-      - localecfg
-      - users
-      - displaymanager
-      - networkcfg
-      - hwclock
-      - services
-      - packages
-      - shellprocess
-      - umount
-  - end:
-      - finished
-branding: parishbsd
-prompt-install: true
-dont-chroot: false
+# input	expected_strict	expected_existing	expected_cpp	note
+a..b	reject	reject	reject	contains ..
+.a	reject	reject	reject	leading dot
+..	reject	reject	reject	both dot checks
+.	reject	reject	reject	leading dot
+a.b	reject	accept	accept	single dot
+A_B	reject	accept	accept	uppercase + underscore
+a-	reject	accept	accept	trailing hyphen
+a--b	reject	accept	accept	consecutive hyphens
+a-b-c	accept	accept	accept	all-pass
+-a	reject	accept	accept	leading hyphen, strict rejects
+a	accept	accept	accept	single char
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	accept	accept	accept	31 chars
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	reject	accept	accept	32 chars
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	reject	accept	accept	64 chars
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	reject	reject	reject	65 chars
+A	reject	accept	accept	uppercase
+_	reject	accept	accept	underscore
+..a	reject	reject	reject	leading dot-dot
+a..	reject	reject	reject	trailing dot-dot
+a.b.c	reject	accept	accept	multiple single dots
+1	reject	accept	accept	leading digit
+A-	reject	accept	accept	trailing hyphen after upper
+a------------------------------	reject	accept	accept	31 chars, trailing hyphens
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	reject	accept	accept	64 chars boundary
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	reject	reject	reject	65 chars
+	reject	reject	reject	empty
+a\na	reject	reject	reject	backslash-n literal (see harness for real newline)
+a b	reject	reject	reject	space
+a/b	reject	reject	reject	slash
