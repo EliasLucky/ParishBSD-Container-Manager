@@ -211,10 +211,34 @@ cmd_list() {
     fi
  
     # Native packages
-    pkg "$_pkg_mode" "$_pkg_arg" query '%n %v' 2>/dev/null | awk '{
-        printf "native\t%s\t%s\n", $1, $2
-    }'
- 
+    # capture pkg stdout+stderr together with exit
+    # code.
+    #
+    # - Exit 0, empty output: no packages installed (not a warning).
+    # - Exit 0, non-empty: parse normally.
+    # - Exit non-zero: pkg failed (missing/corrupt pkgdb, permissions).
+    #   Warn with the captured diagnostic and a hint for the common
+    #   case (fresh stopped jail with no pkg database yet).
+    _pkg_out=$(pkg "$_pkg_mode" "$_pkg_arg" query '%n %v' 2>&1)
+    _pkg_rc=$?
+
+    if [ "$_pkg_rc" -ne 0 ]; then
+        printf 'WARN: cannot list native packages (%s "%s", exit %d):\n' \
+            "$_pkg_mode" "$_pkg_arg" "$_pkg_rc" >&2
+        if [ -n "$_pkg_out" ]; then
+            printf '%s\n' "$_pkg_out" | sed 's/^/  /' >&2
+        fi
+        if [ "$_pkg_mode" = "-r" ]; then
+            printf '  (A stopped compartment that has never been started has no\n' >&2
+            printf '   pkg database yet. This warning is expected in that case.)\n' >&2
+        fi
+        _pkg_out=""   # discard for parsing; the diagnostic was the point
+    fi
+
+    if [ -n "$_pkg_out" ]; then
+        printf '%s\n' "$_pkg_out" | awk '{ printf "native\t%s\t%s\n", $1, $2 }'
+    fi
+
     # Custom apps (host-side, post-rework)
     launcher_dir="$LAUNCHER_STORE/$jail"
     if [ -d "$launcher_dir" ]; then
@@ -227,17 +251,18 @@ cmd_list() {
             printf "custom\t%s\t%s\t%s\n" "${name:-?}" "${version:-?}" "${method:-?}"
         done
     fi
- 
-    # Legacy in-jail custom apps (pre-rework) display, but flag them
-    legacy_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
-    if [ -d "$legacy_dir" ]; then
+
+    # Legacy in-jail custom apps (pre-rework)  display, but flag them
+    for _tier in app vault containers; do
+        legacy_dir="$JAILS_DIR/$_tier/$jail/usr/local/etc/parishbsd/custom-apps"
+        [ -d "$legacy_dir" ] || continue
         for f in "$legacy_dir"/*.conf; do
             [ -f "$f" ] || continue
             [ ! -L "$f" ] || continue
             name="$(awk -F'"' '/^NAME=/{print $2; exit}' "$f")"
-            printf "legacy\t%s\t\t(requires reinstall)\n" "${name:-?}"
+            printf "legacy\t%s\t\t(requires reinstall, %s tier)\n" "${name:-?}" "$_tier"
         done
-    fi
+    done
  }
 
 # --------------------------------------------------------------------
