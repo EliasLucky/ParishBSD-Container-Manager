@@ -1,0 +1,32 @@
+# Calamares settings for ParishBSD (v1.1).
+modules-search: [ local, /usr/local/lib/calamares/modules ]
+sequence:
+  - show:
+      - welcome
+      - locale
+      - keyboard
+      - partition
+      - users
+      - summary
+  - exec:
+      - partition
+      - mount
+      - unpackfs
+      - machineid
+      - fstab
+      - locale
+      - keyboard
+      - localecfg
+      - users
+      - displaymanager
+      - networkcfg
+      - hwclock
+      - services
+      - packages
+      - shellprocess
+      - umount
+  - end:
+      - finished
+branding: parishbsd
+prompt-install: true
+dont-chroot: false
