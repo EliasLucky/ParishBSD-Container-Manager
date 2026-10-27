@@ -2,11 +2,18 @@
 # parishctl  ParishBSD Compartments dispatcher.
 #
 # Runs UNPRIVILEGED. Parses the verb and dispatches to one of:
-#   - a local helper for help/version (no privileged work)
-#   - pkexec parishctl-<verb> for privileged verbs (pkexec prompts if
-#     needed; polkit's allow_active=yes skips the prompt for read-only
-#     verbs on the console)
-#   - a direct exec for unprivileged verbs (detect, usb list)
+#   - a per-verb binary via pkexec (privileged verbs)
+#   - an unprivileged binary directly (help, version, detect, usb-list,
+#     xpra-attach, apps-launch, apps-create-launcher, apps-pkg-launcher)
+#
+# Design rationale: polkit actions are keyed on the
+# exec.path of the binary pkexec runs. A single "parishctl" binary
+# with per-verb messages is not achievable through pkexec
+# Splitting into per-verb binaries makes each
+# action's prompt name the operation the user is about to perform.
+#
+# Unprivileged dispatcher (this file) > pkexec parishctl-<verb> >
+# polkit action .<verb> > the verb runs as root > does the work.
 
 set -eu
 umask 022
@@ -51,7 +58,6 @@ SCHEDULES
   parishctl unschedule-lock <v>     Remove a schedule
 
 APPLICATIONS
-  parishctl apps list <jail>              List installed apps
   parishctl apps install <jail> <pkg>     Install a FreeBSD package
   parishctl apps install-file <jail> <file>
                                           Install from a local file
@@ -64,6 +70,7 @@ APPLICATIONS
                                           Create a launcher
   parishctl apps pkg-launcher <jail> <pkg> [where]
                                           Create a launcher (alias)
+  parishctl detect <file>                 Identify a file's type
 
 USB
   parishctl usb list                List attached devices
@@ -73,7 +80,21 @@ USB
 DISPLAY
   parishctl xpra start <jail>       Start Xpra for a compartment
   parishctl xpra attach <jail>      Attach a display client
-  parishctl vault-files <name>      Open a vault's file manager
+
+REMOVED IN THIS VERSION
+
+  apps set-launcher    Removed. To change what an application runs,
+                       reinstall it with the corrected launcher file:
+                         parishctl apps install-file <jail> <file>
+
+TEXT CONSOLE (no graphical session)
+
+  On a text console, pkexec may not have a working authentication
+  agent. If authentication fails with "Bus error" or "AUTHENTICATING
+  FAILED", run the per-verb command directly as root:
+
+    su -
+    /usr/local/sbin/parishctl-<verb> <args>
 
 OTHER
   parishctl help                    This message
@@ -90,17 +111,41 @@ version() {
 
 err() { printf 'parishctl: %s\n' "$*" >&2; exit 2; }
 
-# --- Dispatch ---
+# --------------------------------------------------------------------
+# Dispatch
+# --------------------------------------------------------------------
 
 verb="${1:-help}"
 [ "$#" -gt 0 ] && shift
 
-# Compound verbs: apps <sub>, usb <sub>.
+# Compound verbs: apps <sub>, usb <sub>, xpra <sub>.
 case "$verb" in
-    apps|usb)
+    apps|usb|xpra)
         [ "$#" -gt 0 ] || err "usage: parishctl $verb <subcommand> [args]"
         sub="$1"; shift
         verb="$verb-$sub"
+        ;;
+esac
+
+# Special-case: launcher creation routes to a single privileged binary
+# (no per-app wrapper; .create-launcher is the polkit action for both
+# create-launcher and pkg-launcher).
+case "$verb" in
+    apps-create-launcher|apps-pkg-launcher)
+        _create_launcher_bin=/usr/local/sbin/parish-app-create-launcher
+        _rc=0
+        pkexec "$_create_launcher_bin" "$@" || _rc=$?
+        case "$_rc" in
+            126|135)
+                printf '\n' >&2
+                printf 'parishctl: authentication failed (exit %d).\n' "$_rc" >&2
+                printf 'On a text console, polkit may not have an auth agent.\n' >&2
+                printf 'Try running directly as root:\n' >&2
+                printf '  su -\n' >&2
+                printf '  %s %s\n' "$_create_launcher_bin" "$*" >&2
+                ;;
+        esac
+        exit "$_rc"
         ;;
 esac
 
@@ -125,14 +170,56 @@ case "$verb" in
     usb-list)
         exec "$BINDIR_BIN/parish-usb" list "$@"
         ;;
+    xpra-attach)
+        # Xpra attach is a display client on the user's desktop;
+        # runs unprivileged.
+        exec "$BINDIR_BIN/parish-xpra" attach "$@"
+        ;;
+    apps-launch)
+        # launch is unprivileged. parish-app-launch internally
+        # calls pkexec for the privileged steps (start, xpra-start,
+        # jail-run).
+        exec "$BINDIR_BIN/parish-app-launch" "$@"
+        ;;
 esac
 
-# Privileged verbs. Locate the per-verb binary, refuse if missing (before pkexec).
-bin="$BINDIR_SBIN/parishctl-$verb"
-if [ ! -x "$bin" ]; then
+# Privileged verbs (per-verb lookup + pkexec + failure-site handling).
+#
+# pkexec without `--` (pkexec's GLib parser treats
+# `--` as the program name; absolute-path argv[0] always identifies as
+# PROGRAM and stops option parsing there).
+#
+# Failure-site handling: pkexec failures on text
+# consoles have a specific recovery (auth agent unavailable) that the
+# user must know about at the moment of failure. Exit codes:
+#   126  pkexec auth cancelled/failed
+#   135  128 + SIGBUS (7); the polkit auth helper crashes on some
+#         FreeBSD consoles instead of cleanly exiting 126 (observed:
+#         "Bus error" after "AUTHENTICATING FAILED")
+_bin="$BINDIR_SBIN/parishctl-$verb"
+if [ ! -x "$_bin" ]; then
     err "unknown command: $verb (try 'parishctl help')"
 fi
 
-# $bin is a readonly absolute path starting with /, so pkexec always identifies
-# it as PROGRAM and stops parsing there.
-exec pkexec "$bin" "$@"
+if [ "$(id -u)" -eq 0 ]; then
+    err "parishctl must be run as an unprivileged user; the per-verb commands are invoked via pkexec by the dispatcher."
+fi
+
+_rc=0
+pkexec "$_bin" "$@" || _rc=$?
+case "$_rc" in
+    126|135)
+        printf '\n' >&2
+        printf 'parishctl: authentication failed (exit %d).\n' "$_rc" >&2
+        printf 'On a text console (no graphical session), polkit may not\n' >&2
+        printf 'have an authentication agent available.\n' >&2
+        printf '\n' >&2
+        printf 'Try running the command directly as root:\n' >&2
+        printf '  su -\n' >&2
+        printf '  %s %s\n' "$_bin" "$*" >&2
+        printf '\n' >&2
+        printf 'On a graphical desktop, run from a terminal window (not\n' >&2
+        printf 'a text console) so the polkit agent can prompt.\n' >&2
+        ;;
+esac
+exit "$_rc"
