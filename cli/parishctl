@@ -216,7 +216,7 @@ esac
 #         FreeBSD consoles instead of cleanly exiting 126 (observed:
 #         "Bus error" after "AUTHENTICATING FAILED")
 _bin="$BINDIR_SBIN/parishctl-$verb"
-_require_executable "$_create_launcher_bin" "$verb"
+_require_executable "$_bin" "$verb"
 _require_unprivileged
 
 _rc=0
