@@ -1,18 +1,19 @@
 #!/bin/sh
-# parishctl-apps-list — list installed applications in a compartment.
+# parishctl-apps-list  list installed applications in a compartment.
 #
 # Runs via pkexec. Polkit action .apps-list at allow_active=yes
-# (read-only; no prompt on the console). allow_inactive=no still
-# refuses remote sessions.
+# (read-only; no prompt on the console).
 #
-# No state check at this layer `parish-apps list` works on running
-# and stopped jails. Refusal on containment states is not needed for a
-# read-only operation.
+# Displays compartment state to match
+# parishctl-list's per-row state display. Read-only: no refusal on
+# containment states the user may legitimately want to see
+# installed apps in a contained jail during investigation.
 
 set -eu
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
 
 if [ "$#" -ne 1 ]; then
     printf 'usage: parishctl apps list <jail>\n' >&2
@@ -21,5 +22,22 @@ fi
 
 jail="$1"
 validate_jail_name_existing "$jail" || exit 2
+
+# display compartment state. Same string shapes as
+# parishctl-list's per-row labels (minus the color codes, since this
+# output goes through pkexec and may not be a tty).
+_state="$(parish_jail_state "$jail")"
+case "$_state" in
+    running)                 _state_disp="running" ;;
+    stopped)                 _state_disp="stopped" ;;
+    containing)              _state_disp="containing (in progress)" ;;
+    contained)               _state_disp="CONTAINED by Guardian" ;;
+    containment-failed)      _state_disp="CONTAINMENT FAILED" ;;
+    contained-but-running)   _state_disp="CONTAINED (running again — investigate)" ;;
+    stopped-maybe-contained) _state_disp="may be contained (another compartment was contained this boot)" ;;
+    *)                       _state_disp="unknown" ;;
+esac
+
+printf 'Compartment "%s" state: %s\n\n' "$jail" "$_state_disp"
 
 exec /usr/local/bin/parish-apps list "$jail"
