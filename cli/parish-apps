@@ -219,14 +219,16 @@ cmd_list() {
     # - Exit non-zero: pkg failed (missing/corrupt pkgdb, permissions).
     #   Warn with the captured diagnostic and a hint for the common
     #   case (fresh stopped jail with no pkg database yet).
-    _pkg_out=$(pkg "$_pkg_mode" "$_pkg_arg" query '%n %v' 2>&1)
+    _pkg_out=$(pkg "$_pkg_mode" "$_pkg_arg" query '%n %v' 2>/dev/null)
     _pkg_rc=$?
 
     if [ "$_pkg_rc" -ne 0 ]; then
         printf 'WARN: cannot list native packages (%s "%s", exit %d):\n' \
             "$_pkg_mode" "$_pkg_arg" "$_pkg_rc" >&2
-        if [ -n "$_pkg_out" ]; then
-            printf '%s\n' "$_pkg_out" | sed 's/^/  /' >&2
+        # Re-invoke to capture diagnostic on stderr only.
+        _pkg_err=$(pkg "$_pkg_mode" "$_pkg_arg" query '%n %v' 2>&1 >/dev/null || true)
+        if [ -n "$_pkg_err" ]; then
+            printf '%s\n' "$_pkg_err" | sed 's/^/  /' >&2
         fi
         if [ "$_pkg_mode" = "-r" ]; then
             printf '  (A stopped compartment that has never been started has no\n' >&2
