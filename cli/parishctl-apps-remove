@@ -1,2 +1,45 @@
 #!/bin/sh
+# parishctl-apps-remove  remove a FreeBSD package from a compartment.
+#
+# Runs via pkexec. Polkit action .apps-remove at auth_admin_keep
+# (5-minute cache; reversible by reinstalling).
+#
+# Refuses on containment states (a contained jail should not have
+# its package set modified  the user is about to review the incident,
+# not mutate the environment).
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 2 ]; then
+    printf 'usage: parishctl apps remove <jail> <package>\n' >&2
+    exit 2
+fi
+
+jail="$1"
+package="$2"
+
+validate_jail_name_existing "$jail" || exit 2
+validate_package_name "$package" || exit 2
+
+state="$(parish_jail_state "$jail")"
+case "$state" in
+    running|running-other-contained)
+        : # proceed
+        ;;
+    stopped)
+        # Matches parish-apps remove's require_jail refusal shape.
+        printf 'parishctl: compartment "%s" is not running.\n' "$jail" >&2
+        printf 'Start it first:\n  pkexec parishctl-start %s\n' "$jail" >&2
+        exit 1
+        ;;
+    *)
+        parish_jail_state_message "$jail" "$state" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/local/bin/parish-apps remove "$jail" "$package"
