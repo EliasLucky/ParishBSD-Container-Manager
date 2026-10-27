@@ -1,6 +1,6 @@
 #!/bin/sh
 # provision.sh - one-time initialization for the PostgreSQL vault.
-# Runs inside the jail on every start. Detects "already initialized:
+# Runs inside the jail on every start. Detects "already initialized"
 # via a sentinel file and skips if present.
 set -eu
 
@@ -21,15 +21,17 @@ done
 chown -R postgres:postgres "$PGDATA" 2>/dev/null || true
 
 if [ ! -f "$SENTINEL" ]; then
-	log "First start -i intializing PostgreSQL cluster"
-	su - postgres -c "/usr/local/bin/initdb -D $PGDATA -E UTF8 --locale=C" || {
-		log "FATA: initdb failed"
+	log "First start - initializing PostgreSQL cluster"
+
+	su - postgres -c 'exec /usr/local/bin/initdb -D "$1" -E UTF8 --locale=C' _ "$PGDATA" || {
+		# PV3 (2026-10-27): "FATA" → "FATAL".
+		log "FATAL: initdb failed"
 		exit 1
 	}
 
 	# Configure PostgreSQL to listen on the internal bridge address only
 	# Bind to the specific jail IP so it can't accidentally be reached from anywhere else.
-	ip_addr="$(ifconfig | awk '/inet 10\.0\.0\.0\./ {print $2; exit}')"
+	ip_addr="$(ifconfig | awk '/inet 10\.0\.0\./ {print $2; exit}')"
 	[ -n "$ip_addr" ] || { log "FATAL: no internal IP found"; exit 1; }
 	{
 		echo "listen_addresses = '$ip_addr'"
