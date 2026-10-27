@@ -59,6 +59,7 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/desktop.sh"
 . "$LIBDIR/launcher.sh"
+. "$LIBDIR/container.sh"
 
 log() { printf ' %s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -192,10 +193,24 @@ _exchange_cleanup() {
 
 cmd_list() {
     jail="${1:?usage: parish-apps list <jail>}"
-    require_jail "$jail"
+    validate_jail_name_existing "$jail"
 
+    jailroot="$(container_path "$jail")" || err "no compartment named '$jail'"
+
+    # list works on stopped jails. When the jail is
+    # running, `pkg -j <jailname>` uses jexec (matches installed
+    # state exactly). When stopped, `pkg -r <jailroot>` reads
+    # /var/db/pkg under the jailroot directly (no jexec needed).
+    if jls name 2>/dev/null | grep -qxF "$jail"; then
+        _pkg_mode="-j"
+        _pkg_arg="$jail"
+    else
+        _pkg_mode="-r"
+        _pkg_arg="$jailroot"
+    fi
+ 
     # Native packages
-    pkg -j "$jail" info 2>/dev/null | awk '{
+    pkg "$_pkg_mode" "$_pkg_arg" info 2>/dev/null | awk '{
         name = $1
         sub(/-[0-9].*$/, "", name)
         version = $1
@@ -203,7 +218,7 @@ cmd_list() {
         $1 = ""
         printf "native\t%s\t%s\n", name, version
     }'
-
+ 
     # Custom apps (host-side, post-rework)
     launcher_dir="$LAUNCHER_STORE/$jail"
     if [ -d "$launcher_dir" ]; then
@@ -216,8 +231,8 @@ cmd_list() {
             printf "custom\t%s\t%s\t%s\n" "${name:-?}" "${version:-?}" "${method:-?}"
         done
     fi
-
-    # Legacy in-jail custom apps (pre-rework)
+ 
+    # Legacy in-jail custom apps (pre-rework) display, but flag them
     legacy_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
     if [ -d "$legacy_dir" ]; then
         for f in "$legacy_dir"/*.conf; do
@@ -227,7 +242,7 @@ cmd_list() {
             printf "legacy\t%s\t\t(requires reinstall)\n" "${name:-?}"
         done
     fi
-}
+ }
 
 # --------------------------------------------------------------------
 # install (from catalog)
