@@ -132,7 +132,7 @@ EOF
 	chmod 0770 "$exchange_subdir"
 
 	install -d "$jailroot/exchange"
-
+}
 # --- Config, fstab, provision ---
 install_config() {
 	# Render jail.conf.d/<name>.conf
