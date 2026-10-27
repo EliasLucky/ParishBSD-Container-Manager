@@ -62,7 +62,7 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/container.sh"
 
 log() { printf ' %s\n' "$*"; }
-err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+err() { printf 'parish: %s\n' "$*" >&2; exit 1; }
 
 require_root() {
     [ "$(id -u)" -eq 0 ] || err "must be run as root (invoke via pkexec)"
@@ -296,7 +296,24 @@ cmd_install_file() {
     host_file="${1:?usage: parish-apps install-file <jail> <file> [flags]}"
     shift || true
     require_jail "$jail"
-    parish_require_not_contained "$jail" || exit 1
+
+    # reject '-'-prefixed host_file.
+    # `parishctl apps install-file myjail --mode=installer` (forgot the
+    # file) previously produced "not a regular file: --mode=installer"
+    # technically accurate but confusing; the user thinks they gave
+    # a bad flag, not a missing file.
+    #
+    # If a legitimate file starts with '-', prefix it with './' in the
+    # invocation (./--file.pkg)  the './' is stripped by the shell as
+    # a path component, but the resolved file is the same.
+    case "$host_file" in
+        -*)
+            err "missing <file> argument (got flag '$host_file' as second arg).
+Expected: parishctl apps install-file <jail> <file> [--mode=...] [--launcher=...]
+If the file's name starts with '-', prefix it with './' (e.g. ./--file.pkg)"
+            ;;
+    esac
+
     [ -f "$host_file" ] || err "not a regular file: $host_file"
     [ ! -L "$host_file" ] || err "file is a symlink: $host_file"
     canonical_path "$host_file" >/dev/null
@@ -319,6 +336,28 @@ cmd_install_file() {
     detected="$("$PARISH_BIN/parish-detect-installer" "$host_file")"
     type_key="${detected%%:*}"
     log "Detected: $detected"
+
+    # warn when --mode conflicts with a confident
+    # detection. The remap block below only affects *-ambiguous
+    # types (windows-exe-ambiguous, linux-run-ambiguous). For a
+    # confident detection, --mode is silently ignored.
+    if [ "$mode" != "auto" ]; then
+        case "$type_key" in
+            *-ambiguous)
+                : # will be remapped below
+                ;;
+            *)
+                _detected_class=""
+                case "$type_key" in
+                    *installer*) _detected_class="installer" ;;
+                    *portable*)  _detected_class="portable"  ;;
+                esac
+                if [ -n "$_detected_class" ] && [ "$mode" != "$_detected_class" ]; then
+                    log "WARN: --mode=$mode has no effect; the file was confidently detected as $type_key (using detection)"
+                fi
+                ;;
+        esac
+    fi
 
     case "$type_key" in
         windows-exe-ambiguous)
@@ -417,7 +456,10 @@ do_freebsd_pkg() {
         set -- $_cleaned
         set +f
         if [ "$#" -lt 1 ]; then
-            err "cannot determine argv from $pkg_name.desktop Exec= line (only field codes present)"
+            err "cannot determine argv from $pkg_name.desktop Exec= line (only field codes present).
+
+The package $pkg_name was installed in $jail, but no launcher was created.
+To create the launcher later: parishctl apps create-launcher $jail $pkg_name"
         fi
     else
         set -- "$pkg_name"
@@ -455,6 +497,7 @@ do_win_installer() {
     if [ -z "$exe" ]; then
         log "WARN: no .exe found after installer; metadata not written"
         log "You can still launch the app from a console."
+        log "The installer ran; application files are in the container. Only the launcher is missing."
         return 0
     fi
 
@@ -502,6 +545,7 @@ do_win_portable() {
     if [ -z "$exe" ]; then
         log "WARN: no .exe found in $install_dir; metadata not written"
         log "You can still launch the app from a console."
+        log "The application was extracted to $install_dir. Only the launcher is missing."
         return 0
     fi
 
@@ -555,6 +599,7 @@ do_linux_portable() {
     if [ -z "$binary" ]; then
         log "WARN: no executable found in $install_dir; metadata not written"
         log "You can still launch the app from a console."
+        log "The application was extracted to $install_dir. Only the launcher is missing."
         return 0
     fi
 
@@ -591,6 +636,7 @@ do_linux_installer() {
     if [ -z "$install_dir" ]; then
         log "WARN: could not locate install directory for $stem; metadata not written"
         log "You can still launch the app from a console."
+        log "The installer ran. Application files may be at /opt/$stem or /usr/local/$stem."
         printf ''
         return 0
     fi
@@ -606,6 +652,7 @@ do_linux_installer() {
     if [ -z "$exe" ]; then
         log "WARN: no executable found in $install_dir; metadata not written"
         log "You can still launch the app from a console."
+        log "The installer ran; application files are in $install_dir. Only the launcher is missing."
         printf ''
         return 0
     fi
