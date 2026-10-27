@@ -110,6 +110,7 @@ canonical_path() {
 _locate_desktop_argv_and_version() {
     _jail="$1"
     _pkg="$2"
+    validate_package_name "$_pkg" || err "invalid package name: $_pkg"
 
     _found_exec=""
     _found_icon=""
@@ -210,13 +211,8 @@ cmd_list() {
     fi
  
     # Native packages
-    pkg "$_pkg_mode" "$_pkg_arg" info 2>/dev/null | awk '{
-        name = $1
-        sub(/-[0-9].*$/, "", name)
-        version = $1
-        sub(/^.*-/, "", version)
-        $1 = ""
-        printf "native\t%s\t%s\n", name, version
+    pkg "$_pkg_mode" "$_pkg_arg" query '%n %v' 2>/dev/null | awk '{
+        printf "native\t%s\t%s\n", $1, $2
     }'
  
     # Custom apps (host-side, post-rework)
@@ -268,6 +264,7 @@ cmd_install() {
             *[\"\']*|*\\*)
                 log "WARN: $package.desktop has quotes or backslashes in Exec=; metadata not written"
                 log "To retry later: parishctl apps create-launcher $jail $package"
+                log "The package $package was installed. Only the launcher is missing."
                 return 0
                 ;;
         esac
@@ -278,6 +275,7 @@ cmd_install() {
         if [ "$#" -lt 1 ]; then
             log "WARN: $package.desktop has no usable Exec= (only field codes); metadata not written"
             log "To retry later: parishctl apps create-launcher $jail $package"
+            log "The package $package was installed. Only the launcher is missing."
             return 0
         fi
     else
@@ -444,8 +442,8 @@ do_win_installer() {
 
     exe="$(jexec "$jail" sh -c '
         find /root/.wine/drive_c -name "*.exe" -type f \
-            -not -path "*windows*" 2>/dev/null \
-            | xargs ls -t 2>/dev/null | head -1
+            -not -path "*windows*" -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null | head -1
     ')"
 
     stem="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//; s/-[Ss]etup$//; s/[Ss]etup$//')"
