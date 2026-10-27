@@ -133,10 +133,6 @@ EOF
 
 	install -d "$jailroot/exchange"
 
-	fstab="$jailroot/../fstab.$name"
-	echo "/var/parishbsd/exchange/$name    $jailroot/exchange    nullfs    rw    0    0" >> "/etc/fstab.$name"
-}
-
 # --- Config, fstab, provision ---
 install_config() {
 	# Render jail.conf.d/<name>.conf
@@ -169,7 +165,6 @@ install_config() {
 			"$fstab_tmpl" > "/etc/fstab.$name"
 		row "fstab" "$name"
 	fi
-	echo "/var/parishbsd/exchage/$name    $jailroot/exchange    nullfs    rw    0    0" >> "/etc/fstab.$name"
 
 	# Install provision.sh and the rc.local hook
 	if [ -n "$PERSONALITY_PROVISION" ]; then
