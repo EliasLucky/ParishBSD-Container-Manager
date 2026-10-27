@@ -151,7 +151,40 @@ validate_personality_name() {
     esac
     return 0
 }
+# --------------------------------------------------------------------
+# Package names
+# --------------------------------------------------------------------
 
+# validate_package_name <name>
+#
+# Package names appear in:
+#   - pkg(8) command argv: `pkg -j <jail> install -y <pkg>`
+#   - in-jail .desktop filenames: `<pkg>.desktop`
+#   - metadata paths in launcher.sh (slug=<pkg>)
+#
+# Same character class as validate_app_name (the two are semantically
+# different but the charset is identical
+# and both can reach argument positions in pkg(8), jexec, and grep
+# argv). Rejects leading `-` before the charset check (a package name
+# starting with `-` reaches pkg as an option, not a name).
+validate_package_name() {
+    _p="${1-}"
+    [ -n "$_p" ] || { printf 'parish: package name is empty\n' >&2; return 1; }
+    [ "${#_p}" -le 64 ] || {
+        printf 'parish: package name longer than 64 characters\n' >&2
+        return 1
+    }
+    case "$_p" in
+        -*)
+            printf 'parish: package name may not start with -\n' >&2
+            return 1 ;;
+        *[!A-Za-z0-9._+-]*)
+            printf 'parish: package name contains invalid characters\n' >&2
+            return 1 ;;
+    esac
+    unset _p
+    return 0
+}
 # --------------------------------------------------------------------
 # Application names
 # --------------------------------------------------------------------
