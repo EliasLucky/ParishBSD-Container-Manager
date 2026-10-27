@@ -1,11 +1,38 @@
 #!/bin/sh
-# parish-xpra — start or attach Xpra for a jail.
+# parish-xpra  start or attach Xpra for a compartment.
 #
 # Usage:
 #   parish-xpra start  <jail> [<display>]
 #   parish-xpra attach <jail> [<display>] [--start=<command>]
+#
+#   `parish-xpra start` spawns xpra-sup after Xpra
+#        is running inside the jail. xpra-sup writes
+#        /var/run/parishbsd/xpra/<jail>.state for Guardian's
+#        close_xpra to read during containment.
+#
+#   the personality-based colour selection trust-file-driven. The
+#        personality lookup path (which was hardcoded to the app tier)
+#        goes away with its only consumer.
+#
+#   trust colour from host-side /var/db/parishbsd/trust/<jail>.
+#        Sentinel grey when absent. The trust file is host-side and
+#        not visible from inside the jail, closing the phishing
+#        vector where a jail-writable metadata file could retarget
+#        the colour.
+#
+#   validate_jail_name_existing at entry.
+#
+#   containment state check before attach.
+#
+#   Headless mode: if DISPLAY is unset, pass --xvfb to Xpra start.
 
 set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+XPRA_SUP=/usr/local/libexec/parishbsd/xpra-sup
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
 
 usage() {
     echo "usage: parish-xpra {start|attach} <jail> [<display>] [--start=<command>]" >&2
@@ -17,47 +44,161 @@ jail="${1:-}"; shift || true
 
 [ -n "$cmd" ] && [ -n "$jail" ] || usage
 
-# Read display ONLY if the next arg starts with ':'. Otherwise leave
-# $@ intact so --start=... reaches xpra attach unmodified.
-display=":100"
-if [ $# -gt 0 ] && [ "${1#:}" != "$1" ]; then
-    display="$1"
-    shift
-fi
+# validate jail name against the permissive validator (mirrors
+# Guardian's containment.cpp::valid_jail_name  every name Guardian
+# can contain must be startable/attachable here).
+validate_jail_name_existing "$jail" || exit 2
 
+# Display argument. CLI form accepts either `:100` or `100`.
+# Internal form (disp_num) is digits-only  required because
+# xpra-sup's valid_display rejects `:100`, and because
+# disp_num is used in pgrep patterns and filesystem paths where
+# a colon would either fail to match or need quoting.
+display=":100"
++if [ $# -gt 0 ]; then
+    # Accept either `:100` (X11 form) or `100` (bare digits).
+    # Both normalize to display=":100" internally; disp_num is
+    # the digits-only form passed to xpra-sup (whose valid_display
+    # rejects the colon).
+    #
+    # A bare non-digit argument (e.g. --start=firefox) is left in
+    # $@ to be forwarded to xpra attach. The default display is
+    # used, which is correct for the attach subcommand when the
+    # caller did not specify one.
+    case "$1" in
+        [0-9]*)   display=":$1"; shift ;;   # bare digits  add colon
+        :[0-9]*)  display="$1";  shift ;;   # colon form
+    esac
+fi
 disp_num="${display#:}"
+
+# Defense in depth: validate disp_num digits-only here, matching
+# xpra-sup's own valid_display. This catches a bad invocation at the
+# caller (parish-xpra) rather than after the fork in xpra-sup.
+case "$disp_num" in
+    ''|*[!0-9]*)
+        echo "parish-xpra: invalid display '$display' (must be digits, optionally prefixed with ':')" >&2
+        exit 2
+        ;;
+esac
+
 socket="/var/run/xpra/$jail/$disp_num/socket"
 
 case "$cmd" in
     start)
-        jls name 2>/dev/null | grep -qx "$jail" || {
-            echo "jail '$jail' not running" >&2
-            exit 1
-        }
+        state="$(parish_jail_state "$jail")"
+        case "$state" in
+            running|running-other-contained)
+                : # proceed
+                ;;
+            stopped)
+                echo "parish-xpra: compartment '$jail' is not running. Start it first:" >&2
+                echo "  pkexec parishctl-start $jail" >&2
+                exit 1
+                ;;
+            *)
+                parish_jail_state_message "$jail" "$state" >&2
+                exit 1
+                ;;
+        esac
+
         if jexec "$jail" pgrep -qf "xpra.*$display" 2>/dev/null; then
             echo "Xpra already running at $display in '$jail'"
             exit 0
         fi
-        jexec "$jail" xpra start "$display" \
-            --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
-            >/dev/null 2>&1
+
+        # Headless mode: if DISPLAY is unset (env -u DISPLAY test),
+        # Xvfb provides a virtual framebuffer. Pending verification:
+        # whether xpra start --xvfb works on target FreeBSD. If not,
+        # revert to requiring DISPLAY and keep exec.allow_gui=true on
+        # .xpra-start.
+        if [ -z "${DISPLAY:-}" ]; then
+            jexec "$jail" xpra start "$display" \
+                --xvfb --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
+                >/dev/null 2>&1
+        else
+            jexec "$jail" xpra start "$display" \
+                --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
+                >/dev/null 2>&1
+        fi
         sleep 2
-        jexec "$jail" pgrep -qf "xpra.*$display" 2>/dev/null \
-            && echo "Xpra started at $display in '$jail'" \
-            || { echo "Xpra failed to start" >&2; exit 1; }
+        jexec "$jail" pgrep -qf "xpra.*$display" 2>/dev/null || {
+            echo "parish-xpra: Xpra failed to start in '$jail'" >&2
+            exit 1
+        }
+
+        # spawn xpra-sup to write the state file and supervise
+        # the session. Absolute path (pkexec minimal PATH); pre-check
+        # with [ -x ] to give a clear message if the binary is missing.
+        [ -x "$XPRA_SUP" ] || {
+            echo "parish-xpra: xpra-sup not found at $XPRA_SUP" >&2
+            echo "The installation may be incomplete. Reinstall:" >&2
+            echo "  pkg install -f parishbsd-compartments" >&2
+            exit 1
+        }
+        # xpra-sup daemonizes: the parent (us) gets exit 0 immediately.
+        # If the daemon's mkdir/state-write fails, it exits non-zero
+        # but we do not see it. The state file's absence
+        # means Guardian's close_xpra will Skip, a degraded but not dangerous state.
+        #
+        # display-numeric: pass "$disp_num" (digits), not
+        # "$display" (with colon). xpra-sup's valid_display rejects
+        # the colon form.
+        "$XPRA_SUP" "$jail" "$disp_num"
+
+        echo "Xpra started at $display in '$jail'"
         ;;
 
     attach)
-        [ -S "$socket" ] || { echo "no socket at $socket" >&2; exit 1; }
-
-        # Colored border by tier.
-        personality="$(awk -F= '/^PERSONALITY=/{print $2}' \
-            /usr/local/jails/app/$jail/usr/local/etc/parishbsd/metadata 2>/dev/null || echo '')"
-        case "$personality" in
-            vault-*)         colour="#d4af37" ;;
-            apps-compatible) colour="#8b5cf6" ;;
-            *)               colour="#3b82f6" ;;
+        # containment state check before attach. A contained
+        # jail should not have new display clients attached  the
+        # user is investigating, not extending the surface.
+        state="$(parish_jail_state "$jail")"
+        case "$state" in
+            running|running-other-contained)
+                : # proceed
+                ;;
+            stopped)
+                echo "parish-xpra: compartment '$jail' is not running. Start it first:" >&2
+                echo "  pkexec parishctl-start $jail" >&2
+                exit 1
+                ;;
+            *)
+                parish_jail_state_message "$jail" "$state" >&2
+                exit 1
+                ;;
         esac
+
+        [ -S "$socket" ] || {
+            echo "parish-xpra: no socket at $socket" >&2
+            exit 1
+        }
+
+        # trust colour from host-side file, sentinel grey when
+        # absent.
+        #
+        # Trust file: /var/db/parishbsd/trust/<jail>, root:wheel 0644,
+        # one word: high | medium | low.
+        #
+        # Absent file  sentinel grey (#808080).
+        #
+        # The trust file is host-side and not visible from inside the
+        # jail, so this read is not phishing-vulnerable. The
+        # ownership/mode check is defense in depth (same discipline
+        # as containment.cpp::lock_vault for its provider file).
+        colour="#808080"   # sentinel: no trust level set
+        _trust_file="/var/db/parishbsd/trust/$jail"
+        if [ -f "$_trust_file" ] && [ ! -L "$_trust_file" ] && \
+           [ "$(stat -f %Su "$_trust_file" 2>/dev/null)" = "root" ] && \
+           [ "$(stat -f %Lp "$_trust_file" 2>/dev/null)" = "644" ]; then
+            _trust="$(head -n1 "$_trust_file" 2>/dev/null | tr -d '[:space:]')"
+            case "$_trust" in
+                high)   colour="#d4af37" ;;
+                medium) colour="#3b82f6" ;;
+                low)    colour="#dc2626" ;;
+                # Unrecognized value → sentinel grey (default kept).
+            esac
+        fi
 
         # Forward whatever's left (e.g. --start=firefox) unchanged.
         exec xpra attach "socket://$socket" \
