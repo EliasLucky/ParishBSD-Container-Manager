@@ -34,6 +34,7 @@ LAUNCHER_STORE="/var/db/parishbsd/launchers"
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/desktop.sh"
 . "$LIBDIR/launcher.sh"
 
 log() { printf ' %s\n' "$*"; }
@@ -86,27 +87,7 @@ fi
 _meta="$LAUNCHER_STORE/$jail/$name.conf"
 
 if [ ! -f "$_meta" ] || [ -L "$_meta" ]; then
-    _desktop=""
-    for _d in /usr/local/share/applications /usr/share/applications; do
-        _cand="$_d/$name.desktop"
-        if jexec "$jail" test -f "$_cand" 2>/dev/null; then
-            _desktop="$_cand"
-            break
-        fi
-    done
-
-    if [ -z "$_desktop" ]; then
-        _desktop="$(jexec "$jail" sh -c '
-            pkg="$1"
-            for f in /usr/local/share/applications/*.desktop; do
-                [ -f "$f" ] || continue
-                bin=$(grep "^Exec=" "$f" | head -1 | cut -d= -f2 | awk "{print \$1}")
-                [ -n "$bin" ] || continue
-                owner=$(pkg which -q "$bin" 2>/dev/null | awk "{print \$1}")
-                [ "$owner" = "$pkg" ] && echo "$f" && exit 0
-            done
-        ' _ "$name" 2>/dev/null | head -1)"
-    fi
+    _desktop="$(_find_pkg_desktop "$jail" "$name")"
 
     if [ -z "$_desktop" ]; then
         err "no launcher source found for \"$name\" in \"$jail\"
