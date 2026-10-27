@@ -3,11 +3,14 @@
 #
 # Runs via pkexec. Polkit action .apps-remove-custom at auth_admin_keep.
 #
-# Refuses on containment states.
+# Refuses on containment states (a contained jail should not have
+# its files modified until the incident is reviewed).
 #
-# Note: parish-apps remove-custom unlinks BOTH host-side metadata
-# and legacy in-jail metadata by name. The
-# jail is not required to be running for either unlink.
+# Allows stopped jails. The underlying `parish-apps remove-custom`
+# operates on files: host-side metadata at
+# /var/db/parishbsd/launchers/<jail>/<slug>.conf and legacy in-jail
+# metadata at
+# /usr/local/jails/<tier>/<jail>/usr/local/etc/parishbsd/custom-apps/<slug>.conf
 
 set -eu
 
@@ -28,13 +31,8 @@ validate_app_name "$app" || exit 2
 
 state="$(parish_jail_state "$jail")"
 case "$state" in
-    running|running-other-contained)
-        : # proceed
-        ;;
-    stopped)
-        printf 'parishctl: compartment "%s" is not running.\n' "$jail" >&2
-        printf 'Start it first:\n  pkexec parishctl-start %s\n' "$jail" >&2
-        exit 1
+    running|running-other-contained|stopped)
+        : # proceed — filesystem operations work on stopped jails
         ;;
     *)
         parish_jail_state_message "$jail" "$state" >&2
