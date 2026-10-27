@@ -39,7 +39,6 @@
 // - Refuses symlinks at the state file path (defense against a
 //   jail-planted symlink).
 
-#include <cctype>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -164,7 +163,14 @@ bool valid_jail_name(const std::string& s)
     if (s[0] == '.') return false;
     if (s.find("..") != std::string::npos) return false;
     for (unsigned char c : s) {
-        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.'))
+        // in a non-C locale (ISO-8859-1, etc.) it may return true
+        // for bytes >= 128 that validate.sh's [A-Za-z0-9._-] class
+        // rejects. The explicit range is what the shell version means
+        // and is locale-independent by construction.
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '_' || c == '-' || c == '.'))
             return false;
     }
     return true;
@@ -182,7 +188,7 @@ bool valid_display(const std::string& s)
 {
     if (s.empty()) return false;
     for (unsigned char c : s) {
-        if (!std::isdigit(c)) return false;
+        if (!(c >= '0' && c <= '9')) return false;
     }
     return true;
 }
