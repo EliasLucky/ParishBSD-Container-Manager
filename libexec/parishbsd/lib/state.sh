@@ -203,3 +203,47 @@ parish_jail_state_message() {
             ;;
     esac
 }
+# parish_require_not_contained <jail>
+#
+# Return 0 if the compartment is in a state where state-changing
+# operations are safe. Return 1 (with message on stderr) if the
+# compartment is in a containment state or an unclear state.
+#
+# Callers:
+#   parish_require_not_contained "$jail" || exit 1
+#
+# Allowed: running, running-other-contained, stopped
+#   - running and running-other-contained are the normal operation
+#     states.
+#   - stopped is allowed because many state-changing operations work
+#     on stopped jails (parish-exchange filesystem transfers,
+#     parish-app-create-launcher metadata writes, parish-apps
+#     remove-custom).
+#
+# Refused: containing, contained, containment-failed,
+# contained-but-running, stopped-maybe-contained, unknown
+#   - containing: containment in flight
+#   - contained: successfully contained
+#   - containment-failed: emergency (jail may still be running)
+#   - contained-but-running: invariant violation ("should not happen")
+#   - stopped-maybe-contained: another jail was contained this boot;
+#     this jail's history is not confirmed safe
+#   - unknown: state cannot be determined
+parish_require_not_contained() {
+    _rnc_jail="${1-}"
+    if [ -z "$_rnc_jail" ]; then
+        printf 'parish: jail name required\n' >&2
+        return 1
+    fi
+    validate_jail_name_existing "$_rnc_jail" || return 1
+    _rnc_state="$(parish_jail_state "$_rnc_jail")"
+    case "$_rnc_state" in
+        running|running-other-contained|stopped)
+            return 0
+            ;;
+        *)
+            parish_jail_state_message "$_rnc_jail" "$_rnc_state" >&2
+            return 1
+            ;;
+    esac
+}
