@@ -1,2 +1,36 @@
 #!/bin/sh
+# parishctl-usb-detach  detach a USB device from a compartment.
+#
+# Runs via pkexec. Polkit action .usb-detach at auth_admin (no cache).
+#
+# Wrapper-layer state check: refuse on containment states. Allow
+# stopped.
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -ne 2 ]; then
+    printf 'usage: parishctl usb detach <jail> <dev>\n' >&2
+    exit 2
+fi
+
+jail="$1"
+dev="$2"
+
+validate_jail_name_existing "$jail" || exit 2
+
+state="$(parish_jail_state "$jail")"
+case "$state" in
+    running|running-other-contained|stopped)
+        : # proceed  detach works on stopped jails
+        ;;
+    *)
+        parish_jail_state_message "$jail" "$state" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/local/bin/parish-usb detach "$jail" "$dev"
