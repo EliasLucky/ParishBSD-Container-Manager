@@ -141,22 +141,28 @@ cmd_attach() {
     local jail_mnt="$jail_root/$JAIL_MNT_SUBDIR/$dev"
 
     # mount host side with all security options
+    _host_mount_created=0
     if is_mounted "$host_mnt"; then
-        log "host side already mounted: $dev -> $host_mnt"
+        log "host side already mounted: $dev -> $host_mnt (leaving in place)"
     else
         mount -t "$fstype" -o ro,nosuid,noexec,nodev "$dev_path" "$host_mnt" \
             || err "cannot mount $dev_path on $host_mnt"
+        _host_mount_created=1
         log "mounted $dev_path -> $host_mnt ($fstype, ro,nosuid,noexec,nodev)"
     fi
 
-    # expose to jail; roll back host mount on failure
+    # expose to jail; roll back host mount on failure (only if this
+    # invocation created it)
     if is_mounted "$jail_mnt"; then
         log "jail side already exposed: $host_mnt -> $jail_mnt"
     else
-        # harden the nullfs mount.
         if ! mount_nullfs -o ro,nosuid,noexec,nodev "$host_mnt" "$jail_mnt"; then
-            umount "$host_mnt" 2>/dev/null || true
-            log "rolled back host mount after jail-mount failure: $host_mnt"
+            if [ "$_host_mount_created" -eq 1 ]; then
+                umount "$host_mnt" 2>/dev/null || true
+                log "rolled back host mount after jail-mount failure: $host_mnt"
+            else
+                log "jail mount failed; host mount was pre-existing and is left in place: $host_mnt"
+            fi
             err "cannot expose $host_mnt inside jail $jail"
         fi
         log "exposed $host_mnt -> $jail_mnt (jail: $jail, ro,nosuid,noexec,nodev)"
