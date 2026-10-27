@@ -27,6 +27,13 @@ err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || err "must be run as root"
 command -v zfs >/dev/null 2>&1 || err "zfs not found"
 
+# defense in depth validate the name even though the primary caller (parishctl-create) validates before
+# invoking. Direct invocation (e.g. `sh 26-create-vault-data.sh ../../tmp/foo`) would otherwise construct
+# ds=zroot/vault-data/../../tmp/foo.
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+validate_jail_name_existing "$name" || exit 2
+
 ds="zroot/vault-data/$name"
 mnt="/zroot/vault-data/$name"
 
