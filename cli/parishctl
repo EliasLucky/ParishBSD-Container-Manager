@@ -112,6 +112,22 @@ version() {
 err() { printf 'parishctl: %s\n' "$*" >&2; exit 2; }
 
 # --------------------------------------------------------------------
+# Pre-flight checks (called by every pkexec-chaining path)
+# --------------------------------------------------------------------
+
+_require_unprivileged() {
+    if [ "$(id -u)" -eq 0 ]; then
+        err "must be run as an unprivileged user; the per-verb commands are invoked via pkexec by the dispatcher."
+    fi
+}
+
+_require_executable() {
+    if [ ! -x "$1" ]; then
+        err "unknown command: $2 (try 'parishctl help'; if valid, the binary '$1' may be missing)"
+    fi
+}
+
+# --------------------------------------------------------------------
 # Dispatch
 # --------------------------------------------------------------------
 
@@ -133,6 +149,8 @@ esac
 case "$verb" in
     apps-create-launcher|apps-pkg-launcher)
         _create_launcher_bin=/usr/local/sbin/parish-app-create-launcher
+        _require_unprivileged
+        _require_executable "$_create_launcher_bin" "$verb"
         _rc=0
         pkexec "$_create_launcher_bin" "$@" || _rc=$?
         case "$_rc" in
@@ -179,6 +197,7 @@ case "$verb" in
         # launch is unprivileged. parish-app-launch internally
         # calls pkexec for the privileged steps (start, xpra-start,
         # jail-run).
+        _require_unprivileged
         exec "$BINDIR_BIN/parish-app-launch" "$@"
         ;;
 esac
@@ -197,13 +216,8 @@ esac
 #         FreeBSD consoles instead of cleanly exiting 126 (observed:
 #         "Bus error" after "AUTHENTICATING FAILED")
 _bin="$BINDIR_SBIN/parishctl-$verb"
-if [ ! -x "$_bin" ]; then
-    err "unknown command: $verb (try 'parishctl help')"
-fi
-
-if [ "$(id -u)" -eq 0 ]; then
-    err "parishctl must be run as an unprivileged user; the per-verb commands are invoked via pkexec by the dispatcher."
-fi
+_require_executable "$_create_launcher_bin" "$verb"
+_require_unprivileged
 
 _rc=0
 pkexec "$_bin" "$@" || _rc=$?
