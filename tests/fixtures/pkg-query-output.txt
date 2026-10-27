@@ -1,18 +1,7 @@
-unpack:
-  - source: "/ro-root"
-    sourcefs: "file"
-    destination: ""
-    exclude:
-      - "dev/*"
-      - "proc/*"
-      - "sys/*"
-      - "tmp/*"
-      - "var/tmp/*"
-      - "var/cache/*"
-      - "var/run/*"
-      - "var/log/*"
-      - "ro-root/*"
-      - "cdrom/*"
-      - "live/*"
-      - "home/live/*"
-      - "usr/local/etc/calamares/*"
+# description	mode	exit_rc	stdout_escaped	stderr_escaped	expected_rows
+clean_j	-j	0	firefox-esr 115.3.1\nxorg-vfbserver 21.1.8\n		firefox-esr\t115.3.1\nxorg-vfbserver\t21.1.8
+empty_j	-j	0			<no output>
+warn_on_success	-j	0	firefox-esr 115.3.1\n	Warning: pkg config deprecated\n	firefox-esr\t115.3.1
+error_j	-j	1		pkg: cannot open pkgdb\n	<no output>, WARN printed
+clean_r	-r	0	firefox-esr 115.3.1\n		firefox-esr\t115.3.1
+error_r	-r	1		pkg: no such pkgdb: /x/y/z\n	<no output>, WARN + stopped-jail hint
