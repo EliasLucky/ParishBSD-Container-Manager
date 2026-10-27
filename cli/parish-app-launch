@@ -22,7 +22,8 @@ umask 077
 readonly LIBDIR=/usr/local/libexec/parishbsd/lib
 readonly DIALOG=/usr/local/libexec/parishbsd/parish-compartment-dialog
 readonly PKEXEC=/usr/bin/pkexec
-readonly PARISHCTL=/usr/local/sbin/parishctl
+readonly PARISHCTL_START=/usr/local/sbin/parishctl-start
+readonly PARISHCTL_XPRA_START=/usr/local/sbin/parishctl-xpra-start
 readonly PARISH_JAIL_RUN=/usr/local/sbin/parish-jail-run
 readonly PARISH_XPRA=/usr/local/bin/parish-xpra
 readonly LAUNCHER_STORE=/var/db/parishbsd/launchers
@@ -167,7 +168,7 @@ Start the compartment and launch \"${app_name}\"?" \
         [ "$_choice" = "10" ] || exit 1
 
         _rc=0
-        "$PKEXEC" "$PARISHCTL" start "$jail" || _rc=$?
+        "$PKEXEC" "$PARISHCTL_START" "$jail" || _rc=$?
         if [ "$_rc" -ne 0 ]; then
             case "$_rc" in
                 126) _sentence="Authentication was cancelled. The compartment was not started. Launch the application again if this was accidental." ;;
@@ -239,7 +240,7 @@ fi
 # --- Start display server ---
 
 _rc=0
-"$PKEXEC" "$PARISHCTL" xpra start "$jail" || _rc=$?
+"$PKEXEC" "$PARISHCTL_XPRA_START" "$jail" || _rc=$?
 if [ "$_rc" -ne 0 ]; then
     case "$_rc" in
         126) _sentence="Authentication was cancelled, so the display session was not started.
