@@ -18,6 +18,12 @@ if [ ! -d /exchange ]; then
     log "WARN: /exchange is not mounted"
 fi
 
+# Xvfb is required for headless xpra start.
+if ! command -v Xvfb >/dev/null 2>&1 && [ ! -x /usr/local/bin/Xvfb ]; then
+    log "WARN: Xvfb is not installed - headless Xpra mode will not work"
+    log "      Install it in this container: pkg install -y xorg-vfbserver"
+fi
+
 # --- Linux compatibility layer ---
 # The kernel module is loaded on the host at boot. The jail inherits
 # it. Enabling linux_enable inside the jail is not strictly required
