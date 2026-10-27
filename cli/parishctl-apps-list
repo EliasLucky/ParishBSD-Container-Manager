@@ -1,2 +1,25 @@
 #!/bin/sh
+# parishctl-apps-list — list installed applications in a compartment.
+#
+# Runs via pkexec. Polkit action .apps-list at allow_active=yes
+# (read-only; no prompt on the console). allow_inactive=no still
+# refuses remote sessions.
+#
+# No state check at this layer `parish-apps list` works on running
+# and stopped jails. Refusal on containment states is not needed for a
+# read-only operation.
 
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: parishctl apps list <jail>\n' >&2
+    exit 2
+fi
+
+jail="$1"
+validate_jail_name_existing "$jail" || exit 2
+
+exec /usr/local/bin/parish-apps list "$jail"
