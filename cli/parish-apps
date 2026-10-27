@@ -36,6 +36,16 @@
 # would carry the phishing vector forward). Any operation on a
 # pre-rework custom app refuses with an instruction to reinstall.
 # Migration is reinstall.
+#
+# EXCHANGE CLEANUP SAFETY
+# -----------------------
+# The exchange directory holds a temporary copy of the file being
+# installed. Cleanup happens on EXIT, INT, TERM. The cleanup is a
+# function called via `trap _exchange_cleanup EXIT INT TERM`, not a
+# trap string, because the trap string would be built from $base
+# (a filename the user chose) and would be shell-interpreted at trap
+# fire time. A filename like `foo';id;echo '.pkg` in a trap string
+# would execute `id` as root.
 
 set -eu
 
@@ -60,6 +70,11 @@ require_root() {
 
 validate_package_name() {
     [ -n "${1-}" ] || err "package name required"
+    # reject leading hyphen before the charset check. A package
+    # name starting with '-' reaches `pkg install -y "-foo"` and pkg parses it as an option.
+    case "$1" in
+        -*) err "invalid package name: '$1' (may not start with -)" ;;
+    esac
     printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9._+-]+$' \
         || err "invalid package name: '$1'"
 }
@@ -76,20 +91,10 @@ canonical_path() {
     echo "$real"
 }
 
-safe_meta_filename() {
-    printf '%s' "$1" | tr ' /' '__' | sed 's/[^A-Za-z0-9._-]//g'
-}
-
 # --------------------------------------------------------------------
 # Host-side launcher metadata writer
 # --------------------------------------------------------------------
 
-# write_host_launcher_metadata <jail> <slug> <name> <version> <method> <install_path> <argv0> [argv1 ...]
-#
-# Writes /var/db/parishbsd/launchers/<jail>/<slug>.conf atomically.
-# Rejects ARGV values containing " or \n (either breaks the format the
-# reader expects). Rejects header values containing \n (would create
-# spurious lines).
 write_host_launcher_metadata() {
     _jail="$1"
     _slug="$2"
@@ -104,11 +109,14 @@ write_host_launcher_metadata() {
     validate_jail_name_existing "$_jail"
     validate_app_name "$_slug" || err "invalid slug: '$_slug'"
 
-    # Reject newlines in header values — would create spurious lines.
+    # reject ANY control character (not just \n) in header values.
+    # CR in a .desktop Exec= line (CRLF-origin files) would otherwise
+    # be embedded in the metadata and confuse the reader.
     for _hdr_val in "$_name" "$_version" "$_method" "$_install_path"; do
         case "$_hdr_val" in
-            *'
-'*) err "launcher metadata value contains a newline; refusing to write" ;;
+            *[[:cntrl:]]*)
+                err "launcher metadata value contains a control character; refusing to write"
+                ;;
         esac
     done
 
@@ -121,8 +129,9 @@ write_host_launcher_metadata() {
     _meta_file="$_launcher_dir/$_slug.conf"
     _tmp="${_meta_file}.tmp.$$"
 
+    # also reject control characters per argv element.
     {
-        printf '# ParishBSD launcher metadata — written by parish-apps install-file\n'
+        printf '# ParishBSD launcher metadata written by parish-apps install-file\n'
         printf '# or parish-app-create-launcher. Do not edit.\n'
         printf 'jail=%s\n'         "$_jail"
         printf 'slug=%s\n'         "$_slug"
@@ -134,9 +143,12 @@ write_host_launcher_metadata() {
         _i=0
         for _arg in "$@"; do
             case "$_arg" in
-                *'"'*) err "launcher argv[$_i] contains '\"'; refusing to write" ;;
-                *'
-'*) err "launcher argv[$_i] contains a newline; refusing to write" ;;
+                *[[:cntrl:]]*)
+                    err "launcher argv[$_i] contains a control character; refusing to write"
+                    ;;
+                *'"'*)
+                    err "launcher argv[$_i] contains '\"'; refusing to write"
+                    ;;
             esac
             printf 'ARGV[%d]="%s"\n' "$_i" "$_arg"
             _i=$((_i + 1))
@@ -154,14 +166,14 @@ write_host_launcher_metadata() {
 # --------------------------------------------------------------------
 
 # refuse_if_legacy_custom_app <jail> <slug>
-# Refuses with the two-paragraph message if a pre-rework custom app
-# exists for this slug (in-jail custom-apps/<slug>.conf).
+# Refuses with the two-paragraph message if a pre-rework custom app exists for this slug, in any tier.
 refuse_if_legacy_custom_app() {
     _jail="$1"
     _slug="$2"
-    _legacy="$JAILS_DIR/app/$_jail/usr/local/etc/parishbsd/custom-apps/$_slug.conf"
-    if [ -f "$_legacy" ] && [ ! -L "$_legacy" ]; then
-        cat >&2 <<EOF
+    for _tier in app vault containers; do
+        _legacy="$JAILS_DIR/$_tier/$_jail/usr/local/etc/parishbsd/custom-apps/$_slug.conf"
+        if [ -f "$_legacy" ] && [ ! -L "$_legacy" ]; then
+            cat >&2 <<EOF
 The application "$_slug" in compartment "$_jail" was installed by an
 older version of the Compartments Manager. Its launcher metadata is in
 a format that cannot be safely used.
@@ -170,8 +182,32 @@ Reinstall the application from the Compartments Manager to create a
 working launcher. The old "set-launcher" command has been removed; to
 change what the application runs, reinstall it with the corrected file.
 EOF
-        exit 1
-    fi
+            exit 1
+        fi
+    done
+}
+
+# --------------------------------------------------------------------
+# Exchange cleanup trap function pattern
+# --------------------------------------------------------------------
+# The trap is a FUNCTION, not a string. A trap string built from $base
+# would be shell-interpreted at fire time; a filename with shell
+# metacharacters would execute as root. The function reads globals
+# quoted at the call site; no shell interpretation of the values.
+#
+# Each handler sets _cleanup_jail/_cleanup_base, installs the trap,
+# and clears _cleanup_base after explicit cleanup (so a normal exit
+# does not re-run cleanup).
+
+_cleanup_jail=""
+_cleanup_base=""
+
+_exchange_cleanup() {
+    [ -n "$_cleanup_base" ] || return 0
+    _saved_jail="$_cleanup_jail"
+    _saved_base="$_cleanup_base"
+    _cleanup_base=""
+    cleanup_exchange "$_saved_jail" "$_saved_base"
 }
 
 # --------------------------------------------------------------------
@@ -205,7 +241,7 @@ cmd_list() {
         done
     fi
 
-    # Legacy in-jail custom apps (pre-rework) — display, but flag them
+    # Legacy in-jail custom apps (pre-rework)
     legacy_dir="$JAILS_DIR/app/$jail/usr/local/etc/parishbsd/custom-apps"
     if [ -d "$legacy_dir" ]; then
         for f in "$legacy_dir"/*.conf; do
@@ -255,6 +291,10 @@ cmd_install_file() {
             --launcher=desktop) launcher="desktop" ;;
             --launcher=both)    launcher="both" ;;
             --launcher=none)    launcher="none" ;;
+            # RF7: unknown flags are errors, not silently ignored.
+            # A typo like --mode=instaler previously fell through
+            # silently, leaving mode="auto". P2 (refusal is a feature).
+            *)                  err "unknown option: $arg" ;;
         esac
     done
 
@@ -328,20 +368,20 @@ exchange_dir() {
 do_freebsd_pkg() {
     jail="$1"; host_file="$2"
 
-    # read the package's own name before install. This replaces
-    # `pkg info -a -o | tail -1` (which picks the last dependency,
-    # not the target).
+    # read the package's own name before install.
     pkg_name="$(pkg query -F "$host_file" %n 2>/dev/null)"
     [ -n "$pkg_name" ] || err "cannot determine package name from $host_file (pkg query -F failed)"
     validate_package_name "$pkg_name"
 
     base="$(copy_to_exchange "$jail" "$host_file")"
-    trap "cleanup_exchange '$jail' '$base'" EXIT INT TERM
+    # RF2: trap function, not trap string.
+    _cleanup_jail="$jail"
+    _cleanup_base="$base"
+    trap _exchange_cleanup EXIT INT TERM
 
     log "Installing FreeBSD package $base ($pkg_name)"
     jexec "$jail" pkg add "/exchange/$base"
 
-    # Look for a matching .desktop inside the jail to find the exec.
     launcher_argv=""
     for d in /usr/local/share/applications /usr/share/applications; do
         cand="$d/$pkg_name.desktop"
@@ -358,54 +398,54 @@ do_freebsd_pkg() {
     ver="$(jexec "$jail" pkg query %v "$pkg_name" 2>/dev/null || echo 1.0)"
 
     cleanup_exchange "$jail" "$base"
+    _cleanup_base=""
     trap - EXIT INT TERM
 
-    # Build argv from launcher_argv (Exec= line) or fall back to pkg name.
-    # refuse quote/backslash in the Exec= line  cannot safely
-    # split into argv without a full .desktop Exec parser.
-    _argv=
+    # build argv with globbing disabled, then pass "$@" (not a re-split $_argv string) to the writer.
     if [ -n "$launcher_argv" ]; then
         case "$launcher_argv" in
             *[\"\']*|*\\*)
                 err "cannot create launcher: $pkg_name.desktop has quotes or backslashes in its Exec line"
                 ;;
         esac
-        # Strip field codes and split on whitespace (safe after the
-        # quote/backslash check above)
         _cleaned="$(printf '%s' "$launcher_argv" | sed 's/%[fFuUdDnNickvm]//g; s/%%/%/g')"
-        # shellcheck disable=SC2086
+        set -f
         set -- $_cleaned
-        _argv="$*"
+        set +f
+        if [ "$#" -lt 1 ]; then
+            err "cannot determine argv from $pkg_name.desktop Exec= line (only field codes present)"
+        fi
     else
-        _argv="$pkg_name"
+        set -- "$pkg_name"
     fi
 
-    # shellcheck disable=SC2086
     write_host_launcher_metadata "$jail" "$pkg_name" "$pkg_name" "$ver" \
-        "freebsd-pkg" "/usr/local" $_argv
+        "freebsd-pkg" "/usr/local" "$@"
     log "Package installed"
     printf '%s' "$pkg_name"
 }
 
-# (host-side metadata), no jexec sh -c sites here (installer is exec'd directly).
 do_win_installer() {
     jail="$1"; host_file="$2"
     base="$(copy_to_exchange "$jail" "$host_file")"
-    trap "cleanup_exchange '$jail' '$base'" EXIT INT TERM
+    # trap function.
+    _cleanup_jail="$jail"
+    _cleanup_base="$base"
+    trap _exchange_cleanup EXIT INT TERM
 
     log "Running Windows installer $base (Wine)"
     jexec "$jail" wine "/exchange/$base"
 
-    # Find the newest .exe outside wine's system directories.
     exe="$(jexec "$jail" sh -c '
         find /root/.wine/drive_c -name "*.exe" -type f \
             -not -path "*windows*" 2>/dev/null \
             | xargs ls -t 2>/dev/null | head -1
     ')"
 
-    stem="$(echo "$base" | sed 's/\.[^.]*$//; s/-[Ss]etup$//; s/[Ss]etup$//')"
+    stem="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//; s/-[Ss]etup$//; s/[Ss]etup$//')"
 
     cleanup_exchange "$jail" "$base"
+    _cleanup_base=""
     trap - EXIT INT TERM
 
     if [ -z "$exe" ]; then
@@ -423,7 +463,10 @@ do_win_installer() {
 do_win_portable() {
     jail="$1"; host_file="$2"
     base="$(copy_to_exchange "$jail" "$host_file")"
-    trap "cleanup_exchange '$jail' '$base'" EXIT INT TERM
+    # trap function.
+    _cleanup_jail="$jail"
+    _cleanup_base="$base"
+    trap _exchange_cleanup EXIT INT TERM
 
     stem="$(printf '%s' "$base" | sed 's/\.[^.]*$//')"
     install_dir="/opt/parish-apps/$stem"
@@ -447,15 +490,19 @@ do_win_portable() {
             -type f 2>/dev/null | head -1)"
 
     cleanup_exchange "$jail" "$base"
+    _cleanup_base=""
     trap - EXIT INT TERM
 
-    if [ -n "$exe" ]; then
-        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-            "wine-portable" "$install_dir" "wine" "$exe"
-    else
-        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-            "wine-portable" "$install_dir" "wine" "$install_dir"
+    # match do_win_installer WARN and skip, do not write
+    # metadata with wine pointing at a directory.
+    if [ -z "$exe" ]; then
+        log "WARN: no .exe found in $install_dir; metadata not written"
+        log "You can still launch the app from a console."
+        return 0
     fi
+
+    write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+        "wine-portable" "$install_dir" "wine" "$exe"
     log "Portable application installed at $install_dir"
     printf '%s' "$stem"
 }
@@ -463,7 +510,10 @@ do_win_portable() {
 do_linux_portable() {
     jail="$1"; host_file="$2"
     base="$(copy_to_exchange "$jail" "$host_file")"
-    trap "cleanup_exchange '$jail' '$base'" EXIT INT TERM
+    # trap function.
+    _cleanup_jail="$jail"
+    _cleanup_base="$base"
+    trap _exchange_cleanup EXIT INT TERM
 
     stem="$(printf '%s' "$base" | sed 's/\.[^.]*$//')"
     install_dir="/opt/parish-apps/$stem"
@@ -492,17 +542,20 @@ do_linux_portable() {
     ' _ "$install_dir" "$stem")"
 
     cleanup_exchange "$jail" "$base"
+    _cleanup_base=""
     trap - EXIT INT TERM
 
+    # write_host_launcher_metadata rejects any argv element containing
+    # '"', and the fallback's literal argument contained quotes. Match
+    # do_win_installer: WARN and skip.
     if [ -z "$binary" ]; then
-        # Fallback: sh -c wrapper. Values passed as positional args so no quoting issues.
-        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-            "linux-portable" "$install_dir" \
-            "sh" "-c" 'cd "$1"; ./run.sh 2>/dev/null || ./"$2"' _ "$install_dir" "$stem"
-    else
-        write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
-            "linux-portable" "$install_dir" "$binary"
+        log "WARN: no executable found in $install_dir; metadata not written"
+        log "You can still launch the app from a console."
+        return 0
     fi
+
+    write_host_launcher_metadata "$jail" "$stem" "$stem" "1.0" \
+        "linux-portable" "$install_dir" "$binary"
     log "Portable application installed at $install_dir"
     printf '%s' "$stem"
 }
@@ -510,7 +563,10 @@ do_linux_portable() {
 do_linux_installer() {
     jail="$1"; host_file="$2"
     base="$(copy_to_exchange "$jail" "$host_file")"
-    trap "cleanup_exchange '$jail' '$base'" EXIT INT TERM
+    # trap function.
+    _cleanup_jail="$jail"
+    _cleanup_base="$base"
+    trap _exchange_cleanup EXIT INT TERM
 
     log "Running Linux installer $base"
 
@@ -518,13 +574,14 @@ do_linux_installer() {
         jexec "$jail" /compat/linux/bin/sh "/exchange/$base"
     fi
 
-    stem="$(echo "$base" | sed 's/\.[^.]*$//; s/-[Ii]nstall.*//')"
+    stem="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//; s/-[Ii]nstall.*//')"
 
     install_dir="/opt/$stem"
     jexec "$jail" test -d "/opt/$stem" || install_dir="/usr/local/$stem"
     jexec "$jail" test -d "$install_dir" || install_dir=""
 
     cleanup_exchange "$jail" "$base"
+    _cleanup_base=""
     trap - EXIT INT TERM
 
     if [ -n "$install_dir" ]; then
@@ -556,22 +613,27 @@ cmd_remove_custom() {
     app_name="${2:?usage: parish-apps remove-custom <jail> <app>}"
     validate_app_name "$app_name" || err "invalid app name: $app_name"
 
-    # remove host-side metadata.
-    _meta="$LAUNCHER_STORE/$jail/$app_name.conf"
     _removed=0
+
+    # Host-side metadata (post-rework).
+    _meta="$LAUNCHER_STORE/$jail/$app_name.conf"
     if [ -f "$_meta" ] && [ ! -L "$_meta" ]; then
         rm -f "$_meta"
-        log "Removed launcher metadata for $app_name"
         _removed=1
     fi
 
-    # Refuse if a legacy in-jail metadata exists for this app.
-    refuse_if_legacy_custom_app "$jail" "$app_name"
-    # (The above exits if legacy exists. If we reach here, no legacy.)
+    # Unlink legacy metadata by name (no read, so the
+    # reading jail-writable content does not apply). Three-tier scan matches refuse_if_legacy_custom_app.
+    for _tier in app vault containers; do
+        _legacy="$JAILS_DIR/$_tier/$jail/usr/local/etc/parishbsd/custom-apps/$app_name.conf"
+        if [ -f "$_legacy" ] && [ ! -L "$_legacy" ]; then
+            rm -f "$_legacy"
+            log "Removed legacy metadata for $app_name ($_tier tier)"
+            _removed=1
+        fi
+    done
 
-    if [ "$_removed" -eq 0 ]; then
-        err "no launcher metadata found for '$app_name'"
-    fi
+    [ "$_removed" -eq 1 ] || err "no metadata found for '$app_name'"
 
     log "Note: installed files under /opt/parish-apps/ were not removed."
 }
@@ -592,7 +654,7 @@ cmd_upgrade() {
 }
 
 # --------------------------------------------------------------------
-# launch / create-launcher / pkg-launcher (all exec into other binaries)
+# launch / create-launcher / pkg-launcher
 # --------------------------------------------------------------------
 
 cmd_launch() {
@@ -607,7 +669,9 @@ cmd_create_launcher() {
     name="${2:?}"
     where="${3:-menu}"
     validate_app_name "$name" || err "invalid app name: $name"
-    # If a legacy in-jail metadata exists for this name, refuse.
+    # create-launcher's refusal is intentional (the user is trying to
+    # install/configure; legacy presence means they must reinstall to
+    # migrate).
     refuse_if_legacy_custom_app "$jail" "$name"
     exec "$PARISH_BIN/parish-app-create-launcher" "$jail" "$name" "$where"
 }
