@@ -57,6 +57,7 @@ PARISH_APP_CREATE_LAUNCHER=/usr/local/sbin/parish-app-create-launcher
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/desktop.sh"
 . "$LIBDIR/launcher.sh"
 
 log() { printf ' %s\n' "$*"; }
@@ -112,16 +113,13 @@ _locate_desktop_argv_and_version() {
     _found_exec=""
     _found_icon=""
 
-    for _d in /usr/local/share/applications /usr/share/applications; do
-        _cand="$_d/$_pkg.desktop"
-        if jexec "$_jail" test -f "$_cand" 2>/dev/null; then
-            _found_exec="$(jexec "$_jail" sh -c \
-                'grep "^Exec=" "$1" | head -1 | cut -d= -f2-' _ "$_cand")"
-            _found_icon="$(jexec "$_jail" sh -c \
-                'grep "^Icon=" "$1" | head -1 | cut -d= -f2-' _ "$_cand")"
-            break
-        fi
-    done
+    _desktop="$(_find_pkg_desktop "$_jail" "$_pkg")"
+    if [ -n "$_desktop" ]; then
+        _found_exec="$(jexec "$_jail" sh -c \
+            'grep "^Exec=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop")"
+        _found_icon="$(jexec "$_jail" sh -c \
+            'grep "^Icon=" "$1" | head -1 | cut -d= -f2-' _ "$_desktop")"
+    fi
 
     # Validate icon name; warn and drop if invalid (writer would reject).
     case "$_found_icon" in
