@@ -27,6 +27,7 @@ PERSONALITIES=/usr/local/share/parishbsd/personalities
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
 
 name="${1-}"
 kind_in="${2-}"
@@ -129,7 +130,12 @@ if container_is_vault "$personality"; then
             ;;
     esac
 else
-    if ! service jail start "$name" >/dev/null 2>&1; then
+    jailroot="$(container_path "$name")" || {
+        printf '\nparishctl: container "%s" was created but its filesystem is not present.\n' "$name" >&2
+        printf 'Check:\n  ls -la /usr/local/jails/*/%s\n' "$name" >&2
+        exit 1
+    }
+    if ! parish_service_start "$name" "$jailroot"; then
         printf '\nparishctl: container "%s" was created but failed to start.\n' "$name" >&2
         printf 'Check with:\n' >&2
         printf '  service jail status %s\n' "$name" >&2
@@ -137,17 +143,6 @@ else
         printf '  pkexec parishctl start %s\n' "$name" >&2
         exit 1
     fi
-
-    # Post-condition: the jail should be running.
-    _state_after="$(parish_jail_state "$name")"
-    case "$_state_after" in
-        running|running-other-contained) : ;;
-        *)
-            printf '\nparishctl: start reported success but state is "%s".\n' "$_state_after" >&2
-            printf 'To retry:\n  pkexec parishctl start %s\n' "$name" >&2
-            exit 1
-            ;;
-    esac
 fi
 
 printf '\nContainer "%s" is ready.\n\n' "$name"
