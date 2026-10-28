@@ -1,5 +1,5 @@
 #!/bin/sh
-# parishctl-start — start a compartment.
+# parishctl-start  start a compartment.
 #
 # Runs via pkexec. Polkit action .start at auth_admin_keep.
 
@@ -8,9 +8,9 @@ set -eu
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
-. "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
 . "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
 
 if [ "$#" -ne 1 ]; then
     printf 'usage: parishctl start <name>\n' >&2
