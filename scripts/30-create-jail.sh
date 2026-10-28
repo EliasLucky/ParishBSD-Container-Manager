@@ -239,13 +239,34 @@ create_mountpoints() {
 
 # --- Orphan epair cleanup ---
 clean_orphan_epairs() {
+	# Acquire the same lock parish_service_start uses. A concurrent
+	# start's epair is created but not yet added to bridge0 for a
+	# brief window; without the lock, this cleanup would destroy it.
+	# On timeout or open failure, skip the cleanup orphan epairs
+	# are recoverable, destroying the wrong one is not.
+	mkdir -p /var/run/parishbsd 2>/dev/null || true
+	chmod 0700 /var/run/parishbsd 2>/dev/null || true
+	exec 9> /var/run/parishbsd/service.lock 2>/dev/null || {
+		row "orphan epairs" "skipped (cannot open service lock)"
+		return 0
+	}
+	if ! flock -w 30 9; then
+		exec 9>&-
+		row "orphan epairs" "skipped (lock busy; another create/start in progress)"
+		return 0
+	fi
+
 	cleaned=0
 	for ea in $(ifconfig -l | tr ' ' '\n' | grep '^epair[0-9]*a$' 2>/dev/null); do
 		if ! ifconfig bridge0 2>/dev/null | grep -q "member: $ea"; then
 			ifconfig "$ea" destroy 2>/dev/null && cleaned=$((cleaned + 1))
 		fi
 	done
-	[ "$cleaned" -gt 0 ] && row "orphan epairs" "destroyed $cleaned"
+
+	exec 9>&-
+    if [ "$cleaned" -gt 0 ]; then
+        row "orphan epairs" "destroyed $cleaned"
+    fi
 	return 0
 }
 
@@ -253,7 +274,7 @@ clean_orphan_epairs() {
 install_packages() {
 	[ -n "$PERSONALITY_PACKAGES" ] || return 0
 
-	if ! jls name 2>/dev/null | grep -qx "$name"; then
+	if ! jls name 2>/dev/null | grep -qxF "$name"; then
 		row "packages" "jail not running - skipped"
 		row ""         "start it and run: jexec $name pkg install -y $PERSONALITY_PACKAGES"
 		return 0
