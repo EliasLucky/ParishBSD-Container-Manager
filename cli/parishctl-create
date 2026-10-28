@@ -25,9 +25,9 @@ PARISH_SCRIPTS=/usr/local/libexec/parishbsd
 PERSONALITIES=/usr/local/share/parishbsd/personalities
 
 . "$LIBDIR/validate.sh"
-. "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
 . "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
 
 name="${1-}"
 kind_in="${2-}"
