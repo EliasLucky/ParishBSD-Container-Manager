@@ -34,7 +34,7 @@ name="${1:?usage: 30-create-jail.sh <name> <personality>}"
 personality="${2:?usage: 30-create-jail.sh <name> <personality>}"
 
 # --- Paths ---
-repo="${PARISHBSD_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+repo="${PARISHBSD_REPO:-/usr/local/share/parishbsd}"
 personality_dir="$repo/personalities/$personality"
 arch="$(uname -m)"
 version="$(freebsd-version -u | awk -F'-p' '{print $1}')"
@@ -63,6 +63,21 @@ PERSONALITY_PROVISION="${PERSONALITY_PROVISION:-}"
 
 tier="$PERSONALITY_TIER"
 jailroot="/usr/local/jails/$tier/$name"
+
+# write_atomic <target> <mode> <owner>
+# Reads content from stdin. Writes to <target>.tmp.$$, chmods, chowns,
+# fsyncs, renames. Removes tmp on failure.
+write_atomic() {
+    _wa_target="$1"; _wa_mode="$2"; _wa_owner="$3"
+    _wa_tmp="$_wa_target.tmp.$$"
+    trap 'rm -f "$_wa_tmp"' EXIT
+    cat > "$_wa_tmp" || { rm -f "$_wa_tmp"; err "cannot write $_wa_tmp"; }
+    chmod "$_wa_mode" "$_wa_tmp" || { rm -f "$_wa_tmp"; err "cannot chmod $_wa_tmp"; }
+    chown "$_wa_owner" "$_wa_tmp" || { rm -f "$_wa_tmp"; err "cannot chown $_wa_tmp"; }
+    sync -- "$_wa_tmp" 2>/dev/null || true
+    mv "$_wa_tmp" "$_wa_target" || { rm -f "$_wa_tmp"; err "cannot rename $_wa_tmp"; }
+    trap - EXIT
+}
 
 # --- Cache ---
 ensure_cache() {
@@ -149,7 +164,7 @@ install_config() {
 			-e "s/\${ip}/$ip/g" \
 			-e "s|\${PERSONALITY_DATA_MOUNT}|$PERSONALITY_DATA_MOUNT|g" \
 			-e "s|\${PERSONALITY_DATA_SOURCE}|$PERSONALITY_DATA_SOURCE|g" \
-			"$tmpl" > "/etc/jail.conf.d/$name.conf"
+			"$tmpl" | write_atomic "/etc/jail.conf.d/$name.conf" 0644 root:wheel
 		row "jail.conf" "$name.conf (epair=$epair ip=$ip)"
 	else
 		row "jail.conf" "no template - skipped"
@@ -162,7 +177,7 @@ install_config() {
 			-e "s/\${tier}/$tier/g" \
 			-e "s|\${PERSONALITY_DATA_MOUNT}|$PERSONALITY_DATA_MOUNT|g" \
 			-e "s|\${PERSONALITY_DATA_SOURCE}|$PERSONALITY_DATA_SOURCE|g" \
-			"$fstab_tmpl" > "/etc/fstab.$name"
+			"$fstab_tmpl" | write_atomic "/etc/fstab.$name" 0644 root:wheel
 		row "fstab" "$name"
 	fi
 
@@ -194,7 +209,7 @@ EOF
 	fi
 
 	install -d "$jailroot/usr/local/etc/parishbsd"
-	cat > "$jailroot/usr/local/etc/parishbsd/metadata" <<EOF
+	write_atomic "$jailroot/usr/local/etc/parishbsd/metadata" 0644 root:wheel <<EOF
 PERSONALITY=$personality
 TIER=$tier
 CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -207,8 +222,10 @@ EOF
 # --- Mount points ---
 create_mountpoints() {
 	if [ "$PERSONALITY_NEEDS_XPRA_DIR" = "yes" ]; then
-		mkdir -p "/var/run/xpra/$name"
-		mkdir -p "$jailroot/xpra"
+        mkdir -p "/var/run/xpra/$name" || err "cannot create /var/run/xpra/$name"
+        chmod 0700 "/var/run/xpra/$name" || err "cannot chmod 0700 /var/run/xpra/$name"
+        mkdir -p "$jailroot/xpra" || err "cannot create $jailroot/xpra"
+        chmod 0700 "$jailroot/xpra" || err "cannot chmod 0700 $jailroot/xpra"
 		row "xpra dirs" "/var/run/xpra/$name"
 	fi
 
