@@ -15,6 +15,14 @@
 #                   and any other caller in this tree
 #   service.sh      this file
 #
+# Failure model:
+#   - return 1 for service failures (exit code, non-empty stderr on
+#     start, state mismatch). The caller has a recovery block that
+#     names the next step; returning 1 lets it run.
+#   - err for setup failures (mkdir, chmod, lock open, lock timeout,
+#     mktemp). The caller cannot recover; exiting the shell is the
+#     right behavior.
+#
 # Patterns:
 #   start: exit code checked; stderr checked with -s (any non-empty
 #          stderr is a refusal, no pattern. No whitelist: verified 0-byte stderr on success
@@ -65,7 +73,7 @@ parish_service_start() {
         fi
         rm -f "$_ps_err"
         exec 9>&-
-        err "failed to start $_ps_jail (exit $_ps_rc)"
+        return 1
     fi
 
     if [ -s "$_ps_err" ]; then
@@ -75,8 +83,7 @@ parish_service_start() {
         echo "The container's state is not trustworthy." >&2
         rm -f "$_ps_err"
         exec 9>&-
-        # Multi-line message; use exit 1, not err, which prints one line.
-        exit 1
+        return 1
     fi
     rm -f "$_ps_err"
 
@@ -86,7 +93,7 @@ parish_service_start() {
         *)
             exec 9>&-
             parish_jail_state_message "$_ps_jail" "$_ps_state" >&2
-            err "start reported success but state is '$_ps_state'"
+            return 1
             ;;
     esac
 
@@ -108,7 +115,7 @@ parish_service_stop() {
     service jail stop "$_ps_jail" || _ps_rc=$?
     if [ "$_ps_rc" -ne 0 ]; then
         exec 9>&-
-        err "failed to stop $_ps_jail (exit $_ps_rc)"
+        return 1
     fi
 
     _ps_state=$(parish_jail_state "$_ps_jail")
@@ -116,7 +123,7 @@ parish_service_stop() {
         stopped) : ;;
         *)
             exec 9>&-
-            err "stop reported success but state is '$_ps_state'"
+            return 1
             ;;
     esac
 
