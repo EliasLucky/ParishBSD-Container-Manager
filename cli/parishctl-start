@@ -10,6 +10,7 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
 
 if [ "$#" -ne 1 ]; then
     printf 'usage: parishctl start <name>\n' >&2
