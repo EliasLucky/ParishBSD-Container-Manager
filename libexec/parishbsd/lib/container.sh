@@ -6,6 +6,8 @@
 #
 # REQUIRES (sourced by the caller, in this order):
 #   validate.sh     jail name and personality name validators
+#   state.sh        parish_jail_state, parish_jail_state_message
+#   service.sh      parish_service_start, parish_service_stop
 #   container.sh    this file
 
 # container_path <name>
@@ -199,8 +201,7 @@ EOF
         sh /usr/local/libexec/parishbsd/27-unlock-vault.sh "$_name" \
             || { printf 'parishctl: failed to unlock and start vault "%s"\n' "$_name" >&2; return 1; }
     else
-        service jail start "$_name" \
-            || { printf 'parishctl: failed to start "%s"\n' "$_name" >&2; return 1; }
+        parish_service_start "$_name" "$_jailroot" || return 1
     fi
 
     # start reported success; verify state.
@@ -251,8 +252,7 @@ container_stop() {
             ;;
     esac
 
-    service jail stop "$_name" \
-        || { printf 'parishctl: failed to stop "%s"\n' "$_name" >&2; return 1; }
+    parish_service_stop "$_name" || return 1
 
     printf 'Container "%s" stopped.\n' "$_name"
 
