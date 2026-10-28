@@ -8,9 +8,9 @@ set -eu
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
-. "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
 . "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
 
 if [ "$#" -ne 1 ]; then
     printf 'usage: parishctl stop <name>\n' >&2
