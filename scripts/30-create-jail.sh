@@ -70,11 +70,10 @@ jailroot="/usr/local/jails/$tier/$name"
 write_atomic() {
     _wa_target="$1"; _wa_mode="$2"; _wa_owner="$3"
     _wa_tmp="$_wa_target.tmp.$$"
-    trap 'rm -f "$_wa_tmp"' EXIT
     cat > "$_wa_tmp" || { rm -f "$_wa_tmp"; err "cannot write $_wa_tmp"; }
     chmod "$_wa_mode" "$_wa_tmp" || { rm -f "$_wa_tmp"; err "cannot chmod $_wa_tmp"; }
     chown "$_wa_owner" "$_wa_tmp" || { rm -f "$_wa_tmp"; err "cannot chown $_wa_tmp"; }
-    sync -- "$_wa_tmp" 2>/dev/null || true
+    sync
     mv "$_wa_tmp" "$_wa_target" || { rm -f "$_wa_tmp"; err "cannot rename $_wa_tmp"; }
     trap - EXIT
 }
