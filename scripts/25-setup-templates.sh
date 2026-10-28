@@ -30,7 +30,7 @@ log "Ensuring ZFS layout"
 zfs list zroot/jails            >/dev/null 2>&1 || zfs create -p zroot/jails
 zfs list zroot/jails/templates  >/dev/null 2>&1 || zfs create -p zroot/jails/templates
 zfs list zroot/jails/containers >/dev/null 2>&1 || zfs create -p zroot/jails/containers
-zfs list zroot/vault-data       >/dev/null 2>&1 || zfs create -p zroot/vault-ddata
+zfs list zroot/vault-data       >/dev/null 2>&1 || zfs create -p zroot/vault-data
 
 zfs set mountpoint=/zroot/jails            zroot/jails            2>/dev/null || true
 zfs set mountpoint=/zroot/jails/templates  zroot/jails/templates  2>/dev/null || true
