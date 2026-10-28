@@ -66,11 +66,13 @@ parish_service_start() {
     service jail start "$_ps_jail" 2>"$_ps_err" || _ps_rc=$?
 
     if [ "$_ps_rc" -ne 0 ]; then
+        echo "The container service exited non-zero while starting (exit $_ps_rc):" >&2
         if [ -s "$_ps_err" ]; then
-            echo "The container service reported an error while starting:" >&2
             sed 's/^/  /' "$_ps_err" >&2
-            echo "" >&2
+        else
+            echo "  (no stderr output)" >&2
         fi
+        echo "" >&2
         rm -f "$_ps_err"
         exec 9>&-
         return 1
@@ -114,6 +116,7 @@ parish_service_stop() {
     _ps_rc=0
     service jail stop "$_ps_jail" || _ps_rc=$?
     if [ "$_ps_rc" -ne 0 ]; then
+        echo "The container service exited non-zero while stopping (exit $_ps_rc)." >&2
         exec 9>&-
         return 1
     fi
@@ -122,6 +125,7 @@ parish_service_stop() {
     case "$_ps_state" in
         stopped) : ;;
         *)
+            echo "Stop reported success but state is '$_ps_state'." >&2
             exec 9>&-
             return 1
             ;;
