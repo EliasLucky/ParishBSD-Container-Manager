@@ -2,10 +2,22 @@ ${name} {
 	host.hostname = "${name}.parishbsd.local";
 	path = "/usr/local/jails/${tier}/${name}";
 
+	allow.raw_sockets = 0;
+	allow.chflags     = 0;
+	allow.mount       = 0;
+	allow.quotas      = 0;
+	allow.socket_af   = 0;
+	allow.sysvipc     = 0;
+	devfs_ruleset     = 4;
+	enforce_statfs    = 2;
+	exec.clean        = yes;
+	securelevel       = 1;
+
 	vnet;
 	vnet.interface = "${epair}b";
 	exec.prestart = "/sbin/ifconfig ${epair} create up; /sbin/ifconfig bridge0 addm ${epair}a up";
 	exec.start = "/sbin/ifconfig ${epair}b ${ip}/24 up; /sbin/route add default 10.0.0.1; /bin/sh /etc/rc";
+	exec.poststart = "/bin/chmod 0600 /var/log/jail_${name}_console.log 2>/dev/null || true";
 	exec.poststop = "/sbin/ifconfig bridge0 deletem ${epair}a; /sbin/ifconfig ${epair}a destroy";
 
 	allow.raw_sockets = 0;
