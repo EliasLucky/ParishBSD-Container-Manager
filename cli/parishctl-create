@@ -92,6 +92,7 @@ if container_is_vault "$personality"; then
 fi
 
 printf 'Step 2 of 2: installing container\n'
+export PARISHBSD_REPO=/usr/local/share/parishbsd
 sh "$PARISH_SCRIPTS/30-create-jail.sh" "$name" "$personality" \
     || { printf 'parishctl: failed to create container "%s"\n' "$name" >&2; exit 1; }
 
