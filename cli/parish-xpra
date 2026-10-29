@@ -102,30 +102,53 @@ case "$cmd" in
                 ;;
         esac
 
-        if jexec "$jail" pgrep -qf "xpra.*$display" 2>/dev/null; then
+        if jexec "$jail" ps auxww 2>/dev/null | grep -q "[x]pra.*${display}"; then
             echo "Xpra already running at $display in '$jail'"
             exit 0
         fi
 
-        # Headless mode: if DISPLAY is unset (env -u DISPLAY test),
-        # Xvfb provides a virtual framebuffer. Pending verification:
-        # whether xpra start --xvfb works on target FreeBSD. If not,
-        # revert to requiring DISPLAY and keep exec.allow_gui=true on
-        # .xpra-start.
-        if [ -z "${DISPLAY:-}" ]; then
-            jexec "$jail" xpra start "$display" \
-                --xvfb --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
-                >/dev/null 2>&1
-        else
-            jexec "$jail" xpra start "$display" \
-                --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
-                >/dev/null 2>&1
-        fi
-        sleep 2
-        jexec "$jail" pgrep -qf "xpra.*$display" 2>/dev/null || {
-            echo "parish-xpra: Xpra failed to start in '$jail'" >&2
+        _xpra_err=$(mktemp /var/run/parishbsd/xpra-err.XXXXXX 2>/dev/null || mktemp /tmp/xpra-err.XXXXXX) || {
+
+            printf '(parish-xpra: cannot create temp file\n' >&2
             exit 1
         }
+
+        # Headless mode: if DISPLAY is unset (env -u DISPLAY test),
+        # Xvfb provides a virtual framebuffer.
+        if [ -z "${DISPLAY:-}" ]; then
+            if ! jexec "$jail" xpra start "$display" \
+                --xvfb=Xvfb --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
+                2>"$_xpra_err"; then
+                printf 'parish-xpra: xpra start returned non-zero:\n' >&2
+                sed 's/^/  /' "$_xpra_err" >&2
+                rm -f "$_xpra_err"
+                exit 1
+            fi
+        else
+            if ! jexec "$jail" xpra start "$display" \
+                --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
+                2>"$_xpra_err"; then
+                printf 'parish-xpra: xpra start returned non-zero:\n' >&2
+                sed 's/^/  /' "$_xpra_err" >&2
+                rm -f "$_xpra_err"
+                exit 1
+            fi
+        fi
+        sleep 2
+        if ! jexec "$jail" ps auxww 2>/dev/null | grep -q "[x]pra.*${display}"; then
+            printf '(parish-xpra: Xpra failed to start in%s\n' >&2
+            if [ -s "$_xpra_err" ]; then
+                printf 'parish-xpra: xpra start produced no running process. Diagnosticts:\n' >&2
+                sed 's/^/  /' "$_xpra_err" >&2
+            fi
+            if jexec "$jail" test -f "/tmp/$disp_num/server.log.new" 2>/dev/null; then
+                printf 'parish-xpra: xpra daemon log (last 20 lines):\n' >&2
+                jexec "$jail" tail -20 "/tmp/$disp_num/server.log.new" 2>/dev/null | sed 's/^/  /' >&2
+            fi
+            rm -f "$_xpra_err"
+            exit 1
+        fi
+        rm -f "$_xpra_err"
 
         # spawn xpra-sup to write the state file and supervise
         # the session. Absolute path (pkexec minimal PATH); pre-check
