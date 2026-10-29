@@ -540,7 +540,7 @@ do_win_installer() {
 do_win_portable() {
     jail="$1"; host_file="$2"
     base="$(copy_to_exchange "$jail" "$host_file")"
-    # trap function.
+    # trap function
     _cleanup_jail="$jail"
     _cleanup_base="$base"
     trap _exchange_cleanup EXIT INT TERM
