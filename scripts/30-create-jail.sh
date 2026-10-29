@@ -245,10 +245,10 @@ clean_orphan_epairs() {
 	# are recoverable, destroying the wrong one is not.
 	mkdir -p /var/run/parishbsd 2>/dev/null || true
 	chmod 0700 /var/run/parishbsd 2>/dev/null || true
-	exec 9> /var/run/parishbsd/service.lock 2>/dev/null || {
+	if ! { exec 9> /var/run/parishbsd/service.lock; } 2>/dev/null; then
 		row "orphan epairs" "skipped (cannot open service lock)"
 		return 0
-	}
+	fi
 	if ! lockf -w 30 9; then
 		exec 9>&-
 		row "orphan epairs" "skipped (lock busy; another create/start in progress)"

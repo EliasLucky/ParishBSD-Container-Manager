@@ -80,7 +80,7 @@ else
     target_uid="$(id -u)"
 fi
 
-target_home="$(pw usershow -u "$target_uid" -7 2>/dev/null | cut -d: -f9)"
+target_home="$(pw usershow -u "$target_uid" 2>/dev/null | cut -d: -f9)"
 if [ -z "$target_home" ] || [ ! -d "$target_home" ]; then
     err "cannot determine home directory for uid $target_uid"
 fi
