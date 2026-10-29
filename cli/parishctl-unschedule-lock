@@ -24,8 +24,14 @@ if [ ! -f "$cfg" ] || \
     exit 1
 fi
 
-# $1 "" coercion preserves string comparison.
-awk -v n="$name" '$1 "" != n' "$cfg" > "$cfg.tmp"
-mv "$cfg.tmp" "$cfg"
+exec 9> "$cfg.lock" || { printf 'parishctl: cannot open %s.lock\n' "$cfg" >&2; exit 1; }
+lockf -t 30 9 || { exec 9>&-; printf 'parishctl: could not acquire schedules lock\n' >&2; exit 1; }
+
+_tmp="$cfg.tmpl.$$"
+awk -v n="$name" '$1 "" != n' "$cfg" > "$_tmp" \
+    || { rm -f "$_tmp"; exec 9>&-; printf 'parishctl: failed to update %s\n' "$cfg" >&2; exit 1; }
+chmod 0600 "$_tmp" || { rm -f "$_tmp"; exec 9>&-; printf 'parishctl: cannot chmod %s\n' "$_tmp" >&2; exit 1; }
+mv "$_tmp" "$cfg" || { rm -f "$_tmp"; exec 9>&-; printf 'parishctl: cannot rename %s\n' "$_tmp" >&2; exit 1; }
+exec 9>&-
 
 printf 'Removed schedule for "%s".\n' "$name"

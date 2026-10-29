@@ -43,14 +43,17 @@ container_is_vault "$personality" || {
 
 state="$(parish_jail_state "$name")"
 case "$state" in
-    containing|contained|contained-but-running|containment-failed|stopped-maybe-contained)
+    running|running-other-contained|stopped)
+        : # proceed
+        ;;
+    *)
         parish_jail_state_message "$name" "$state" >&2
         exit 1
         ;;
 esac
 
 # Under pkexec invoked without exec.allow_gui, stdin is preserved
-# but there is no TTY guarantee from the process perspective — the
+# but there is no TTY guarantee from the process perspective - the
 # stdin/stdout/stderr triple is passed through, and the prompt will
 # reach whatever terminal the caller had. If that terminal is not
 # a TTY, "zfs load-key" will hang. Refuse proactively if stdin is

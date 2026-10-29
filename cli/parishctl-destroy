@@ -66,8 +66,11 @@ else
     # behavior). The underlying 31-destroy-jail.sh does not prompt.
     printf 'This will destroy container "%s" (%s).\n' "$name" "$kind"
     printf 'Its filesystem will be removed. Nothing else is affected.\n\n'
-    printf 'Type the container name to confirm, or press Enter to abort: '
-    read -r answer
+    printf 'Type the container name to confirm, or press Enter to abort: ' > /dev/tty
+    read -r answer < /dev/tty 2>/dev/null || {
+        printf '\nparishctl: cannot read confirmation from terminal\n' >&2
+        exit 1
+    }
     if [ "$answer" != "$name" ]; then
         printf 'Aborted.\n'
         exit 1

@@ -48,8 +48,11 @@ fi
 printf '\n'
 printf '    Encrypted contents are NOT recoverable after this.\n'
 printf '\n'
-printf '    Type exactly  destroy-%s  to proceed: ' "$name"
-read -r answer
+printf '    Type exactly  destroy-%s  to proceed: ' "$name" > /dev/tty
+read -r answer < /dev/tty 2>/dev/null || {
+	printf '\nvault destroy: cannot read confirmation from terminal\n' >&2
+	exit 1
+}
 
 if [ "$answer" != "destroy-$name" ]; then
 	log "aborted - nothing was destroyed"

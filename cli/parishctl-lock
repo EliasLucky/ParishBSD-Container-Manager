@@ -36,11 +36,11 @@ container_is_vault "$personality" || {
 
 state="$(parish_jail_state "$name")"
 case "$state" in
-    containing|containment-failed|contained-but-running)
-        parish_jail_state_message "$name" "$state" >&2
-        exit 1
+    running|running-other-contained|stopped|stopped-maybe-contained)
+        : # proceed - locking is making the vault more secure;
+          # stopped-maybe-contained is allowed (no data becomes accessible)
         ;;
-    contained)
+    *)
         # Locking a contained vault that is already stopped is a
         # no-op on the jail side; but the vault may be unlocked.
         # Refuse: contained state means "do not touch" pending review.
