@@ -48,19 +48,19 @@ parish_service_start() {
 
     validate_jail_name_existing "$_ps_jail" || return 1
 
-    mkdir -p /var/run/parishbsd || err "cannot create /var/run/parishbsd"
-    chmod 0700 /var/run/parishbsd || err "cannot chmod 0700 /var/run/parishbsd"
+    mkdir -p /var/run/parishbsd || { printf 'parish: cannot create /var/run/parishbsd\n' >&2; return 1; }
+    chmod 0700 /var/run/parishbsd || { printf 'parish: cannot chmod 0700 /var/run/parishbsd\n' >&2; return 1; }
 
     if [ -d "$_ps_jailroot/xpra" ]; then
-        mkdir -p "/var/run/xpra/$_ps_jail" || err "cannot create /var/run/xpra/$_ps_jail"
-        chmod 0700 "/var/run/xpra/$_ps_jail" || err "cannot chmod 0700 /var/run/xpra/$_ps_jail"
+        mkdir -p "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot create /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
+        chmod 0700 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0700 /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
     fi
 
-    exec 9> /var/run/parishbsd/service.lock || err "cannot open service lock"
-    flock -w 30 9 || { exec 9>&-; err "could not acquire service lock (another create/start in progress)"; }
+    exec 9> /var/run/parishbsd/service.lock || { printf 'parish: cannot open service lock\n' >&2; return 1; }
+    lockf -t 30 9 || { exec 9>&-; printf 'parish: could not acquire service lock (another create/start in progress)\n' >&2; return 1; }
 
     _ps_err=$(mktemp /var/run/parishbsd/svc-err.XXXXXX) \
-        || { exec 9>&-; err "cannot create temp for service output"; }
+        || { exec 9>&-; { printf 'parish: cannot create temp for service output\n' >&2; return 1; } }
 
     _ps_rc=0
     service jail start "$_ps_jail" 2>"$_ps_err" || _ps_rc=$?
@@ -110,8 +110,8 @@ parish_service_stop() {
 
     validate_jail_name_existing "$_ps_jail" || return 1
 
-    exec 9> /var/run/parishbsd/service.lock || err "cannot open service lock"
-    flock -w 30 9 || { exec 9>&-; err "could not acquire service lock (another create/stop in progress)"; }
+    exec 9> /var/run/parishbsd/service.lock || { printf 'parish: cannot open service lock\n' >&2; return 1; }
+    lockf -t 30 9 || { exec 9>&-; { printf 'parish: could not acquire service lock (another create/stop in progress)\n' >&2; return 1; } }
 
     _ps_rc=0
     service jail stop "$_ps_jail" || _ps_rc=$?

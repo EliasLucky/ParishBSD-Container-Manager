@@ -249,7 +249,7 @@ clean_orphan_epairs() {
 		row "orphan epairs" "skipped (cannot open service lock)"
 		return 0
 	}
-	if ! flock -w 30 9; then
+	if ! lockf -w 30 9; then
 		exec 9>&-
 		row "orphan epairs" "skipped (lock busy; another create/start in progress)"
 		return 0
