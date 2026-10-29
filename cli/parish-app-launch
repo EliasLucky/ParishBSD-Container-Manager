@@ -21,7 +21,7 @@ umask 077
 
 readonly LIBDIR=/usr/local/libexec/parishbsd/lib
 readonly DIALOG=/usr/local/libexec/parishbsd/parish-compartment-dialog
-readonly PKEXEC=/usr/bin/pkexec
+readonly PKEXEC=/usr/local/bin/pkexec
 readonly PARISHCTL_START=/usr/local/sbin/parishctl-start
 readonly PARISHCTL_XPRA_START=/usr/local/sbin/parishctl-xpra-start
 readonly PARISH_JAIL_RUN=/usr/local/sbin/parish-jail-run
