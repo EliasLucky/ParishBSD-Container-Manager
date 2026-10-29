@@ -57,9 +57,11 @@ PARISH_APP_CREATE_LAUNCHER=/usr/local/sbin/parish-app-create-launcher
 LIBDIR=/usr/local/libexec/parishbsd/lib
 
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
 . "$LIBDIR/desktop.sh"
 . "$LIBDIR/launcher.sh"
-. "$LIBDIR/container.sh"
 
 log() { printf ' %s\n' "$*"; }
 err() { printf 'parish: %s\n' "$*" >&2; exit 1; }
