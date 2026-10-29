@@ -55,7 +55,7 @@ validate_jail_name_existing "$jail" || exit 2
 # disp_num is used in pgrep patterns and filesystem paths where
 # a colon would either fail to match or need quoting.
 display=":100"
-+if [ $# -gt 0 ]; then
+if [ $# -gt 0 ]; then
     # Accept either `:100` (X11 form) or `100` (bare digits).
     # Both normalize to display=":100" internally; disp_num is
     # the digits-only form passed to xpra-sup (whose valid_display
