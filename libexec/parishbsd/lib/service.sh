@@ -112,14 +112,34 @@ parish_service_stop() {
 
     exec 9> /var/run/parishbsd/service.lock || { printf 'parish: cannot open service lock\n' >&2; return 1; }
     lockf -t 30 9 || { exec 9>&-; { printf 'parish: could not acquire service lock (another create/stop in progress)\n' >&2; return 1; } }
+    _ps_err=$(mktemp /var/run/parishbsd/svc-err.XXXXXX) \
+        || { exec 9>&-; printf 'parish: cannot create temp for service output\n' >&2; return 1; }
 
     _ps_rc=0
-    service jail stop "$_ps_jail" || _ps_rc=$?
+    service jail stop "$_ps_jail" 2>"$_ps_err" || _ps_rc=$?
     if [ "$_ps_rc" -ne 0 ]; then
         echo "The container service exited non-zero while stopping (exit $_ps_rc)." >&2
+        if [ -s "$_ps_err" ]; then
+            sed 's/^/  /' "$_ps_err" >&2
+        else
+            echo "  (no stderr output" >&2
+        fi
+        echo "" >&2
+        rm -f "$_ps_err"
         exec 9>&-
         return 1
     fi
+
+    if [ -s "$_ps_err" ]; then
+        echo "The container service reported output on stderr while stopping:" >&2
+        sed 's/^/  /' "$_ps_err" >&2
+        echo "" >&2
+        echo "The container's state is not trustworthy." >&2
+        rm -f "$_ps_err"
+        exec 9>&-
+        return 1
+    fi
+    rm -f "$_ps_err"
 
     _ps_state=$(parish_jail_state "$_ps_jail")
     case "$_ps_state" in
