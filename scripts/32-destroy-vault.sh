@@ -56,7 +56,7 @@ read -r answer < /dev/tty 2>/dev/null || {
 
 if [ "$answer" != "destroy-$name" ]; then
 	log "aborted - nothing was destroyed"
-	exit 0
+	exit 1
 fi
 
 # --- Stop the jail ---

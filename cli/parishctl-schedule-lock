@@ -40,7 +40,10 @@ esac
 cfg=/usr/local/etc/parishbsd/lock-schedules
 install -d -m 0755 -o root -g wheel "$(dirname "$cfg")" || { printf 'parishctl: cannot create %s\n' "$(dirname "$cfg")" >&2; exit 1; }
 
-exec 9> "$cfg.lock" || { printf 'parishctl: cannot open %s.lock\n' "$cfg" >&2; exit 1; }
+if ! { exec 9> "$cfg.lock"; } 2>/dev/null; then
+    printf 'parishctl: cannot open %s.lock\n' "$cfg" >&2
+    exit 1
+fi
 lockf -t 30 9 || { exec 9>&-; printf 'parishctl: could not acquire schedules lock\n' >&2; exit 1; }
 
 if [ -f "$cfg" ]; then

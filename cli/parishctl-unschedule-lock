@@ -24,7 +24,11 @@ if [ ! -f "$cfg" ] || \
     exit 1
 fi
 
-exec 9> "$cfg.lock" || { printf 'parishctl: cannot open %s.lock\n' "$cfg" >&2; exit 1; }
+
+if ! { exec 9> "$cfg.lock"; } 2>/dev/null; then
+    printf 'parishctl: cannot open %s.lock\n' "$cfg" >&2
+    exit 1
+fi
 lockf -t 30 9 || { exec 9>&-; printf 'parishctl: could not acquire schedules lock\n' >&2; exit 1; }
 
 _tmp="$cfg.tmpl.$$"

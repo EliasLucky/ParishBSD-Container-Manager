@@ -56,7 +56,11 @@ parish_service_start() {
         chmod 0700 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0700 /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
     fi
 
-    exec 9> /var/run/parishbsd/service.lock || { printf 'parish: cannot open service lock\n' >&2; return 1; }
+
+    if ! { exec 9> "/var/run/parishbsd/service.lock"; } 2>/dev/null; then
+        printf 'parishctl: cannot open service lock\n' >&2
+        return 1
+    fi
     lockf -t 30 9 || { exec 9>&-; printf 'parish: could not acquire service lock (another create/start in progress)\n' >&2; return 1; }
 
     _ps_err=$(mktemp /var/run/parishbsd/svc-err.XXXXXX) \
@@ -110,7 +114,10 @@ parish_service_stop() {
 
     validate_jail_name_existing "$_ps_jail" || return 1
 
-    exec 9> /var/run/parishbsd/service.lock || { printf 'parish: cannot open service lock\n' >&2; return 1; }
+    if ! { exec 9> "/var/run/parishbsd/service.lock"; } 2>/dev/null; then
+        printf 'parish: cannot open service lock\n' >&2
+        return 1
+    fi
     lockf -t 30 9 || { exec 9>&-; { printf 'parish: could not acquire service lock (another create/stop in progress)\n' >&2; return 1; } }
     _ps_err=$(mktemp /var/run/parishbsd/svc-err.XXXXXX) \
         || { exec 9>&-; printf 'parish: cannot create temp for service output\n' >&2; return 1; }
