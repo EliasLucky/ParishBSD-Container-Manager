@@ -92,11 +92,10 @@ case "$cmd" in
 
         for _s in "$_socket_dir"/*-"$disp_num"; do
             if [ -S "$_s" ]; then
-                # sockstat -l truncates long unix socket paths in the
-                # LOCAL ADDRESS column, so a basename grep misses live sockets.
-                # nc -zU is a direct connect probe: exit 0 if accepting, non-zero
-                # if refused. -w 2 bounds the connect timeout on a wedged server.
-                if nc -zU -w 2 "$_s" 2>/dev/null; then
+                # sockstat truncates paths, nc fails on Xpra sockets.
+                # fstat reads the kernel table. If a process holds the socket,
+                # it prints a row (after the header). Stale sockets print nothing.
+                if /usr/bin/fstat "$_s" 2>/dev/null | tail -n +2 | grep -q .; then
                     echo "Xpra already running at $display in '$jail'"
                     exit 0
                 fi
