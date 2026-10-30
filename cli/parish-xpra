@@ -291,8 +291,6 @@ case "$cmd" in
         # Forward whatever's left (e.g. --start=firefox) unchanged.
         exec xpra attach "socket://$socket" \
             --headerbar=yes \
-            --window-decorations=no \
-            --headerbar-css="$_css_file" \
             --title="[$_trust] $jail" "$@"
         ;;
 
