@@ -137,7 +137,7 @@ case "$cmd" in
             fi
         fi
         sleep 2
-
+        _found=0
         for _s in "$_socket_dir"/*-"$disp_num"; do
             if [ -S "$_s" ]; then
                _found=1
@@ -147,7 +147,7 @@ case "$cmd" in
         if [ "$_found" -ne 1 ]; then
             printf 'parish-xpra: Xpra failed to start in %s\n' "$jail" >&2
             if [ -s "$_xpra_err" ]; then
-                printf 'parish-xpra: xpra start produced no running process. Diagnosticts:\n' >&2
+                printf 'parish-xpra: diagnosticts from xpra:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
             fi
 
