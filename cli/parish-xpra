@@ -116,6 +116,7 @@ case "$cmd" in
             printf 'parish-xpra: cannot create temp file\n' >&2
             exit 1
         }
+        jexec "$jail" rm -f "/tpm/${disp_num}/server.log" "/tmp/${disp_num}/server.log.new" 2>/dev/null || true
         jexec "$jail" mkdir -p /var/run/xdg || {
               printf 'parish-xpra: cannot create /var/run/xdg in %s\n' "$jail" >&2
               rm -f "$_xpra_err"
