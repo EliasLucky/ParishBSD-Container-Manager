@@ -274,24 +274,26 @@ case "$cmd" in
         # jail, so this read is not phishing-vulnerable. The
         # ownership/mode check is defense in depth (same discipline
         # as containment.cpp::lock_vault for its provider file).
-        colour="#808080"   # sentinel: no trust level set
+        _trust="unknown"
         _trust_file="/var/db/parishbsd/trust/$jail"
         if [ -f "$_trust_file" ] && [ ! -L "$_trust_file" ] && \
            [ "$(stat -f %Su "$_trust_file" 2>/dev/null)" = "root" ] && \
            [ "$(stat -f %Lp "$_trust_file" 2>/dev/null)" = "644" ]; then
             _trust="$(head -n1 "$_trust_file" 2>/dev/null | tr -d '[:space:]')"
             case "$_trust" in
-                high)   colour="#d4af37" ;;
-                medium) colour="#3b82f6" ;;
-                low)    colour="#dc2626" ;;
-                # Unrecognized value  sentinel grey (default kept).
+                high|medium|low) : ;;
+                *) _trust="unknown" ;;
             esac
         fi
+        _css_file="/usr/local/share/parishbsd/trust/${_trust}.css"
+        [ -f "$_css_file" ] || _css_file="/usr/local/share/parishbsd/trust/unknown.css"_trust="unknown"
 
         # Forward whatever's left (e.g. --start=firefox) unchanged.
         exec xpra attach "socket://$socket" \
-            --window-border="$colour" \
-            --title="$jail" "$@"
+            --headerbar=yes \
+            --window-decorations=no \
+            --headerbar-css="$_css_file" \
+            --title="[$_trust] $jail" "$@"
         ;;
 
     *)
