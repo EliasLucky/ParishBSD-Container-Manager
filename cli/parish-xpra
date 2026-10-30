@@ -92,8 +92,11 @@ case "$cmd" in
 
         for _s in "$_socket_dir"/*-"$disp_num"; do
             if [ -S "$_s" ]; then
-                echo "Xpra already running at $display in '$jail'"
-                exit 0
+                _bn="${_s##*/}"
+                if sockstat -l -P unix 2>/dev/null | grep -qF "$_bn"; then
+                    echo "Xpra already running at $display in '$jail'"
+                    exit 0
+                fi
             fi
         done
 
