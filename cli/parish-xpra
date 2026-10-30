@@ -112,6 +112,8 @@ case "$cmd" in
             fi
         done
 
+        jexec "$jail" rm -f "/tmp/${disp_num}/server.log" "/tmp/${disp_num}/server.log.new" 2>/dev/null || true
+        jexec "$jail" rm -f "/var/run/xpra/${disp_num}/server.log" "/var/run/xpra/${disp_num}/server.log.new" 2>/dev/null || true
         _xpra_err=$(mktemp /var/run/parishbsd/xpra-err.XXXXXX 2>/dev/null || mktemp /tmp/xpra-err.XXXXXX) || {
             printf 'parish-xpra: cannot create temp file\n' >&2
             exit 1
@@ -127,12 +129,23 @@ case "$cmd" in
               rm -f "$_xpra_err"
               exit 1
         }
+        jexec "$jail" mkdir -p /var/run/xpra || {
+              printf 'parish-xpra: cannot create /var/run/xpra in %s\n' "$jail" >&2
+              rm -f "$_xpra_err"
+              exit 1
+        }
+        jexec "$jail" chmod 0700 /var/run/xpra || {
+              printf 'parish-xpra: cannot chmod 0700 /var/run/xpra in %s\n' "$jail" >&2
+              rm -f "$_xpra_err"
+              exit 1
+        }
+
 
         # Headless mode: if DISPLAY is unset (env -u DISPLAY test),
         # Xvfb provides a virtual framebuffer.
         if [ -z "${DISPLAY:-}" ]; then
             if ! jexec "$jail" /usr/local/bin/xpra start "$display" \
-                --xvfb=Xvfb --socket-dir=/xpra --attach=no --daemon=yes \
+                --xvfb=Xvfb --socket-dir=/xpra --socket-permissions=0666 --attach=no --daemon=yes \
                 2>"$_xpra_err"; then
                 printf 'parish-xpra: xpra start returned non-zero:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
@@ -141,7 +154,7 @@ case "$cmd" in
             fi
         else
             if ! jexec "$jail" /usr/local/bin/xpra start "$display" \
-                --socket-dir=/xpra --attach=no --daemon=yes \
+                --socket-dir=/xpra --socket-permissions=0666 --attach=no --daemon=yes \
                 2>"$_xpra_err"; then
                 printf 'parish-xpra: xpra start returned non-zero:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
