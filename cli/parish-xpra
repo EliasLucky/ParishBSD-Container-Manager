@@ -27,6 +27,8 @@
 #   Headless mode: if DISPLAY is unset, pass --xvfb to Xpra start.
 
 set -eu
+PATH=/usr/local/bin:/usr/local/sbin:/bin/:/sbin:/usr/bin:/usr/sbin
+export PATH
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
 XPRA_SUP=/usr/local/libexec/parishbsd/xpra-sup
@@ -118,7 +120,7 @@ case "$cmd" in
         # Headless mode: if DISPLAY is unset (env -u DISPLAY test),
         # Xvfb provides a virtual framebuffer.
         if [ -z "${DISPLAY:-}" ]; then
-            if ! jexec "$jail" xpra start "$display" \
+            if ! jexec "$jail" /usr/local/bin/xpra start "$display" \
                 --xvfb=Xvfb --socket-dir=/xpra --attach=no --daemon=yes \
                 2>"$_xpra_err"; then
                 printf 'parish-xpra: xpra start returned non-zero:\n' >&2
@@ -127,7 +129,7 @@ case "$cmd" in
                 exit 1
             fi
         else
-            if ! jexec "$jail" xpra start "$display" \
+            if ! jexec "$jail" /usr/local/bin/xpra start "$display" \
                 --socket-dir=/xpra --attach=no --daemon=yes \
                 2>"$_xpra_err"; then
                 printf 'parish-xpra: xpra start returned non-zero:\n' >&2
