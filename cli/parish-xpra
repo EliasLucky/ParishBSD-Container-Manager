@@ -92,8 +92,11 @@ case "$cmd" in
 
         for _s in "$_socket_dir"/*-"$disp_num"; do
             if [ -S "$_s" ]; then
-                _bn="${_s##*/}"
-                if sockstat -l -P unix 2>/dev/null | grep -qF "$_bn"; then
+                # sockstat -l truncates long unix socket paths in the
+                # LOCAL ADDRESS column, so a basename grep misses live sockets.
+                # nc -zU is a direct connect probe: exit 0 if accepting, non-zero
+                # if refused. -w 2 bounds the connect timeout on a wedged server.
+                if nc -zU -w 2 "$_s" 2>/dev/null; then
                     echo "Xpra already running at $display in '$jail'"
                     exit 0
                 fi
