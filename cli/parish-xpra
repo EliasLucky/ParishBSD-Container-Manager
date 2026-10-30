@@ -93,7 +93,7 @@ case "$cmd" in
                 ;;
             stopped)
                 echo "parish-xpra: compartment '$jail' is not running. Start it first:" >&2
-                echo "  pkexec parishctl-start $jail" >&2
+                echo "  parishctl-start $jail" >&2
                 exit 1
                 ;;
             *)
@@ -102,14 +102,16 @@ case "$cmd" in
                 ;;
         esac
 
-        if jexec "$jail" ps auxww 2>/dev/null | grep -q "[x]pra.*${display}"; then
-            echo "Xpra already running at $display in '$jail'"
-            exit 0
-        fi
+        _socket_dir="/var/run/xpra/$jail"
+        for _s in "$_socket_dir"/*-"$disp_num"; do
+            if [ -S "$_s" ]; then
+                echo "Xpra already running at $display in '$jail'"
+                exit 0
+            fi
+        done
 
         _xpra_err=$(mktemp /var/run/parishbsd/xpra-err.XXXXXX 2>/dev/null || mktemp /tmp/xpra-err.XXXXXX) || {
-
-            printf '(parish-xpra: cannot create temp file\n' >&2
+            printf 'parish-xpra: cannot create temp file\n' >&2
             exit 1
         }
 
@@ -117,7 +119,7 @@ case "$cmd" in
         # Xvfb provides a virtual framebuffer.
         if [ -z "${DISPLAY:-}" ]; then
             if ! jexec "$jail" xpra start "$display" \
-                --xvfb=Xvfb --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
+                --xvfb=Xvfb --socket-dir=/xpra --attach=no --daemon=yes \
                 2>"$_xpra_err"; then
                 printf 'parish-xpra: xpra start returned non-zero:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
@@ -126,7 +128,7 @@ case "$cmd" in
             fi
         else
             if ! jexec "$jail" xpra start "$display" \
-                --socket-dir=/xpra --attach=no --daemon=yes --start=xterm \
+                --socket-dir=/xpra --attach=no --daemon=yes \
                 2>"$_xpra_err"; then
                 printf 'parish-xpra: xpra start returned non-zero:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
@@ -135,16 +137,27 @@ case "$cmd" in
             fi
         fi
         sleep 2
-        if ! jexec "$jail" ps auxww 2>/dev/null | grep -q "[x]pra.*${display}"; then
-            printf '(parish-xpra: Xpra failed to start in%s\n' >&2
+
+        for _s in "$_socket_dir"/*-"$disp_num"; do
+            if [ -S "$_s" ]; then
+               _found=1
+               break
+            fi 
+        done
+        if [ "$_found" -ne 1 ]; then
+            printf 'parish-xpra: Xpra failed to start in %s\n' "$jail" >&2
             if [ -s "$_xpra_err" ]; then
                 printf 'parish-xpra: xpra start produced no running process. Diagnosticts:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
             fi
-            if jexec "$jail" test -f "/tmp/$disp_num/server.log.new" 2>/dev/null; then
-                printf 'parish-xpra: xpra daemon log (last 20 lines):\n' >&2
-                jexec "$jail" tail -20 "/tmp/$disp_num/server.log.new" 2>/dev/null | sed 's/^/  /' >&2
-            fi
+
+            for _log in "server.log" "server.log.new"; do
+                if jexec "$jail" test -f "/tmp/${disp_num}/${_log}" 2>/dev/null; then
+                    printf 'parish-xpra: xpra daemon log /tmp/%s/%s (last 20 lines):\n' "$disp_num" "$_log" >&2
+                    jexec "$jail" tail -20 "/tmp/${disp_num}/${_log}" 2>/dev/null | sed 's/^/  /' >&2
+                    break
+                fi
+            done
             rm -f "$_xpra_err"
             exit 1
         fi
@@ -183,7 +196,7 @@ case "$cmd" in
                 ;;
             stopped)
                 echo "parish-xpra: compartment '$jail' is not running. Start it first:" >&2
-                echo "  pkexec parishctl-start $jail" >&2
+                echo "  parishctl start $jail" >&2
                 exit 1
                 ;;
             *)
@@ -192,10 +205,21 @@ case "$cmd" in
                 ;;
         esac
 
-        [ -S "$socket" ] || {
-            echo "parish-xpra: no socket at $socket" >&2
+        _socket_dir="/var/run/xpra/$jail"
+        socket=""
+        for _s in "$_socket_dir"/*-"$disp_num"; do
+            if [ -S "$_s" ]; then
+                socket="$_s"
+                break
+            fi
+        done
+        if [ -z "$socket" ]; then
+            echo "parish-xpra: no socket for display $display in '$_socket_dir'" >&2
+
+            echo "The Xpra session may not be running. Check:" >&2
+            echo "  parishctl xpra start $jail" >&2
             exit 1
-        }
+        fi
 
         # trust colour from host-side file, sentinel grey when
         # absent.
@@ -219,7 +243,7 @@ case "$cmd" in
                 high)   colour="#d4af37" ;;
                 medium) colour="#3b82f6" ;;
                 low)    colour="#dc2626" ;;
-                # Unrecognized value → sentinel grey (default kept).
+                # Unrecognized value  sentinel grey (default kept).
             esac
         fi
 
