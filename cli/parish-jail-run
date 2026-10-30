@@ -18,6 +18,8 @@
 
 set -eu
 umask 077
+PATH=/usr/local/bin:/usr/local/sbin:/bin/:sbin/usr/bin:/usr/sbin
+export PATH
 
 . /usr/local/libexec/parishbsd/lib/validate.sh
 
