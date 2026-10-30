@@ -121,6 +121,7 @@ case "$cmd" in
         jexec "$jail" rm -f "/tpm/${disp_num}/server.log" "/tmp/${disp_num}/server.log.new" 2>/dev/null || true
         jexec "$jail" rm -rf /var/run/xpra/* 2>/dev/null || true
         jexec "$jail" rm -rf /xpra/* 2>/dev/null || true
+        jexec "$jail" rm -rf /root/.xpra/* 2>/dev/null || true
         jexec "$jail" mkdir -p /var/run/xdg || {
               printf 'parish-xpra: cannot create /var/run/xdg in %s\n' "$jail" >&2
               rm -f "$_xpra_err"
@@ -136,8 +137,8 @@ case "$cmd" in
               rm -f "$_xpra_err"
               exit 1
         }
-        jexec "$jail" chmod 0700 /var/run/xpra || {
-              printf 'parish-xpra: cannot chmod 0700 /var/run/xpra in %s\n' "$jail" >&2
+        jexec "$jail" chmod 0775 /var/run/xpra || {
+              printf 'parish-xpra: cannot chmod 0775 /var/run/xpra in %s\n' "$jail" >&2
               rm -f "$_xpra_err"
               exit 1
         }
