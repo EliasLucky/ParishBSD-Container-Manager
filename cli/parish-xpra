@@ -116,6 +116,16 @@ case "$cmd" in
             printf 'parish-xpra: cannot create temp file\n' >&2
             exit 1
         }
+        jexec "$jail" mkdir -p /var/run/xdg || {
+              printf 'parish-xpra: cannot create /var/run/xdg in %s\n' "$jail" >&2
+              rm -f "$_xpra_err"
+              exit 1
+        }
+        jexec "$jail" chmod 0700 /var/run/xdg || {
+              printf 'parish-xpra: cannot chmod 0700 /var/run/xdg in %s\n' "$jail" >&2
+              rm -f "$_xpra_err"
+              exit 1
+        }
 
         # Headless mode: if DISPLAY is unset (env -u DISPLAY test),
         # Xvfb provides a virtual framebuffer.
