@@ -18,8 +18,6 @@
 
 set -eu
 umask 077
-PATH=/usr/local/bin:/usr/local/sbin:/bin/:sbin/usr/bin:/usr/sbin
-export PATH
 
 . /usr/local/libexec/parishbsd/lib/validate.sh
 
@@ -36,9 +34,8 @@ validate_jail_name_existing "$jail" || {
     exit 2
 }
 
-DISPLAY=":100"
-export DISPLAY
-XAUTHORITY="/var/run/xpra/100/xauthority"
-export XAUTHORITY
-
-exec jexec "$jail" "$@"
+exec jexec "$jail" env \
+    PATH="/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin" \
+    DISPLAY=":100" \
+    XAUTHORITY="/xpra/100/xauthority" \
+    "$@"
