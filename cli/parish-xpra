@@ -200,7 +200,10 @@ case "$cmd" in
             exit 1
         fi
         rm -f "$_xpra_err"
-
+        _uid="${PKEXEC_UID:-$(id -u)}"
+        chown "$_uid" "$_socket_dir" 2>/dev/null || true
+        chmod 0755 "$_socket_dir" 2>/dev/null || true
+        chmod 0777 "$_socket_dir"/*-"$disp_num" 2>/dev/null || true
         # spawn xpra-sup to write the state file and supervise
         # the session. Absolute path (pkexec minimal PATH); pre-check
         # with [ -x ] to give a clear message if the binary is missing.

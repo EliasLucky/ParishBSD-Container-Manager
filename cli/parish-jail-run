@@ -38,5 +38,7 @@ validate_jail_name_existing "$jail" || {
 
 DISPLAY=":100"
 export DISPLAY
+XAUTHORITY="/var/run/xpra/100/xauthority"
+export XAUTHORITY
 
 exec jexec "$jail" "$@"
