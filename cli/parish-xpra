@@ -93,9 +93,8 @@ case "$cmd" in
         for _s in "$_socket_dir"/*-"$disp_num"; do
             if [ -S "$_s" ]; then
                 # sockstat truncates paths, nc fails on Xpra sockets.
-                # fstat reads the kernel table. If a process holds the socket,
-                # it prints a row (after the header). Stale sockets print nothing.
-                if /usr/bin/fstat "$_s" 2>/dev/null | tail -n +2 | grep -q .; then
+                # fstat reads the kernel table.
+                if jexec "$jail" /usr/local/bin/xpra info "$display" >/dev/null 2>&1; then
                     echo "Xpra already running at $display in '$jail'"
                     exit 0
                 fi
