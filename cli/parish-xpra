@@ -162,13 +162,18 @@ case "$cmd" in
                 exit 1
             fi
         fi
-        sleep 2
+        
         _found=0
-        for _s in "$_socket_dir"/*-"$disp_num"; do
-            if [ -S "$_s" ]; then
-               _found=1
-               break
-            fi 
+        _retries=0
+        while [ "$_retries" -lt 10 ]; do
+            for _s in "$_socket_dir"/*-"$disp_num"; do
+                if [ -S "$_s" ]; then
+                    _found=1
+                    break
+                fi 
+            done
+            sleep 1
+            _retries=$((_retries + 1))
         done
         if [ "$_found" -ne 1 ]; then
             printf 'parish-xpra: Xpra failed to start in %s\n' "$jail" >&2
@@ -178,7 +183,11 @@ case "$cmd" in
             fi
 
             for _log in "server.log" "server.log.new"; do
-                if jexec "$jail" test -f "/tmp/${disp_num}/${_log}" 2>/dev/null; then
+                if jexec "$jail" test -f "/var/run/xpra/${disp_num}/${_log}" 2>/dev/null; then
+                    printf 'parish-xpra: xpra daemon log /var/run/xpra/%s/%s (last 20 lines):\n' "$_log" >&2
+                    jexec "$jail" tail -20 "/var/run/xpra/${disp_num}/${_log}" 2>/dev/null | sed 's/^/  /' >&2
+                    break
+                elif jexec "$jail" test -f "/tmp/${disp_num}/${_log}" 2>/dev/null; then
                     printf 'parish-xpra: xpra daemon log /tmp/%s/%s (last 20 lines):\n' "$disp_num" "$_log" >&2
                     jexec "$jail" tail -20 "/tmp/${disp_num}/${_log}" 2>/dev/null | sed 's/^/  /' >&2
                     break
