@@ -1,9 +1,0 @@
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/parish-manager.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/edit_cache.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/rebuild_cache.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/list_install_components.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/install.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/install/local.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/install/strip.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/parish-manager_autogen_timestamp_deps.dir
-/root/parishbsd/parishbsd-container-manager/build/CMakeFiles/parish-manager_autogen.dir
