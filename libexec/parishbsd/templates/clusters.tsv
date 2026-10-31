@@ -1,1 +1,15 @@
-P
+# name	kind	packages	rules
+T-core		required	-	-
+T-appuser	required	-	provision:app-user
+T-fonts-min	required	fontconfig,dejavu	-
+T-xpra		required	xpra,xorg-vfbserver,xorg-libraries,xauth	requires:T-fonts-min
+T-fonts-cjk	optional	noto-basic,wqy,fcitx5,ibus	-
+T-compat-linux	optional	linux_base_rl9	provision:linux-enable
+T-compat-windows optional	wine,wine-mono,wine-gecko	requires:T-compat-linux,provision:wineboot-init
+T-audio-sndio	optional	sndio,sndio-libressl	-
+T-file-tools	optional	pcmanfm,mousepad	-
+T-postgres	optional	postgresql16-server	provision:postgres-init
+P-browser-esr	preset		firefox-esr	group:browser
+P-browser-lite	preset		luakit	group:browser
+P-office	preset		libreoffice	group:office
+P-dev-tools	preset		git,vim,tmux,cmake,gmake,pkgconf,ccache	group:dev
