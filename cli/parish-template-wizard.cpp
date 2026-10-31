@@ -93,36 +93,49 @@ void show_help() {
 }
 
 // Validate extra package syntax and version pins
+// reject multi-digit version pins (e.g., -12.0)
+bool is_version_pinned(const std::string& pkg) {
+    for (size_t i = 0; i < pkg.length(); ++i) {
+        if (pkg[i] != '-') continue;
+        size_t j = i + 1;
+        if (j >= pkg.length() || !isdigit(pkg[j])) continue;
+        while (j < pkg.length() && isdigit(pkg[j])) j++; // skip all digits
+        if (j >= pkg.length() || pkg[j] != '.') continue;
+        j++;
+        if (j >= pkg.length() || !isdigit(pkg[j])) continue;
+        return true; // Found -<digits>.<digits>
+    }
+    return false;
+}
+
 bool validate_extra_packages(const std::string& pkgs, std::string& error) {
     if (pkgs.empty()) return true;
     std::string cur;
+    
+    auto check_pkg = [&](const std::string& p) -> bool {
+        if (p.find('@') != std::string::npos || p.find('=') != std::string::npos) {
+            error = "Version pins (@, =) are not allowed: " + p; 
+            return false;
+        }
+        if (is_version_pinned(p)) {
+            error = "Version pins (-X.Y) are not allowed: " + p; 
+            return false;
+        }
+        return true;
+    };
+
     for (char c : pkgs) {
-        if (c == ' ') {
+        if (c == ',' || c == ' ' || c == '\t') {
             if (!cur.empty()) {
-                if (cur.find('@') != std::string::npos || cur.find('=') != std::string::npos) {
-                    error = "Version pins (@, =) are not allowed: " + cur; return false;
-                }
-                // Require a dot after the digit group (e.g. -12.0)
-                for (size_t i = 0; i + 2 < cur.length(); ++i) {
-                    if (cur[i] == '-' && isdigit(cur[i+1]) && cur[i+2] == '.') {
-                        error = "Version pins (-X.Y) are not allowed: " + cur; return false;
-                    }
-                }
+                if (!check_pkg(cur)) return false;
+                cur.clear();
             }
-            cur.clear();
         } else {
             cur += c;
         }
     }
     if (!cur.empty()) {
-        if (cur.find('@') != std::string::npos || cur.find('=') != std::string::npos) {
-            error = "Version pins (@, =) are not allowed: " + cur; return false;
-        }
-        for (size_t i = 0; i + 2 < cur.length(); ++i) {
-            if (cur[i] == '-' && isdigit(cur[i+1]) && cur[i+2] == '.') {
-                error = "Version pins (-X.Y) are not allowed: " + cur; return false;
-            }
-        }
+        if (!check_pkg(cur)) return false;
     }
     return true;
 }
