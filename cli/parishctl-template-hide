@@ -1,2 +1,25 @@
 #!/bin/sh
+# parishctl-template-hide
+set -eu
+name="${1:?usage: parishctl template hide <name>}"
+state_conf="/var/db/parishbsd/templates/$name/template.conf"
+shipped_conf="/usr/local/share/parishbsd/templates/$name/template.conf"
 
+if [ -f "$state_conf" ]; then
+    conf="$state_conf"
+elif [ -f "$shipped_conf" ]; then
+    mkdir -p "/var/db/parishbsd/templates/$name"
+    cp "$shipped_conf" "$state_conf"
+    chmod 0600 "$state_conf"
+    conf="$state_conf"
+else
+    echo "parish: template '$name' not found" >&2
+    exit 1
+fi
+
+if grep -q '^hidden=' "$conf"; then
+    sed -i '' 's/^hidden=.*/hidden=1/' "$conf" 2>/dev/null || sed -i 's/^hidden=.*/hidden=1/' "$conf"
+else
+    echo "hidden=1" >> "$conf"
+fi
+echo "Template '$name' hidden."
