@@ -10,17 +10,44 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+#include <csignal>
+#include <map>
 
 using namespace parish::tbuild;
 
 struct WizardState {
     std::string name;
     std::string description;
+    std::string extra_packages;
     std::vector<Cluster> components;
     std::vector<Cluster> presets;
     std::vector<bool> comp_selected;
     std::vector<bool> preset_selected;
 };
+
+volatile sig_atomic_t g_build_pid = 0;
+volatile sig_atomic_t g_cancel_requested = 0;
+
+void sigint_handler(int) { g_cancel_requested = 1; }
+
+// S1: Plain-language labels
+std::map<std::string, std::string> get_labels() {
+    return {
+        {"T-core", "Base system"},
+        {"T-xpra", "Graphical environment"},
+        {"T-fonts-min", "Base fonts"},
+        {"T-appuser", "Application user (security)"},
+        {"T-compat-linux", "Linux compatibility"},
+        {"T-compat-windows", "Windows compatibility (Wine)"},
+        {"T-file-tools", "File manager and text editor"},
+        {"T-postgres", "PostgreSQL Database"},
+        {"T-audio-sndio", "Audio support"},
+        {"P-browser-esr", "Web browser (Firefox)"},
+        {"P-browser-lite", "Web browser (Lite)"},
+        {"P-office", "Office suite (LibreOffice)"},
+        {"P-dev-tools", "Development tools"}
+    };
+}
 
 void init_ui() {
     initscr();
@@ -32,9 +59,7 @@ void init_ui() {
     curs_set(0);
 }
 
-void cleanup_ui() {
-    endwin();
-}
+void cleanup_ui() { endwin(); }
 
 WINDOW* create_win(int height, int width, const char* title) {
     int max_y, max_x;
@@ -42,23 +67,18 @@ WINDOW* create_win(int height, int width, const char* title) {
     int start_y = (max_y - height) / 2;
     int start_x = (max_x - width) / 2;
 
-    clear(); // Prevent visual artifacts from previous screens
-    refresh();
-
+    clear(); refresh();
     WINDOW* win = newwin(height, width, start_y, start_x);
-    keypad(win, TRUE); // FIX: Enable arrow keys for this specific window
-    
+    keypad(win, TRUE);
     box(win, 0, 0);
     wattron(win, A_BOLD);
     mvwprintw(win, 0, 2, "[ %s ]", title);
     wattroff(win, A_BOLD);
-    
     return win;
 }
 
 void draw_buttons(WINDOW* win, bool back_enabled, const char* cont_label, int active_btn) {
-    int y, x;
-    getmaxyx(win, y, x);
+    int y, x; getmaxyx(win, y, x);
     int btn_y = y - 2;
 
     if (active_btn == 1) wattron(win, A_REVERSE);
@@ -76,8 +96,24 @@ void draw_buttons(WINDOW* win, bool back_enabled, const char* cont_label, int ac
     }
 }
 
+void show_help() {
+    WINDOW* win = create_win(16, 70, "Help");
+    mvwprintw(win, 2, 2, "System Components make your compartment work.");
+    mvwprintw(win, 3, 2, "Every compartment needs 'Base system' and 'Graphical environment'.");
+    mvwprintw(win, 4, 2, "Without fonts, programs that use text will crash.");
+    
+    mvwprintw(win, 6, 2, "Applications are the programs you will use.");
+    mvwprintw(win, 7, 2, "The ones you check here are installed before first use.");
+    mvwprintw(win, 8, 2, "You can also add more programs later with 'parishctl apps'.");
+    
+    mvwprintw(win, 12, 2, "Press any key to close.");
+    wrefresh(win);
+    wgetch(win);
+    delwin(win);
+}
+
 bool screen_name_desc(WizardState& st) {
-    int active_field = 0; // 0=Name, 1=Desc, 2=Cancel, 3=Continue
+    int active_field = 0;
     bool name_error = false;
 
     while (true) {
@@ -90,7 +126,7 @@ bool screen_name_desc(WizardState& st) {
 
         if (name_error) {
             wattron(win, A_BOLD | COLOR_PAIR(1));
-            mvwprintw(win, 4, 4, "Name cannot be empty.");
+            mvwprintw(win, 4, 4, "Invalid name. Use lowercase letters, numbers, and hyphens.");
             wattroff(win, A_BOLD | COLOR_PAIR(1));
         }
 
@@ -108,7 +144,11 @@ bool screen_name_desc(WizardState& st) {
         else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_field == 2) { delwin(win); return false; }
             if (active_field == 3) {
-                if (st.name.empty()) { name_error = true; continue; }
+                bool valid = !st.name.empty() && st.name.length() <= 31;
+                for (char c : st.name) { if (!isalnum(c) && c != '-') valid = false; }
+                if (st.name.front() == '-' || st.name.back() == '-' || st.name.find("--") != std::string::npos) valid = false;
+                
+                if (!valid) { name_error = true; continue; }
                 delwin(win); return true;
             }
         } else if (active_field < 2 && (ch == KEY_BACKSPACE || ch == 127)) {
@@ -123,15 +163,15 @@ bool screen_name_desc(WizardState& st) {
 }
 
 bool screen_components(WizardState& st) {
-    int highlight = 0;
-    int scroll = 0;
+    auto labels = get_labels();
+    int highlight = 0, scroll = 0;
     int n = st.components.size();
-    int active_btn = 2; // 0=Back, 1=Continue, 2=List (default to List)
+    int active_btn = 2;
 
     while (true) {
         WINDOW* win = create_win(18, 70, "Create Template: Step 2 of 4 (System Components)");
-        
-        mvwprintw(win, 2, 2, "Select components (Space to toggle):");
+        mvwprintw(win, 2, 2, "Select components (F1 for Help):");
+        mvwprintw(win, 2, 55, "[ F1 Help ]");
         
         int visible_items = 10;
         for (int i = 0; i < visible_items && (scroll + i) < n; ++i) {
@@ -139,11 +179,12 @@ bool screen_components(WizardState& st) {
             if (active_btn == 2 && idx == highlight) wattron(win, A_REVERSE);
             const auto& c = st.components[idx];
             const char* mark = st.comp_selected[idx] ? "[X]" : "[ ]";
-            mvwprintw(win, 4 + i, 4, "%s %s", mark, c.name.c_str());
+            std::string label = labels.count(c.name) ? labels[c.name] : c.name;
+            
+            mvwprintw(win, 4 + i, 4, "%s %-25s", mark, label.c_str());
             if (active_btn == 2 && idx == highlight) wattroff(win, A_REVERSE);
         }
 
-        // Scroll indicators
         if (scroll > 0) mvwprintw(win, 4, 40, "^^^");
         if (scroll + visible_items < n) mvwprintw(win, 4 + visible_items - 1, 40, "vvv");
 
@@ -151,24 +192,13 @@ bool screen_components(WizardState& st) {
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == '\t') {
-            if (active_btn == 2) active_btn = 0;
-            else if (active_btn == 0) active_btn = 1;
-            else if (active_btn == 1) active_btn = 2;
-        } else if (ch == KEY_BTAB) {
-            if (active_btn == 2) active_btn = 1;
-            else if (active_btn == 1) active_btn = 0;
-            else if (active_btn == 0) active_btn = 2;
-        } else if (ch == KEY_UP) {
-            if (active_btn == 2 && highlight > 0) {
-                highlight--;
-                if (highlight < scroll) scroll--;
-            }
+        if (ch == KEY_F(1)) { show_help(); continue; }
+        else if (ch == '\t') { active_btn = (active_btn + 1) % 3; }
+        else if (ch == KEY_BTAB) { active_btn = (active_btn + 2) % 3; }
+        else if (ch == KEY_UP) {
+            if (active_btn == 2 && highlight > 0) { highlight--; if (highlight < scroll) scroll--; }
         } else if (ch == KEY_DOWN) {
-            if (active_btn == 2 && highlight < n - 1) {
-                highlight++;
-                if (highlight >= scroll + visible_items) scroll++;
-            }
+            if (active_btn == 2 && highlight < n - 1) { highlight++; if (highlight >= scroll + visible_items) scroll++; }
         } else if (ch == ' ' && active_btn == 2) {
             if (st.components[highlight].kind != ClusterKind::Required) {
                 st.comp_selected[highlight] = !st.comp_selected[highlight];
@@ -183,103 +213,81 @@ bool screen_components(WizardState& st) {
         } else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_btn == 0) { delwin(win); return false; }
             if (active_btn == 1) { delwin(win); return true; }
-            if (active_btn == 2) st.comp_selected[highlight] = !st.comp_selected[highlight]; // Toggle on enter too
         }
         delwin(win);
     }
 }
 
 bool screen_presets(WizardState& st) {
-    int highlight = 0;
-    int scroll = 0;
+    auto labels = get_labels();
+    int highlight = 0, scroll = 0;
     int n = st.presets.size();
     if (n == 0) return true;
-    int active_btn = 2; // 0=Back, 1=Continue, 2=List
+    int active_btn = 2;
 
     while (true) {
         WINDOW* win = create_win(18, 70, "Create Template: Step 3 of 4 (Applications)");
+        mvwprintw(win, 2, 2, "Select applications:");
         
-        mvwprintw(win, 2, 2, "Select presets (Space to toggle):");
-        
-        int visible_items = 10;
+        int visible_items = 8;
         for (int i = 0; i < visible_items && (scroll + i) < n; ++i) {
             int idx = scroll + i;
             if (active_btn == 2 && idx == highlight) wattron(win, A_REVERSE);
             const auto& p = st.presets[idx];
             const char* mark = st.preset_selected[idx] ? "[X]" : "[ ]";
-            mvwprintw(win, 4 + i, 4, "%s %s", mark, p.name.c_str());
+            std::string label = labels.count(p.name) ? labels[p.name] : p.name;
+            mvwprintw(win, 4 + i, 4, "%s %s", mark, label.c_str());
             if (active_btn == 2 && idx == highlight) wattroff(win, A_REVERSE);
         }
 
-        if (scroll > 0) mvwprintw(win, 4, 40, "^^^");
-        if (scroll + visible_items < n) mvwprintw(win, 4 + visible_items - 1, 40, "vvv");
+        mvwprintw(win, 13, 2, "Extra packages (space-separated):");
+        if (active_btn == 3) wattron(win, A_REVERSE);
+        mvwprintw(win, 14, 4, "[ %-40s ]", st.extra_packages.c_str());
+        if (active_btn == 3) wattroff(win, A_REVERSE);
 
-        draw_buttons(win, true, "Continue", active_btn);
+        draw_buttons(win, true, "Continue", active_btn == 3 ? 1 : active_btn);
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == '\t') {
-            if (active_btn == 2) active_btn = 0;
-            else if (active_btn == 0) active_btn = 1;
-            else if (active_btn == 1) active_btn = 2;
-        } else if (ch == KEY_BTAB) {
-            if (active_btn == 2) active_btn = 1;
-            else if (active_btn == 1) active_btn = 0;
-            else if (active_btn == 0) active_btn = 2;
+        if (ch == '\t') { active_btn = (active_btn + 1) % 4; if (active_btn == 2) active_btn = 3; }
+        else if (ch == KEY_BTAB) { active_btn = (active_btn + 3) % 4; if (active_btn == 2) active_btn = 1; }
+        else if (active_btn == 3) {
+            if (ch == KEY_BACKSPACE || ch == 127) { if (!st.extra_packages.empty()) st.extra_packages.pop_back(); }
+            else if (isprint(ch) && st.extra_packages.length() < 40) st.extra_packages += ch;
         } else if (ch == KEY_UP) {
-            if (active_btn == 2 && highlight > 0) {
-                highlight--;
-                if (highlight < scroll) scroll--;
-            }
+            if (active_btn == 2 && highlight > 0) { highlight--; if (highlight < scroll) scroll--; }
         } else if (ch == KEY_DOWN) {
-            if (active_btn == 2 && highlight < n - 1) {
-                highlight++;
-                if (highlight >= scroll + visible_items) scroll++;
-            }
+            if (active_btn == 2 && highlight < n - 1) { highlight++; if (highlight >= scroll + visible_items) scroll++; }
         } else if (ch == ' ' && active_btn == 2) {
             st.preset_selected[highlight] = !st.preset_selected[highlight];
         } else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_btn == 0) { delwin(win); return false; }
             if (active_btn == 1) { delwin(win); return true; }
-            if (active_btn == 2) st.preset_selected[highlight] = !st.preset_selected[highlight];
         }
         delwin(win);
     }
 }
 
 bool screen_review(WizardState& st) {
-    int active_btn = 1; // 0=Back, 1=Build
-
+    int active_btn = 1;
     while (true) {
         WINDOW* win = create_win(20, 70, "Create Template: Step 4 of 4 (Review)");
-        
         mvwprintw(win, 2, 2, "Name: %s", st.name.c_str());
         mvwprintw(win, 3, 2, "Desc: %s", st.description.empty() ? "(none)" : st.description.c_str());
         
-        mvwprintw(win, 5, 2, "Components:");
-        int y = 6;
+        int y = 5;
+        mvwprintw(win, y++, 2, "Components:");
         for (size_t i = 0; i < st.components.size(); ++i) {
-            if (st.comp_selected[i]) {
-                if (y < 12) mvwprintw(win, y++, 4, "- %s", st.components[i].name.c_str());
-                else if (y == 12) { mvwprintw(win, y++, 4, "- ... (more)"); break; }
-            }
+            if (st.comp_selected[i]) { if (y < 10) mvwprintw(win, y++, 4, "- %s", st.components[i].name.c_str()); }
         }
         
-        mvwprintw(win, y + 1, 2, "Applications:");
-        y += 2;
-        bool has_presets = false;
+        y = 11;
+        mvwprintw(win, y++, 2, "Applications:");
         for (size_t i = 0; i < st.presets.size(); ++i) {
-            if (st.preset_selected[i]) {
-                if (y < 17) {
-                    mvwprintw(win, y++, 4, "- %s", st.presets[i].name.c_str());
-                    has_presets = true;
-                } else if (y == 17) {
-                    mvwprintw(win, y++, 4, "- ... (more)");
-                    break;
-                }
-            }
+            if (st.preset_selected[i]) { if (y < 14) mvwprintw(win, y++, 4, "- %s", st.presets[i].name.c_str()); }
         }
-        if (!has_presets) mvwprintw(win, y++, 4, "(none)");
+        
+        if (!st.extra_packages.empty()) mvwprintw(win, y++, 2, "Extra: %s", st.extra_packages.c_str());
 
         draw_buttons(win, true, "Build", active_btn);
         wrefresh(win);
@@ -296,71 +304,73 @@ bool screen_review(WizardState& st) {
 
 void run_build(const WizardState& st) {
     std::string dir = "/var/db/parishbsd/templates/" + st.name;
-    std::string cmd_mkdir = "mkdir -p " + dir;
-    system(cmd_mkdir.c_str());
+    mkdir(dir.c_str(), 0755); // B3: No command injection
 
     std::string conf_path = dir + "/template.conf";
-    std::ofstream conf(conf_path);
-    conf << "name=" << st.name << "\n";
-    conf << "state=building\n";
-    conf << "description.en=" << st.description << "\n";
-    
-    conf << "clusters=";
-    bool first = true;
-    for (size_t i = 0; i < st.components.size(); ++i) {
-        if (st.comp_selected[i]) {
-            if (!first) conf << ",";
-            conf << st.components[i].name;
-            first = false;
+    int fd = open(conf_path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0600); // M1: umask
+    if (fd >= 0) {
+        std::string conf = "name=" + st.name + "\n";
+        // B2: state=building removed
+        conf += "description.en=" + st.description + "\n";
+        conf += "clusters=";
+        for (size_t i = 0; i < st.components.size(); ++i) {
+            if (st.comp_selected[i]) { conf += st.components[i].name + ","; }
         }
-    }
-    conf << "\n";
-
-    conf << "applications=";
-    first = true;
-    for (size_t i = 0; i < st.presets.size(); ++i) {
-        if (st.preset_selected[i]) {
-            if (!first) conf << ",";
-            conf << st.presets[i].name;
-            first = false;
+        conf += "\napplications=";
+        for (size_t i = 0; i < st.presets.size(); ++i) {
+            if (st.preset_selected[i]) { conf += st.presets[i].name + ","; }
         }
+        conf += "\nextra_packages=" + st.extra_packages + "\ncompat=none\n";
+        (void)!write(fd, conf.c_str(), conf.length());
+        close(fd);
     }
-    conf << "\n";
-    conf << "extra_packages=\n";
-    conf << "compat=none\n";
-    conf.close();
 
     cleanup_ui();
     std::cout << "\nStarting build process...\n\n";
-    
-    std::string cmd = "/usr/local/sbin/parish-template-build " + st.name + " --source=user";
-    int ret = system(cmd.c_str());
-    
-    if (ret != 0) {
-        std::cerr << "\nBuild failed. Press Enter to exit.\n";
-        std::cin.get();
-    } else {
-        std::cout << "\nBuild succeeded! Press Enter to exit.\n";
-        std::cin.get();
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid(); // B1: New process group
+        execl("/usr/local/sbin/parish-template-build", "parish-template-build", st.name.c_str(), "--source=user", (char*)NULL);
+        _exit(1);
     }
+
+    g_build_pid = pid;
+    struct sigaction sa{};
+    sa.sa_handler = sigint_handler;
+    sigaction(SIGINT, &sa, NULL);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) break;
+        if (g_cancel_requested) {
+            std::cout << "\nCancelling build...\n";
+            kill(-pid, SIGTERM); // B1: Kill process group
+            waitpid(pid, &status, 0);
+            break;
+        }
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        std::cout << "\nBuild succeeded! Press Enter to exit.\n";
+    } else {
+        std::cerr << "\nBuild failed or cancelled. Press Enter to exit.\n";
+    }
+    std::cin.get();
 }
 
 int main() {
-    ClustersDb db;
-    std::string err;
+    ClustersDb db; std::string err;
     if (!parse_clusters_tsv("/usr/local/libexec/parishbsd/templates/clusters.tsv", db, err)) {
-        std::cerr << "Failed to load clusters.tsv: " << err << "\n";
-        return 1;
+        std::cerr << "Failed to load clusters.tsv: " << err << "\n"; return 1;
     }
 
     WizardState st;
     for (const auto& kv : db.by_name) {
         if (kv.second.kind == ClusterKind::Preset) {
-            st.presets.push_back(kv.second);
-            st.preset_selected.push_back(false);
+            st.presets.push_back(kv.second); st.preset_selected.push_back(false);
         } else {
-            st.components.push_back(kv.second);
-            st.comp_selected.push_back(kv.second.kind == ClusterKind::Required);
+            st.components.push_back(kv.second); st.comp_selected.push_back(kv.second.kind == ClusterKind::Required);
         }
     }
 
@@ -368,20 +378,13 @@ int main() {
     std::sort(st.presets.begin(), st.presets.end(), [](const Cluster& a, const Cluster& b){ return a.name < b.name; });
 
     init_ui();
-
     int step = 1;
     while (step >= 1 && step <= 4) {
-        if (step == 1) {
-            if (screen_name_desc(st)) step = 2; else break;
-        } else if (step == 2) {
-            if (screen_components(st)) step = 3; else step = 1;
-        } else if (step == 3) {
-            if (screen_presets(st)) step = 4; else step = 2;
-        } else if (step == 4) {
-            if (screen_review(st)) { run_build(st); return 0; } else step = 3;
-        }
+        if (step == 1) { if (screen_name_desc(st)) step = 2; else break; }
+        else if (step == 2) { if (screen_components(st)) step = 3; else step = 1; }
+        else if (step == 3) { if (screen_presets(st)) step = 4; else step = 2; }
+        else if (step == 4) { if (screen_review(st)) { run_build(st); return 0; } else step = 3; }
     }
-
     cleanup_ui();
     return 0;
 }
