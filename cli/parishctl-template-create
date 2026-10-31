@@ -1,1 +1,58 @@
-*
+#!/bin/sh
+set -eu
+
+name=""; clusters=""; apps=""; extra=""; compat="none"; flags_given=0; interactive=1
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --clusters=*) clusters="${1#*=}"; flags_given=1 ;;
+        --apps=*)     apps="${1#*=}"; flags_given=1 ;;
+        --extra=*)    extra="${1#*=}"; flags_given=1 ;;
+        --compat=*)   compat="${1#*=}"; flags_given=1 ;;
+        --*)          echo "parish: unknown flag $1" >&2; exit 2 ;;
+        *)            if [ -z "$name" ]; then name="$1"; else echo "parish: too many args" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+
+if [ -z "$name" ] && [ "$flags_given" -eq 1 ]; then
+    echo "parish: template name required when flags are provided." >&2
+    exit 2
+fi
+
+if [ -z "$name" ]; then
+    exec /usr/local/bin/parish-template-wizard
+fi
+
+case "$name" in ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid name" >&2; exit 2 ;; esac
+[ "${#name}" -le 63 ] || { echo "parish: name too long" >&2; exit 2; }
+
+conf_dir="/var/db/parishbsd/templates/$name"
+if [ -f "$conf_dir/template.conf" ]; then
+    echo "parish: template '$name' already exists. Use 'parishctl template reset $name'." >&2
+    exit 1
+fi
+
+if [ "$flags_given" -eq 1 ]; then interactive=0; fi
+
+if [ "$interactive" -eq 1 ] && [ -t 0 ]; then
+    exec /usr/local/bin/parish-template-wizard "$name"
+fi
+
+case "$compat" in
+    linux)   [ -n "$clusters" ] && clusters="$clusters,T-compat-linux" || clusters="T-compat-linux" ;;
+    windows) [ -n "$clusters" ] && clusters="$clusters,T-compat-windows" || clusters="T-compat-windows" ;;
+    both)    [ -n "$clusters" ] && clusters="$clusters,T-compat-linux,T-compat-windows" || clusters="T-compat-linux,T-compat-windows" ;;
+    none) : ;;
+    *)       echo "parish: --compat must be none|linux|windows|both" >&2; exit 2 ;;
+esac
+
+mkdir -p "$conf_dir"
+cat > "$conf_dir/template.conf" <<EOF
+name=$name
+clusters=$clusters
+applications=$apps
+extra_packages=$extra
+compat=$compat
+EOF
+exec /usr/local/sbin/parish-template-build "$name" --source=user
