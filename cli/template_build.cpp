@@ -903,7 +903,7 @@ BuildResult update_template(
             while (!tmpl_ver.empty() && (tmpl_ver.back()=='\n' || tmpl_ver.back()=='\r')) tmpl_ver.pop_back();
             
             if (tmpl_ver != version) {
-                int ret = ops.run_cmd_logged({"/usr/sbin/freebsd-update", "-b", mp, "--currently-running-kernel", "IGNORE", "-f", mp + "/etc/freebsd-update.conf", "fetch", "install"}, log_fd);
+                int ret = ops.run_cmd_logged({"/usr/sbin/freebsd-update", "-b", mp, "--currently-running-kernel", "IGNORE", "fetch", "install"}, log_fd);
                 if (ret != 0) { fail_step(r, "freebsd-update failed"); goto fail; }
             } else {
                 r.detail = "host and template match, skipping";
