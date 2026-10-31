@@ -1,2 +1,34 @@
 #!/bin/sh
+set -eu
+[ -t 0 ] || [ -c /dev/tty ] || { echo "parish: requires interactive tty" >&2; exit 1; }
 
+echo "Scanning for orphaned staging datasets..."
+for ds in $(zfs list -H -o name zroot/jails/templates/*-building 2>/dev/null || true); do
+    name=$(basename "$ds" -building)
+    pid_file="/var/run/parishbsd/template-build-$name.pid"
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        echo "  [SKIP] $ds (build is currently running)"
+    else
+        echo "  [ORPHAN] $ds"
+        printf "  Destroy this dataset? [y/N] "
+        read -r ans < /dev/tty || ans="n"
+        if [ "$ans" = "y" ]; then zfs destroy -r "$ds"; echo "  Destroyed."; fi
+    fi
+done
+
+echo "Scanning for orphaned snapshots..."
+for snap in $(zfs list -H -t snapshot -o name zroot/jails/templates/*@base-* 2>/dev/null || true); do
+    ds_name="${snap%@*}"; tpl_name=$(basename "$ds_name")
+    conf="/var/db/parishbsd/templates/$tpl_name/template.conf"
+    if [ -f "$conf" ]; then
+        current=$(grep '^current_base=' "$conf" | cut -d= -f2 | sed 's/^@//')
+        if [ "@$current" = "@${snap##*@}" ]; then continue; fi
+    fi
+    clones=$(zfs get -H -o value clones "$snap")
+    if [ "$clones" = "-" ]; then
+        echo "  [ORPHAN] $snap"
+        printf "  Destroy this snapshot? [y/N] "
+        read -r ans < /dev/tty || ans="n"
+        if [ "$ans" = "y" ]; then zfs destroy "$snap"; echo "  Destroyed."; fi
+    fi
+done
