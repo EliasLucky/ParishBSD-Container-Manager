@@ -49,11 +49,11 @@ parish_service_start() {
     validate_jail_name_existing "$_ps_jail" || return 1
 
     mkdir -p /var/run/parishbsd || { printf 'parish: cannot create /var/run/parishbsd\n' >&2; return 1; }
-    chmod 0700 /var/run/parishbsd || { printf 'parish: cannot chmod 0700 /var/run/parishbsd\n' >&2; return 1; }
+    chmod 0755 /var/run/parishbsd || { printf 'parish: cannot chmod 0755 /var/run/parishbsd\n' >&2; return 1; }
 
     if [ -d "$_ps_jailroot/xpra" ]; then
         mkdir -p "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot create /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
-        chmod 0700 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0700 /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
+        chmod 0755 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0755 /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
     fi
 
 
