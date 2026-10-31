@@ -200,6 +200,10 @@ bool zfs_destroy_r_impl(const std::string& name) {
     return run_cmd_impl({"/sbin/zfs", "destroy", "-r", name}) == 0;
 }
 
+bool zfs_rollback_r_impl(const std::string& ds, const std::string& snap) {
+    return run_cmd_impl({"/sbin/zfs", "rollback", "-r", ds + "@" + snap}) == 0;
+}
+
 bool zfs_get_used_mb_impl(const std::string& name, unsigned long long& mb) {
     std::string out;
     if (run_cmd_capture_impl({"/sbin/zfs", "get", "-H", "-o", "value", "used",
@@ -277,10 +281,11 @@ Ops::Ops() {
     zfs_get_used_mb     = zfs_get_used_mb_impl;
     run_provision_hook  = run_provision_hook_impl;
     path_exists         = path_exists_impl;
+    zfs_rollback_r = zfs_rollback_r_impl;
 }
 
 // ---------------------------------------------------------------------
-// Base cache (F54, F73, F76)
+// Base cache
 // ---------------------------------------------------------------------
 
 namespace {
@@ -761,6 +766,225 @@ fail:
     }
     return result;
 }
+  
+BuildResult update_template(
+    const std::string& name,
+    const std::string& state_templates_dir,
+    const std::string& cache_dir,
+    const std::string& version,
+    const std::string& arch,
+    const std::string& base_cache_dataset_in,
+    const std::string& clusters_tsv,
+    const std::string& log_dir,
+    const std::string& run_dir,
+    Ops& ops)
+{
+    BuildResult result;
+    
+    // 0. Validate name
+    if (!validate_name(name)) {
+        auto r = step("validate name");
+        fail_step(r, "invalid template name '" + name + "'");
+        result.steps.push_back(r);
+        return result;
+    }
 
+    const std::string state_conf  = state_templates_dir  + "/" + name + "/template.conf";
+    const std::string final_ds    = "zroot/jails/templates/" + name;
+    const std::string ts          = now_ts();
+    const std::string log_path    = log_dir + "/template-update-" + name + "-" + ts + ".log";
+    const std::string pid_path    = run_dir + "/template-build-" + name + ".pid";
+    result.log_path = log_path;
+
+    if (!mkdir_p(log_dir, 0755) || !mkdir_p(run_dir, 0755)) {
+        auto r = step("prepare dirs");
+        fail_step(r, "cannot create log/run dirs");
+        result.steps.push_back(r);
+        return result;
+    }
+
+    int log_fd = ::open(log_path.c_str(), O_WRONLY|O_CREAT|O_APPEND, 0600);
+    if (log_fd < 0) {
+        auto r = step("open log");
+        fail_step(r, "cannot open log");
+        result.steps.push_back(r);
+        return result;
+    }
+
+    auto mark_step = [&](const std::string& sn) -> StepResult& {
+        if (log_fd >= 0) {
+            std::string line = "[step] " + sn + "\n";
+            (void)::write(log_fd, line.data(), line.size());
+        }
+        result.steps.push_back(step(sn));
+        return result.steps.back();
+    };
+
+    auto log = [&](const std::string& s) {
+        if (log_fd >= 0) {
+            std::string l = s + "\n";
+            (void)::write(log_fd, l.data(), l.size());
+        }
+    };
+
+    bool pid_acquired = false;
+    bool mutation_started = false;
+    std::string old_base;
+    std::map<std::string, std::string> conf;
+    std::string err;
+    std::string mp;
+
+    // 1. Acquire pid lock
+    {
+        auto& r = mark_step("acquire build lock");
+        int fd = ::open(pid_path.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0600);
+        if (fd < 0) {
+            fail_step(r, "a build/update for '" + name + "' is already running");
+            goto fail;
+        }
+        std::string pid_str = std::to_string(::getpid()) + "\n";
+        (void)!::write(fd, pid_str.data(), pid_str.size());
+        ::close(fd);
+        pid_acquired = true;
+    }
+
+    // 2. Verify state
+    {
+        auto& r = mark_step("verify template state");
+        if (!parse_state_file(state_conf, conf, err)) {
+            fail_step(r, "cannot read state: " + err);
+            goto fail;
+        }
+        const std::string st = conf.count("state") ? conf["state"] : "<missing>";
+        if (st != "ready") {
+            fail_step(r, "template is not ready (state=" + st + "); run 'parishctl template show " + name + "' to see status, or 'parishctl template scrub' if stuck");
+            goto fail;
+        }
+        old_base = conf["current_base"]; // e.g. @base-20261031-120000
+        if (old_base.empty() || old_base[0] != '@') {
+            fail_step(r, "missing or invalid current_base in template.conf");
+            goto fail;
+        }
+        old_base = old_base.substr(1); // strip @
+    }
+
+    // 3. Verify old_base snapshot exists
+    {
+        auto& r = mark_step("verify base snapshot");
+        if (!ops.zfs_snapshot_exists(final_ds + "@" + old_base)) {
+            fail_step(r, "current_base '" + old_base + "' in template.conf does not exist as a snapshot; run 'parishctl template reset " + name + "' or restore from a pre-update snapshot");
+            goto fail;
+        }
+    }
+
+    // 4. Get mountpoint
+    {
+        auto& r = mark_step("get mountpoint");
+        if (ops.run_cmd_capture({"/sbin/zfs", "get", "-H", "-o", "value", "mountpoint", final_ds}, mp) != 0) {
+            fail_step(r, "cannot read mountpoint");
+            goto fail;
+        }
+        while (!mp.empty() && (mp.back()=='\n' || mp.back()=='\r')) mp.pop_back();
+        if (mp.empty() || mp[0] != '/') {
+            fail_step(r, "invalid mountpoint, refusing to proceed");
+            goto fail;
+        }
+    }
+
+    mutation_started = true;
+
+    // 5. freebsd-update (if version drifted)
+    {
+        auto& r = mark_step("freebsd-update");
+        std::string tmpl_ver;
+        if (ops.run_cmd_capture({"/usr/sbin/chroot", mp, "/bin/freebsd-version", "-u"}, tmpl_ver) == 0) {
+            auto p = tmpl_ver.find("-p");
+            if (p != std::string::npos) tmpl_ver = tmpl_ver.substr(0, p);
+            while (!tmpl_ver.empty() && (tmpl_ver.back()=='\n' || tmpl_ver.back()=='\r')) tmpl_ver.pop_back();
+            
+            if (tmpl_ver != version) {
+                int ret = ops.run_cmd_logged({"/usr/sbin/freebsd-update", "-b", mp, "--currently-running-kernel", "IGNORE", "-f", mp + "/etc/freebsd-update.conf", "fetch", "install"}, log_fd);
+                if (ret != 0) { fail_step(r, "freebsd-update failed"); goto fail; }
+            } else {
+                r.detail = "host and template match, skipping";
+            }
+        } else {
+            r.detail = "cannot determine template version, skipping";
+        }
+    }
+
+    // 6. pkg upgrade
+    {
+        auto& r = mark_step("pkg upgrade");
+        int ret = ops.run_cmd_logged({"/usr/local/sbin/pkg", "-r", mp, "upgrade", "-y"}, log_fd);
+        if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+        if (ret != 0)  { fail_step(r, "pkg upgrade failed"); goto fail; }
+    }
+
+    // 7. Cleanup freebsd-update cache
+    {
+        mark_step("cleanup freebsd-update cache");
+        if (ops.run_cmd({"/bin/rm", "-rf", mp + "/var/db/freebsd-update"}) != 0) {
+            log("warning: could not remove /var/db/freebsd-update from template");
+        }
+    }
+
+    // 8. New snapshot=
+    std::string new_ts = now_ts();
+    std::string new_snap = "base-" + new_ts;
+    {
+        auto& r = mark_step("new base snapshot");
+        if (!ops.zfs_snapshot(final_ds, new_snap)) {
+            fail_step(r, "zfs snapshot failed");
+            goto fail;
+        }
+    }
+
+    // 9. Update state
+    {
+        auto& r = mark_step("write state=ready");
+        conf["current_base"] = "@" + new_snap;
+        conf["updated"] = new_ts;
+        conf.erase("last_update_failed"); 
+        if (!write_state_file_atomic(state_conf, conf, err)) {
+            fail_step(r, err);
+            goto fail;
+        }
+    }
+
+    result.succeeded = true;
+    if (log_fd >= 0) ::close(log_fd);
+    ::unlink(pid_path.c_str());
+    return result;
+
+fail:
+    log("UPDATE FAILED");
+    // only rollback if mutation started, and use zfs rollback -r
+    if (mutation_started && !old_base.empty() && ops.zfs_snapshot_exists(final_ds + "@" + old_base)) {
+        auto& r = mark_step("revert to pre-update snapshot");
+        if (ops.zfs_rollback_r(final_ds, old_base)) {
+            conf["state"] = "ready";
+            conf["last_update_failed"] = ts;
+            if (!write_state_file_atomic(state_conf, conf, err)) {
+                log("warning: could not write state after rollback success: " + err);
+                std::fprintf(stderr, "parish: warning: could not write state; check %s\n", state_conf.c_str());
+            }
+        } else {
+            fail_step(r, "zfs rollback failed; template is in failed state");
+            conf["state"] = "failed";
+            if (!write_state_file_atomic(state_conf, conf, err)) {
+                log("warning: could not write state after rollback failure: " + err);
+                std::fprintf(stderr, "parish: warning: could not write state; check %s\n", state_conf.c_str());
+            }
+        }
+    } else if (!mutation_started) {
+        // Early failure, no mutation, no rollback needed.
+    }
+
+    if (pid_acquired) ::unlink(pid_path.c_str());
+    if (log_fd >= 0) ::close(log_fd);
+    return result;
+}
+  
 }  // namespace tbuild
 }  // namespace parish
