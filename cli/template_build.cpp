@@ -779,6 +779,12 @@ BuildResult update_template(
     const std::string& run_dir,
     Ops& ops)
 {
+    // Silence unused parameter warnings for the update flow
+    (void)cache_dir;
+    (void)arch;
+    (void)base_cache_dataset_in;
+    (void)clusters_tsv;
+
     BuildResult result;
     
     // 0. Validate name
@@ -830,6 +836,8 @@ BuildResult update_template(
     bool pid_acquired = false;
     bool mutation_started = false;
     std::string old_base;
+    std::string new_ts;
+    std::string new_snap;
     std::map<std::string, std::string> conf;
     std::string err;
     std::string mp;
@@ -860,12 +868,12 @@ BuildResult update_template(
             fail_step(r, "template is not ready (state=" + st + "); run 'parishctl template show " + name + "' to see status, or 'parishctl template scrub' if stuck");
             goto fail;
         }
-        old_base = conf["current_base"]; // e.g. @base-20261031-120000
+        old_base = conf["current_base"]; 
         if (old_base.empty() || old_base[0] != '@') {
             fail_step(r, "missing or invalid current_base in template.conf");
             goto fail;
         }
-        old_base = old_base.substr(1); // strip @
+        old_base = old_base.substr(1);
     }
 
     // 3. Verify old_base snapshot exists
@@ -929,9 +937,9 @@ BuildResult update_template(
         }
     }
 
-    // 8. New snapshot=
-    std::string new_ts = now_ts();
-    std::string new_snap = "base-" + new_ts;
+    // 8. New snapshot
+    new_ts = now_ts();
+    new_snap = "base-" + new_ts;
     {
         auto& r = mark_step("new base snapshot");
         if (!ops.zfs_snapshot(final_ds, new_snap)) {
@@ -959,7 +967,6 @@ BuildResult update_template(
 
 fail:
     log("UPDATE FAILED");
-    // only rollback if mutation started, and use zfs rollback -r
     if (mutation_started && !old_base.empty() && ops.zfs_snapshot_exists(final_ds + "@" + old_base)) {
         auto& r = mark_step("revert to pre-update snapshot");
         if (ops.zfs_rollback_r(final_ds, old_base)) {
