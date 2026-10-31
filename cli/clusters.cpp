@@ -37,7 +37,9 @@ ClusterKind parse_kind(const std::string& s) {
 
 }  // namespace
 
-bool parse_clusters_tsv(const std::string& path, ClustersDb& out, std::string& error)
+bool parse_clusters_tsv(const std::string& path,
+                        ClustersDb& out,
+                        std::string& error)
 {
     std::ifstream in(path);
     if (!in) { error = "cannot open " + path; return false; }
@@ -170,7 +172,8 @@ bool resolve_clusters(const std::vector<std::string>& requested,
         if (!visit(c, db, visited, visiting, resolved_comps, error)) return false;
     }
 
-    out.push_back(*appuser_it);
+    out.push_back(appuser_it->second);
+    
     for (const auto& c : resolved_comps) {
         if (c.name == "T-appuser") continue;
         out.push_back(c);
