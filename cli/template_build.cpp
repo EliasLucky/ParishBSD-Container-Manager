@@ -104,7 +104,7 @@ int run_cmd_capture_impl(const std::vector<std::string>& argv, std::string& out)
     return -1;
 }
 
-// Tee helper: writes to log, warns once on failure, disables log_fd.
+// Tee helper (F56): writes to log, warns once on failure, disables log_fd.
 static void tee_to_log(int& log_fd, const char* buf, size_t n, bool& warned) {
     if (log_fd < 0) return;
     size_t off = 0;
@@ -300,7 +300,6 @@ static CacheOutcome ensure_base_cache(
     const std::string& cache_dir, const std::string& log_path,
     Ops& ops, int& log_fd)
 {
-    // FIX: zroot/jails/templates instead of zroot/parishbsd/templates
     const std::string final_ds =
         "zroot/jails/templates/base-" + version + "-" + arch;
 
@@ -323,8 +322,6 @@ static CacheOutcome ensure_base_cache(
             "Run 25-setup-templates.sh to download it for host "
             + version + "-" + arch + "."};
     }
-    
-    // FIX: zfs create -p creates parent datasets if missing
     int rc = ops.run_cmd_logged({"/sbin/zfs", "create", "-p", final_ds}, log_fd);
     if (rc == -2) return {"", CacheResult::Cancelled, ""};
     if (rc != 0) {
@@ -345,12 +342,9 @@ static CacheOutcome ensure_base_cache(
         return {"", CacheResult::Other,
             "unexpected mountpoint for '" + final_ds + "': '" + mp + "'"};
     }
-    
-    // FIX: removed --strip-components=1 because base.txz extracts directly to ./
     rc = ops.run_cmd_logged(
         {"/usr/bin/tar", "-xJf", txz, "-C", mp},
         log_fd);
-        
     if (rc == -2) {
         ops.zfs_destroy_r(final_ds);
         return {"", CacheResult::Cancelled, ""};
@@ -400,7 +394,6 @@ BuildResult build_template(
 {
     BuildResult result;
 
-    // --- Step 0: validate name ---
     if (!validate_name(name)) {
         auto r = step("validate name");
         fail_step(r, "invalid template name '" + name + "'");
@@ -408,7 +401,6 @@ BuildResult build_template(
         return result;
     }
 
-    // --- Step 1: install SIGTERM handler ---
     {
         struct sigaction sa{};
         sa.sa_handler = on_sigterm;
@@ -423,21 +415,16 @@ BuildResult build_template(
         result.steps.push_back(step("install SIGTERM handler"));
     }
 
-    // Paths
     const std::string source_conf = source_templates_dir + "/" + name + "/template.conf";
     const std::string state_conf  = state_templates_dir  + "/" + name + "/template.conf";
-    
-    // FIX: zroot/jails/templates instead of zroot/parishbsd/templates
     const std::string staging_ds  = "zroot/jails/templates/" + name + "-building";
     const std::string final_ds    = "zroot/jails/templates/" + name;
-    
     const std::string ts          = now_ts();
     const std::string base_snap   = "base-" + ts;
     const std::string log_path    = log_dir + "/template-build-" + name + "-" + ts + ".log";
     const std::string pid_path    = run_dir + "/template-build-" + name + ".pid";
     result.log_path = log_path;
 
-    // Prepare log directory
     if (!mkdir_p(log_dir, 0755)) {
         auto r = step("prepare log dir");
         fail_step(r, "cannot create '" + log_dir + "': " + std::strerror(errno));
@@ -485,16 +472,14 @@ BuildResult build_template(
         return true;
     };
 
-    // Variables moved here to prevent "goto bypasses variable initialization"
     std::map<std::string, std::string> conf;
     std::string err;
     std::string base_cache_dataset = base_cache_dataset_in;
     std::vector<Cluster> resolved;
+    std::string staging_mp;
 
-    // --- Step 2: pre-pid cancel ---
     if (check_cancel()) goto fail;
 
-    // --- Step 3: acquire pid ---
     {
         auto& r = mark_step("acquire build lock");
         int fd = ::open(pid_path.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0600);
@@ -519,7 +504,6 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 4: name availability ---
     {
         auto& r = mark_step("check name availability");
         if (ops.zfs_dataset_exists(final_ds)) {
@@ -535,7 +519,6 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 5: F57 ensure state exists + load from state ---
     {
         auto& r = mark_step("load template.conf");
         if (!ops.path_exists(state_conf)) {
@@ -566,7 +549,6 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 6: write state=building ---
     {
         auto& r = mark_step("write state=building");
         conf["state"] = "building";
@@ -579,7 +561,6 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 7: base cache ---
     {
         auto& r = mark_step("base cache check");
         if (base_cache_dataset.empty()) {
@@ -612,6 +593,20 @@ BuildResult build_template(
             fail_step(r, "zfs clone failed");
             goto fail;
         }
+        // FIX: resolve the mountpoint so pkg and provision scripts get a valid path
+        if (ops.run_cmd_capture(
+                {"/sbin/zfs", "get", "-H", "-o", "value", "mountpoint", staging_ds},
+                staging_mp) != 0) {
+            fail_step(r, "cannot read mountpoint of staging dataset");
+            goto fail;
+        }
+        while (!staging_mp.empty() && (staging_mp.back()=='\n' || staging_mp.back()=='\r')) {
+            staging_mp.pop_back();
+        }
+        if (staging_mp.empty() || staging_mp[0] != '/') {
+            fail_step(r, "unexpected mountpoint for staging dataset: '" + staging_mp + "'");
+            goto fail;
+        }
     }
 
     if (check_cancel()) goto fail;
@@ -620,7 +615,7 @@ BuildResult build_template(
     {
         auto& r = mark_step("pkg update");
         int ret = ops.run_cmd_logged(
-            {"/usr/local/sbin/pkg", "-r", staging_ds, "update"}, log_fd);
+            {"/usr/local/sbin/pkg", "-r", staging_mp, "update"}, log_fd);
         if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
         if (ret != 0)  { fail_step(r, "pkg update failed"); goto fail; }
     }
@@ -663,14 +658,14 @@ BuildResult build_template(
         auto& r = mark_step(sn);
         if (!c.no_pkg_install && !c.packages.empty()) {
             std::vector<std::string> argv =
-                {"/usr/local/sbin/pkg", "-r", staging_ds, "install", "-y"};
+                {"/usr/local/sbin/pkg", "-r", staging_mp, "install", "-y"};
             for (const auto& p : c.packages) argv.push_back(p);
             int ret = ops.run_cmd_logged(argv, log_fd);
             if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
             if (ret != 0)  { fail_step(r, "pkg install failed"); goto fail; }
         }
         for (const auto& hook : c.provisions) {
-            if (!ops.run_provision_hook(hook, staging_ds)) {
+            if (!ops.run_provision_hook(hook, staging_mp)) {
                 fail_step(r, "provision hook failed: " + hook);
                 goto fail;
             }
@@ -684,7 +679,7 @@ BuildResult build_template(
             if (check_cancel()) goto fail;
             auto& r = mark_step("install extra packages");
             std::vector<std::string> argv =
-                {"/usr/local/sbin/pkg", "-r", staging_ds, "install", "-y"};
+                {"/usr/local/sbin/pkg", "-r", staging_mp, "install", "-y"};
             std::string cur;
             for (char c : it->second) {
                 if (c == ',') { if (!cur.empty()) argv.push_back(cur); cur.clear(); }
@@ -712,7 +707,7 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 14: rename staging to final  ---
+    // --- Step 14: rename staging to final ---
     {
         auto& r = mark_step("rename staging to final");
         if (!ops.zfs_rename(staging_ds, final_ds)) {
