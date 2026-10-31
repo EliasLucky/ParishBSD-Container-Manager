@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     BuildResult r;
     if (update_mode) {
         r = update_template(
-            name, source_dir, state_dir, cache_dir, version, arch, base_cache,
+            name, state_dir, cache_dir, version, arch, base_cache,
             "/usr/local/libexec/parishbsd/templates/clusters.tsv",
             "/var/log/parishbsd", "/var/run/parishbsd", ops);
     } else {
