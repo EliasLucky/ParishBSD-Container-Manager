@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -29,8 +30,7 @@ bool parse_state_file(const std::string& path,
         auto eq = s.find('=');
         if (eq == std::string::npos) {
             error = path + ":" + std::to_string(lineno) + ": missing '='";
-            std::free(line);
-            std::fclose(f);
+            std::free(line); std::fclose(f);
             return false;
         }
         out[s.substr(0, eq)] = s.substr(eq + 1);
@@ -44,19 +44,14 @@ bool write_state_file_atomic(const std::string& path,
                              const std::map<std::string, std::string>& kv,
                              std::string& error)
 {
-    // Preserve existing mode; 0600 for new file (template.conf may carry
-    // patch-level forensics before sanitization).
     mode_t mode = 0600;
     struct stat st;
     if (::stat(path.c_str(), &st) == 0) mode = st.st_mode & 07777;
 
     std::string tmp = path + ".tmp." + std::to_string(::getpid());
     int fd = ::open(tmp.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, mode);
-    if (fd < 0) {
-        error = "open " + tmp + ": " + std::strerror(errno);
-        return false;
-    }
-    // Deterministic key order for readability and stable diffs.
+    if (fd < 0) { error = "open " + tmp + ": " + std::strerror(errno); return false; }
+
     static const char* order[] = {
         "name","kind","state","description.en","description.zh",
         "hidden","clusters","requested_clusters","applications",
@@ -70,33 +65,28 @@ bool write_state_file_atomic(const std::string& path,
         std::string line = it->first + "=" + it->second + "\n";
         if (::write(fd, line.data(), line.size()) != (ssize_t)line.size()) {
             error = "write " + tmp + ": " + std::strerror(errno);
-            ::close(fd); ::unlink(tmp.c_str());
-            return false;
+            ::close(fd); ::unlink(tmp.c_str()); return false;
         }
         remaining.erase(it);
     }
-    for (const auto& [k, v] : remaining) {
-        std::string line = k + "=" + v + "\n";
+    for (const auto& kv2 : remaining) {
+        std::string line = kv2.first + "=" + kv2.second + "\n";
         if (::write(fd, line.data(), line.size()) != (ssize_t)line.size()) {
             error = "write " + tmp + ": " + std::strerror(errno);
-            ::close(fd); ::unlink(tmp.c_str());
-            return false;
+            ::close(fd); ::unlink(tmp.c_str()); return false;
         }
     }
     if (::fsync(fd) != 0) {
         error = "fsync " + tmp + ": " + std::strerror(errno);
-        ::close(fd); ::unlink(tmp.c_str());
-        return false;
+        ::close(fd); ::unlink(tmp.c_str()); return false;
     }
     if (::close(fd) != 0) {
         error = "close " + tmp + ": " + std::strerror(errno);
-        ::unlink(tmp.c_str());
-        return false;
+        ::unlink(tmp.c_str()); return false;
     }
     if (::rename(tmp.c_str(), path.c_str()) != 0) {
         error = "rename " + tmp + " -> " + path + ": " + std::strerror(errno);
-        ::unlink(tmp.c_str());
-        return false;
+        ::unlink(tmp.c_str()); return false;
     }
     return true;
 }
