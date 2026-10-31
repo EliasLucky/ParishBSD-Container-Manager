@@ -119,11 +119,11 @@ static void test_parser_rejects_unknown_requires() {
     std::string path = "/tmp/clusters.tsv.test";
     write_file(path,
         "T-core\trequired\t-\t-\n"
-        "T-xpra\trequired\txpra\trequires:T-fonts-min\n");
+        "T-xpra\trequired\txpra\trequires_:T-fonts-min\n");
     ClustersDb db; std::string err;
     bool ok = parse_clusters_tsv(path, db, err);
     std::remove(path.c_str());
-    assert(!ok && "unknown requires target must be rejected");
+    assert(!ok && "unknown requires_ target must be rejected");
 }
 
 static void test_parser_accepts_valid() {
@@ -131,7 +131,7 @@ static void test_parser_accepts_valid() {
     write_file(path,
         "T-appuser\trequired\t-\tprovision:app-user\n"
         "T-fonts-min\trequired\tfontconfig\t-\n"
-        "T-xpra\trequired\txpra\trequires:T-fonts-min\n"
+        "T-xpra\trequired\txpra\trequires_:T-fonts-min\n"
         "P-browser\tpreset\tfirefox\tgroup:browser\n");
     ClustersDb db; std::string err;
     assert(parse_clusters_tsv(path, db, err));
@@ -146,7 +146,7 @@ static void test_resolver_puts_appuser_first() {
     write_file(path,
         "T-appuser\trequired\t-\tprovision:app-user\n"
         "T-fonts-min\trequired\tfontconfig\t-\n"
-        "T-xpra\trequired\txpra\trequires:T-fonts-min\n");
+        "T-xpra\trequired\txpra\trequires_:T-fonts-min\n");
     ClustersDb db; std::string err;
     assert(parse_clusters_tsv(path, db, err));
     std::vector<Cluster> out;
@@ -165,8 +165,8 @@ static void test_resolver_detects_cycle() {
     std::string path = "/tmp/clusters.tsv.test";
     write_file(path,
         "T-appuser\trequired\t-\tprovision:app-user\n"
-        "T-a\trequired\tpa\trequires:T-b\n"
-        "T-b\trequired\tpb\trequires:T-a\n");
+        "T-a\trequired\tpa\trequires_:T-b\n"
+        "T-b\trequired\tpb\trequires_:T-a\n");
     ClustersDb db; std::string err;
     assert(parse_clusters_tsv(path, db, err));
     std::vector<Cluster> out;

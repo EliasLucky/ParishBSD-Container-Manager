@@ -95,7 +95,7 @@ bool parse_clusters_tsv(const std::string& path, ClustersDb& out, std::string& e
             for (const auto& rule : split(f[3], ',')) {
                 if (rule.empty()) continue;
                 if (rule.rfind("requires:", 0) == 0) {
-                    c.requires.push_back(rule.substr(9));
+                    c.requires_.push_back(rule.substr(9));
                 } else if (rule.rfind("provision:", 0) == 0) {
                     c.provisions.push_back(rule.substr(10));
                 } else if (rule.rfind("group:", 0) == 0) {
@@ -112,7 +112,7 @@ bool parse_clusters_tsv(const std::string& path, ClustersDb& out, std::string& e
     }
 
     for (const auto& kv : out.by_name) {
-        for (const auto& r : kv.second.requires) {
+        for (const auto& r : kv.second.requires_) {
             if (!out.by_name.count(r)) {
                 error = "cluster " + kv.first + " requires unknown cluster " + r;
                 return false;
@@ -134,7 +134,7 @@ static bool visit(const std::string& name,
     auto it = db.by_name.find(name);
     if (it == db.by_name.end()) { error = "unknown cluster: " + name; return false; }
     visiting.insert(name);
-    for (const auto& r : it->second.requires) {
+    for (const auto& r : it->second.requires_) {
         if (!visit(r, db, visited, visiting, out, error)) return false;
     }
     visiting.erase(name);
