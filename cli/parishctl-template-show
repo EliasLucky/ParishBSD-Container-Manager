@@ -1,2 +1,28 @@
 #!/bin/sh
+# parishctl-template-show - Show template details
+set -eu
 
+name="${1:?usage: parishctl template show <name>}"
+
+conf=""
+if [ -f "/var/db/parishbsd/templates/$name/template.conf" ]; then
+    conf="/var/db/parishbsd/templates/$name/template.conf"
+elif [ -f "/usr/local/share/parishbsd/templates/$name/template.conf" ]; then
+    conf="/usr/local/share/parishbsd/templates/$name/template.conf"
+else
+    echo "parish: template '$name' not found" >&2; exit 1
+fi
+
+echo "--- Configuration ($conf) ---"
+cat "$conf"
+echo ""
+
+echo "--- ZFS Status ---"
+ds="zroot/jails/templates/$name"
+if zfs list -H -o name "$ds" >/dev/null 2>&1; then
+    zfs list -H -o name,used,refer "$ds"
+elif zfs list -H -o name "${ds}-building" >/dev/null 2>&1; then
+    echo "Status: building (staging dataset exists, final dataset missing)"
+else
+    echo "Status: not built (no ZFS datasets found)"
+fi
