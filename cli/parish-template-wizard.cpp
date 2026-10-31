@@ -24,6 +24,8 @@ struct WizardState {
 
 void init_ui() {
     initscr();
+    start_color();
+    init_pair(1, COLOR_RED, COLOR_BLACK);
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
@@ -34,17 +36,19 @@ void cleanup_ui() {
     endwin();
 }
 
-// Helper to create a centered window with a title
 WINDOW* create_win(int height, int width, const char* title) {
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x);
     int start_y = (max_y - height) / 2;
     int start_x = (max_x - width) / 2;
 
+    clear(); // Prevent visual artifacts from previous screens
+    refresh();
+
     WINDOW* win = newwin(height, width, start_y, start_x);
-    box(win, 0, 0);
+    keypad(win, TRUE); // FIX: Enable arrow keys for this specific window
     
-    // Draw title
+    box(win, 0, 0);
     wattron(win, A_BOLD);
     mvwprintw(win, 0, 2, "[ %s ]", title);
     wattroff(win, A_BOLD);
@@ -52,18 +56,15 @@ WINDOW* create_win(int height, int width, const char* title) {
     return win;
 }
 
-// Draws standard Back/Continue buttons at the bottom of the window
 void draw_buttons(WINDOW* win, bool back_enabled, const char* cont_label, int active_btn) {
     int y, x;
     getmaxyx(win, y, x);
     int btn_y = y - 2;
 
-    // Continue / Build button
     if (active_btn == 1) wattron(win, A_REVERSE);
     mvwprintw(win, btn_y, x - 15, "[ %s ]", cont_label);
     if (active_btn == 1) wattroff(win, A_REVERSE);
 
-    // Back / Cancel button
     if (back_enabled) {
         if (active_btn == 0) wattron(win, A_REVERSE);
         mvwprintw(win, btn_y, x - 30, "[ Back ]");
@@ -77,6 +78,8 @@ void draw_buttons(WINDOW* win, bool back_enabled, const char* cont_label, int ac
 
 bool screen_name_desc(WizardState& st) {
     int active_field = 0; // 0=Name, 1=Desc, 2=Cancel, 3=Continue
+    bool name_error = false;
+
     while (true) {
         WINDOW* win = create_win(12, 70, "Create Template: Step 1 of 4 (Identity)");
         
@@ -84,6 +87,12 @@ bool screen_name_desc(WizardState& st) {
         if (active_field == 0) wattron(win, A_REVERSE);
         mvwprintw(win, 3, 4, "[ %-40s ]", st.name.c_str());
         if (active_field == 0) wattroff(win, A_REVERSE);
+
+        if (name_error) {
+            wattron(win, A_BOLD | COLOR_PAIR(1));
+            mvwprintw(win, 4, 4, "Name cannot be empty.");
+            wattroff(win, A_BOLD | COLOR_PAIR(1));
+        }
 
         mvwprintw(win, 5, 2, "Description (optional):");
         if (active_field == 1) wattron(win, A_REVERSE);
@@ -94,12 +103,12 @@ bool screen_name_desc(WizardState& st) {
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == KEY_DOWN || ch == '\t') active_field = (active_field + 1) % 4;
-        else if (ch == KEY_UP || ch == KEY_BTAB) active_field = (active_field + 3) % 4;
+        if (ch == KEY_DOWN || ch == '\t') { active_field = (active_field + 1) % 4; name_error = false; }
+        else if (ch == KEY_UP || ch == KEY_BTAB) { active_field = (active_field + 3) % 4; name_error = false; }
         else if (ch == '\n' || ch == KEY_ENTER) {
-            if (active_field == 2) { delwin(win); return false; } // Cancel
+            if (active_field == 2) { delwin(win); return false; }
             if (active_field == 3) {
-                if (st.name.empty()) continue; // Basic validation
+                if (st.name.empty()) { name_error = true; continue; }
                 delwin(win); return true;
             }
         } else if (active_field < 2 && (ch == KEY_BACKSPACE || ch == 127)) {
@@ -115,33 +124,51 @@ bool screen_name_desc(WizardState& st) {
 
 bool screen_components(WizardState& st) {
     int highlight = 0;
+    int scroll = 0;
     int n = st.components.size();
-    int active_btn = 1; // 0=Back, 1=Continue
+    int active_btn = 2; // 0=Back, 1=Continue, 2=List (default to List)
 
     while (true) {
         WINDOW* win = create_win(18, 70, "Create Template: Step 2 of 4 (System Components)");
         
         mvwprintw(win, 2, 2, "Select components (Space to toggle):");
-        for (int i = 0; i < n && i < 10; ++i) {
-            if (active_btn == 2 && i == highlight) wattron(win, A_REVERSE);
-            const auto& c = st.components[i];
-            const char* mark = st.comp_selected[i] ? "[X]" : "[ ]";
+        
+        int visible_items = 10;
+        for (int i = 0; i < visible_items && (scroll + i) < n; ++i) {
+            int idx = scroll + i;
+            if (active_btn == 2 && idx == highlight) wattron(win, A_REVERSE);
+            const auto& c = st.components[idx];
+            const char* mark = st.comp_selected[idx] ? "[X]" : "[ ]";
             mvwprintw(win, 4 + i, 4, "%s %s", mark, c.name.c_str());
-            if (active_btn == 2 && i == highlight) wattroff(win, A_REVERSE);
+            if (active_btn == 2 && idx == highlight) wattroff(win, A_REVERSE);
         }
+
+        // Scroll indicators
+        if (scroll > 0) mvwprintw(win, 4, 40, "^^^");
+        if (scroll + visible_items < n) mvwprintw(win, 4 + visible_items - 1, 40, "vvv");
 
         draw_buttons(win, true, "Continue", active_btn);
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == KEY_UP) {
-            if (active_btn == 2 && highlight > 0) highlight--;
-            else if (active_btn == 2 && highlight == 0) active_btn = 1;
-            else if (active_btn == 1) active_btn = 0;
-        } else if (ch == KEY_DOWN || ch == '\t') {
-            if (active_btn == 0) active_btn = 1;
+        if (ch == '\t') {
+            if (active_btn == 2) active_btn = 0;
+            else if (active_btn == 0) active_btn = 1;
             else if (active_btn == 1) active_btn = 2;
-            else if (active_btn == 2 && highlight < n - 1) highlight++;
+        } else if (ch == KEY_BTAB) {
+            if (active_btn == 2) active_btn = 1;
+            else if (active_btn == 1) active_btn = 0;
+            else if (active_btn == 0) active_btn = 2;
+        } else if (ch == KEY_UP) {
+            if (active_btn == 2 && highlight > 0) {
+                highlight--;
+                if (highlight < scroll) scroll--;
+            }
+        } else if (ch == KEY_DOWN) {
+            if (active_btn == 2 && highlight < n - 1) {
+                highlight++;
+                if (highlight >= scroll + visible_items) scroll++;
+            }
         } else if (ch == ' ' && active_btn == 2) {
             if (st.components[highlight].kind != ClusterKind::Required) {
                 st.comp_selected[highlight] = !st.comp_selected[highlight];
@@ -156,6 +183,7 @@ bool screen_components(WizardState& st) {
         } else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_btn == 0) { delwin(win); return false; }
             if (active_btn == 1) { delwin(win); return true; }
+            if (active_btn == 2) st.comp_selected[highlight] = !st.comp_selected[highlight]; // Toggle on enter too
         }
         delwin(win);
     }
@@ -163,39 +191,57 @@ bool screen_components(WizardState& st) {
 
 bool screen_presets(WizardState& st) {
     int highlight = 0;
+    int scroll = 0;
     int n = st.presets.size();
-    if (n == 0) return true; // Skip if no presets
-    int active_btn = 1; // 0=Back, 1=Continue
+    if (n == 0) return true;
+    int active_btn = 2; // 0=Back, 1=Continue, 2=List
 
     while (true) {
         WINDOW* win = create_win(18, 70, "Create Template: Step 3 of 4 (Applications)");
         
         mvwprintw(win, 2, 2, "Select presets (Space to toggle):");
-        for (int i = 0; i < n && i < 10; ++i) {
-            if (active_btn == 2 && i == highlight) wattron(win, A_REVERSE);
-            const auto& p = st.presets[i];
-            const char* mark = st.preset_selected[i] ? "[X]" : "[ ]";
+        
+        int visible_items = 10;
+        for (int i = 0; i < visible_items && (scroll + i) < n; ++i) {
+            int idx = scroll + i;
+            if (active_btn == 2 && idx == highlight) wattron(win, A_REVERSE);
+            const auto& p = st.presets[idx];
+            const char* mark = st.preset_selected[idx] ? "[X]" : "[ ]";
             mvwprintw(win, 4 + i, 4, "%s %s", mark, p.name.c_str());
-            if (active_btn == 2 && i == highlight) wattroff(win, A_REVERSE);
+            if (active_btn == 2 && idx == highlight) wattroff(win, A_REVERSE);
         }
+
+        if (scroll > 0) mvwprintw(win, 4, 40, "^^^");
+        if (scroll + visible_items < n) mvwprintw(win, 4 + visible_items - 1, 40, "vvv");
 
         draw_buttons(win, true, "Continue", active_btn);
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == KEY_UP) {
-            if (active_btn == 2 && highlight > 0) highlight--;
-            else if (active_btn == 2 && highlight == 0) active_btn = 1;
-            else if (active_btn == 1) active_btn = 0;
-        } else if (ch == KEY_DOWN || ch == '\t') {
-            if (active_btn == 0) active_btn = 1;
+        if (ch == '\t') {
+            if (active_btn == 2) active_btn = 0;
+            else if (active_btn == 0) active_btn = 1;
             else if (active_btn == 1) active_btn = 2;
-            else if (active_btn == 2 && highlight < n - 1) highlight++;
+        } else if (ch == KEY_BTAB) {
+            if (active_btn == 2) active_btn = 1;
+            else if (active_btn == 1) active_btn = 0;
+            else if (active_btn == 0) active_btn = 2;
+        } else if (ch == KEY_UP) {
+            if (active_btn == 2 && highlight > 0) {
+                highlight--;
+                if (highlight < scroll) scroll--;
+            }
+        } else if (ch == KEY_DOWN) {
+            if (active_btn == 2 && highlight < n - 1) {
+                highlight++;
+                if (highlight >= scroll + visible_items) scroll++;
+            }
         } else if (ch == ' ' && active_btn == 2) {
             st.preset_selected[highlight] = !st.preset_selected[highlight];
         } else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_btn == 0) { delwin(win); return false; }
             if (active_btn == 1) { delwin(win); return true; }
+            if (active_btn == 2) st.preset_selected[highlight] = !st.preset_selected[highlight];
         }
         delwin(win);
     }
@@ -213,7 +259,10 @@ bool screen_review(WizardState& st) {
         mvwprintw(win, 5, 2, "Components:");
         int y = 6;
         for (size_t i = 0; i < st.components.size(); ++i) {
-            if (st.comp_selected[i]) mvwprintw(win, y++, 4, "- %s", st.components[i].name.c_str());
+            if (st.comp_selected[i]) {
+                if (y < 12) mvwprintw(win, y++, 4, "- %s", st.components[i].name.c_str());
+                else if (y == 12) { mvwprintw(win, y++, 4, "- ... (more)"); break; }
+            }
         }
         
         mvwprintw(win, y + 1, 2, "Applications:");
@@ -221,8 +270,13 @@ bool screen_review(WizardState& st) {
         bool has_presets = false;
         for (size_t i = 0; i < st.presets.size(); ++i) {
             if (st.preset_selected[i]) {
-                mvwprintw(win, y++, 4, "- %s", st.presets[i].name.c_str());
-                has_presets = true;
+                if (y < 17) {
+                    mvwprintw(win, y++, 4, "- %s", st.presets[i].name.c_str());
+                    has_presets = true;
+                } else if (y == 17) {
+                    mvwprintw(win, y++, 4, "- ... (more)");
+                    break;
+                }
             }
         }
         if (!has_presets) mvwprintw(win, y++, 4, "(none)");
@@ -231,7 +285,7 @@ bool screen_review(WizardState& st) {
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == KEY_LEFT || ch == KEY_RIGHT || ch == '\t') active_btn = (active_btn + 1) % 2;
+        if (ch == KEY_LEFT || ch == KEY_RIGHT || ch == '\t' || ch == KEY_BTAB) active_btn = (active_btn + 1) % 2;
         else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_btn == 0) { delwin(win); return false; }
             if (active_btn == 1) { delwin(win); return true; }
@@ -276,7 +330,6 @@ void run_build(const WizardState& st) {
     conf << "compat=none\n";
     conf.close();
 
-    // Hand over to the C++ builder
     cleanup_ui();
     std::cout << "\nStarting build process...\n\n";
     
@@ -316,7 +369,6 @@ int main() {
 
     init_ui();
 
-    // Flow control (allows going back)
     int step = 1;
     while (step >= 1 && step <= 4) {
         if (step == 1) {
