@@ -38,6 +38,7 @@ struct Ops {
     std::function<bool(const std::string&, const std::string&)> zfs_snapshot;
     std::function<bool(const std::string&, const std::string&)> zfs_rename;
     std::function<bool(const std::string&)> zfs_destroy_r;
+    std::function<bool(const std::string&, const std::string&)> zfs_rollback_r;
     std::function<bool(const std::string&, unsigned long long&)> zfs_get_used_mb;
 
     std::function<bool(const std::string& hook, const std::string& path)> run_provision_hook;
@@ -53,7 +54,19 @@ BuildResult build_template(
     const std::string& cache_dir,
     const std::string& version,
     const std::string& arch,
-    const std::string& base_cache_dataset,
+    const std::string& base_cache_dataset,   // "" = derive + construct
+    const std::string& clusters_tsv,
+    const std::string& log_dir,
+    const std::string& run_dir,
+    Ops& ops);
+
+BuildResult update_template(
+    const std::string& name,
+    const std::string& state_templates_dir,
+    const std::string& cache_dir,
+    const std::string& version,
+    const std::string& arch,
+    const std::string& base_cache_dataset,   // "" = derive + construct
     const std::string& clusters_tsv,
     const std::string& log_dir,
     const std::string& run_dir,
