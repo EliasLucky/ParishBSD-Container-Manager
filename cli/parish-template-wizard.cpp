@@ -92,7 +92,7 @@ void show_help() {
     delwin(win);
 }
 
-// T3-S2-RESIDUAL: Validate extra package syntax and version pins
+// Validate extra package syntax and version pins
 bool validate_extra_packages(const std::string& pkgs, std::string& error) {
     if (pkgs.empty()) return true;
     std::string cur;
@@ -102,9 +102,9 @@ bool validate_extra_packages(const std::string& pkgs, std::string& error) {
                 if (cur.find('@') != std::string::npos || cur.find('=') != std::string::npos) {
                     error = "Version pins (@, =) are not allowed: " + cur; return false;
                 }
-                // Check for -<digit>.<digit>
-                for (size_t i = 0; i < cur.length() - 2; ++i) {
-                    if (cur[i] == '-' && isdigit(cur[i+1]) && i+2 < cur.length() && (cur[i+2] == '.' || isdigit(cur[i+2]))) {
+                // Require a dot after the digit group (e.g. -12.0)
+                for (size_t i = 0; i + 2 < cur.length(); ++i) {
+                    if (cur[i] == '-' && isdigit(cur[i+1]) && cur[i+2] == '.') {
                         error = "Version pins (-X.Y) are not allowed: " + cur; return false;
                     }
                 }
@@ -118,8 +118,8 @@ bool validate_extra_packages(const std::string& pkgs, std::string& error) {
         if (cur.find('@') != std::string::npos || cur.find('=') != std::string::npos) {
             error = "Version pins (@, =) are not allowed: " + cur; return false;
         }
-        for (size_t i = 0; i < cur.length() - 2; ++i) {
-            if (cur[i] == '-' && isdigit(cur[i+1]) && i+2 < cur.length() && (cur[i+2] == '.' || isdigit(cur[i+2]))) {
+        for (size_t i = 0; i + 2 < cur.length(); ++i) {
+            if (cur[i] == '-' && isdigit(cur[i+1]) && cur[i+2] == '.') {
                 error = "Version pins (-X.Y) are not allowed: " + cur; return false;
             }
         }
@@ -173,7 +173,7 @@ bool screen_name_desc(WizardState& st) {
 
 bool screen_components(WizardState& st) {
     auto labels = get_labels(); int highlight = 0, scroll = 0; int n = st.components.size(); int active_btn = 2;
-    static const int compat_cols[] = {17, 28, 39, 52}; // T3-NEW-2: Fix off-by-2
+    static const int compat_cols[] = {17, 27, 38, 51}; 
     while (true) {
         WINDOW* win = create_win(18, 70, "Create Template: Step 2 of 4 (System Components)");
         mvwprintw(win, 2, 2, "Select components (F1 for Help):");
@@ -274,7 +274,6 @@ bool screen_presets(WizardState& st) {
         } else if (ch == '\n' || ch == KEY_ENTER) {
             if (active_btn == 0) { delwin(win); return false; }
             if (active_btn == 1) {
-                // T3-S2-RESIDUAL: Validate on Next press
                 if (!validate_extra_packages(st.extra_packages, error_msg)) { continue; }
                 delwin(win); return true; 
             }
@@ -365,7 +364,6 @@ void run_build(const WizardState& st) {
     cleanup_ui();
     std::cout << "\nStarting build process...\n\n";
     
-    // T3-M-new-3: Move sigaction before fork
     struct sigaction sa{}; sa.sa_handler = sigint_handler; sigaction(SIGINT, &sa, NULL);
     
     pid_t pid = fork();
@@ -383,7 +381,7 @@ void run_build(const WizardState& st) {
         
         if (g_cancel_requested) {
             g_cancel_requested = 0;
-            flushinp(); // T3-M-new-4: clear input buffer
+            flushinp();
             std::cout << "\n\nCancel the build? [y/N] (default N): ";
             fd_set rfds; struct timeval tv;
             FD_ZERO(&rfds); FD_SET(0, &rfds); tv.tv_sec = 2; tv.tv_usec = 0;
