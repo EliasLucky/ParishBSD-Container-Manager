@@ -1,2 +1,15 @@
 #!/bin/sh
+# parishctl-template-reset
+set -eu
+name="${1:?usage: parishctl template reset <name>}"
 
+src="/usr/local/share/parishbsd/templates/$name/template.conf"
+dst_dir="/var/db/parishbsd/templates/$name"
+dst="$dst_dir/template.conf"
+
+[ -f "$src" ] || { echo "parish: no shipped template named '$name'" >&2; exit 1; }
+
+mkdir -p "$dst_dir"
+cp "$src" "$dst"
+chmod 0600 "$dst"
+echo "Template '$name' state reset to shipped defaults."
