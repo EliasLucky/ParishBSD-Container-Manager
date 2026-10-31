@@ -37,9 +37,7 @@ ClusterKind parse_kind(const std::string& s) {
 
 }  // namespace
 
-bool parse_clusters_tsv(const std::string& path,
-                        ClustersDb& out,
-                        std::string& error)
+bool parse_clusters_tsv(const std::string& path, ClustersDb& out, std::string& error)
 {
     std::ifstream in(path);
     if (!in) { error = "cannot open " + path; return false; }
