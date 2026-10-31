@@ -7,7 +7,8 @@
 
 using namespace parish::tbuild;
 
-static bool capture_once(Ops& ops, const std::vector<std::string>& argv, std::string& out) {
+static bool capture_once(Ops& ops, const std::vector<std::string>& argv,
+                        std::string& out) {
     if (ops.run_cmd_capture(argv, out) != 0) return false;
     while (!out.empty() && (out.back()=='\n' || out.back()=='\r' || out.back()==' ')) {
         out.pop_back();
@@ -36,27 +37,24 @@ int main(int argc, char** argv) {
     std::string state_override;
     std::string base_cache_override;
     std::string cache_dir = "/var/cache/parishbsd";
+    bool update_mode = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if      (a.rfind("--source=", 0) == 0)        source = a.substr(9);
+        if      (a == "--update")                     update_mode = true;
+        else if (a.rfind("--source=", 0) == 0)        source = a.substr(9);
         else if (a.rfind("--templates-dir=", 0) == 0) templates_override = a.substr(16);
         else if (a.rfind("--state-dir=", 0) == 0)     state_override = a.substr(12);
         else if (a.rfind("--base-cache=", 0) == 0)    base_cache_override = a.substr(13);
         else if (a.rfind("--cache-dir=", 0) == 0)     cache_dir = a.substr(12);
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
         else {
-            std::fprintf(stderr,
-                "usage: parish-template-build <name> "
-                "[--source=shipped|user] [--templates-dir=<path>] "
-                "[--state-dir=<path>] [--cache-dir=<path>] "
-                "[--base-cache=<dataset>]\n");
+            std::fprintf(stderr, "usage: parish-template-build <name> [--update] [--source=shipped|user] ...\n");
             return 2;
         }
     }
     if (name.empty()) {
-        std::fprintf(stderr,
-            "usage: parish-template-build <name> [--source=shipped|user] ...\n");
+        std::fprintf(stderr, "usage: parish-template-build <name> [--update] ...\n");
         return 2;
     }
 
@@ -76,21 +74,24 @@ int main(int argc, char** argv) {
     std::string version = get_version(ops);
     std::string arch    = get_arch(ops);
     if (version.empty() || arch.empty()) {
-        std::fprintf(stderr,
-            "parish: cannot determine host version/arch "
-            "(freebsd-version or uname -m failed)\n");
+        std::fprintf(stderr, "parish: cannot determine host version/arch\n");
         return 1;
     }
 
     std::string base_cache = base_cache_override;
-    // base_cache may be empty; build_template will derive + construct.
 
-    BuildResult r = build_template(
-        name, source_dir, state_dir, cache_dir, version, arch, base_cache,
-        "/usr/local/libexec/parishbsd/templates/clusters.tsv",
-        "/var/log/parishbsd",
-        "/var/run/parishbsd",
-        ops);
+    BuildResult r;
+    if (update_mode) {
+        r = update_template(
+            name, source_dir, state_dir, cache_dir, version, arch, base_cache,
+            "/usr/local/libexec/parishbsd/templates/clusters.tsv",
+            "/var/log/parishbsd", "/var/run/parishbsd", ops);
+    } else {
+        r = build_template(
+            name, source_dir, state_dir, cache_dir, version, arch, base_cache,
+            "/usr/local/libexec/parishbsd/templates/clusters.tsv",
+            "/var/log/parishbsd", "/var/run/parishbsd", ops);
+    }
 
     for (const auto& s : r.steps) {
         const char* mark = (s.outcome == Outcome::Ok) ? "OK  " : "FAIL";
@@ -98,10 +99,10 @@ int main(int argc, char** argv) {
                     s.detail.empty() ? "" : ": ", s.detail.c_str());
     }
     if (r.succeeded) {
-        std::printf("Template '%s' built successfully. Log: %s\n",
-                    name.c_str(), r.log_path.c_str());
+        std::printf("Template '%s' %s successfully. Log: %s\n",
+                    name.c_str(), update_mode ? "updated" : "built", r.log_path.c_str());
         return 0;
     }
-    std::fprintf(stderr, "Build failed. Log: %s\n", r.log_path.c_str());
+    std::fprintf(stderr, "%s failed. Log: %s\n", update_mode ? "Update" : "Build", r.log_path.c_str());
     return 1;
 }
