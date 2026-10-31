@@ -16,6 +16,7 @@ endif()
 list(APPEND CMAKE_PREFIX_PATH /usr/local)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Curses REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -93,6 +94,18 @@ target_include_directories(template_build_test PRIVATE cli)
 add_test(NAME template_build_test COMMAND template_build_test)
 
 # ============================================================
+# parish-template-wizard (C++)
+# ============================================================
+
+add_executable(parish-template-wizard
+    cli/parish-template-wizard.cpp
+    cli/clusters.cpp
+)
+target_include_directories(parish-template-wizard PRIVATE cli)
+target_link_libraries(parish-template-wizard PRIVATE ${CURSES_LIBRARIES})
+target_include_directories(parish-template-wizard PRIVATE ${CURSES_INCLUDE_DIRS})
+
+# ============================================================
 # Install (binaries only)
 # ============================================================
 
@@ -103,3 +116,5 @@ install(TARGETS parish-compartments
 
 install(TARGETS parish-template-build
     RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR})
+
+install(TARGETS parish-template-wizard RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
