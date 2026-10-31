@@ -1,2 +1,34 @@
 #!/bin/sh
+# parishctl-template-list - List available templates
+set -eu
 
+show_hidden=0
+[ "${1:-}" = "--hidden" ] && show_hidden=1
+
+printf "%-20s %-10s %-10s\n" "NAME" "SOURCE" "STATE"
+printf "%-20s %-10s %-10s\n" "----" "------" "-----"
+
+for dir in /usr/local/share/parishbsd/templates/* /var/db/parishbsd/templates/*; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    
+    # B4: Read state from /var/db first
+    state_from=""
+    if [ -f "/var/db/parishbsd/templates/$name/template.conf" ]; then
+        state_from="/var/db/parishbsd/templates/$name/template.conf"
+    elif [ -f "$dir/template.conf" ]; then
+        state_from="$dir/template.conf"
+    fi
+
+    [ -n "$state_from" ] || continue
+
+    hidden=$(grep '^hidden=' "$state_from" | cut -d= -f2 || true)
+    if [ "$hidden" = "1" ] && [ "$show_hidden" -eq 0 ]; then continue; fi
+    
+    state=$(grep '^state=' "$state_from" | cut -d= -f2 || true)
+    [ -z "$state" ] && state="not-built"
+    
+    if echo "$dir" | grep -q '^/usr/local'; then source="shipped"; else source="user"; fi
+    
+    printf "%-20s %-10s %-10s\n" "$name" "$source" "$state"
+done
