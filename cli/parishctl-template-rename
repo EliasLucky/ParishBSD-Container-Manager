@@ -1,2 +1,31 @@
 #!/bin/sh
+set -eu
+old="${1:?usage: parishctl template rename <old> <new>}"
+new="${2:?usage: parishctl template rename <old> <new>}"
 
+case "$old" in ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid old name" >&2; exit 2 ;; esac
+case "$new" in ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid new name" >&2; exit 2 ;; esac
+
+[ -d "/var/db/parishbsd/templates/$old" ] || { echo "parish: user template '$old' not found" >&2; exit 1; }
+[ ! -d "/var/db/parishbsd/templates/$new" ] || { echo "parish: template '$new' already exists" >&2; exit 1; }
+[ ! -d "/usr/local/share/parishbsd/templates/$new" ] || { echo "parish: shipped template '$new' exists" >&2; exit 1; }
+
+if zfs list -H -o name "zroot/jails/templates/$old" >/dev/null 2>&1; then
+    zfs rename "zroot/jails/templates/$old" "zroot/jails/templates/$new"
+fi
+
+mv "/var/db/parishbsd/templates/$old" "/var/db/parishbsd/templates/$new"
+sed -i '' "s/^name=.*/name=$new/" "/var/db/parishbsd/templates/$new/template.conf" 2>/dev/null || \
+sed -i "s/^name=.*/name=$new/" "/var/db/parishbsd/templates/$new/template.conf"
+
+# S6: Update jails
+count=0
+for jail_conf in /var/db/parishbsd/compartments/*/metadata.conf; do
+    [ -f "$jail_conf" ] || continue
+    if grep -q "^source_template=$old$" "$jail_conf"; then
+        sed -i '' "s/^source_template=.*/source_template=$new/" "$jail_conf" 2>/dev/null || \
+        sed -i "s/^source_template=.*/source_template=$new/" "$jail_conf"
+        count=$((count+1))
+    fi
+done
+echo "Renamed '$old' to '$new'. Updated $count compartment(s)."
