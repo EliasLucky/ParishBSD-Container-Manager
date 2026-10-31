@@ -1,2 +1,14 @@
 #!/bin/sh
+# parishctl-template-unhide
+set -eu
+name="${1:?usage: parishctl template unhide <name>}"
+state_conf="/var/db/parishbsd/templates/$name/template.conf"
 
+[ -f "$state_conf" ] || { echo "parish: no state for '$name'. Has it been built?" >&2; exit 1; }
+
+if grep -q '^hidden=' "$state_conf"; then
+    sed -i '' 's/^hidden=.*/hidden=0/' "$state_conf" 2>/dev/null || sed -i 's/^hidden=.*/hidden=0/' "$state_conf"
+else
+    echo "hidden=0" >> "$state_conf"
+fi
+echo "Template '$name' unhidden."
