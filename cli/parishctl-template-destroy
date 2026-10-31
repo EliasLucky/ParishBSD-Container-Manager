@@ -1,2 +1,58 @@
 #!/bin/sh
+# parishctl-template-destroy - Destroy a user template
+set -eu
 
+force=0
+name=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --force-in-use) force=1 ;;
+        --*) echo "parish: unknown flag $arg" >&2; exit 2 ;;
+        *) name="$arg" ;;
+    esac
+done
+
+[ -n "$name" ] || { echo "parish: template name required" >&2; exit 2; }
+
+# B7: Validate name
+case "$name" in ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid name" >&2; exit 2 ;; esac
+
+if [ -d "/usr/local/share/parishbsd/templates/$name" ]; then
+    echo "parish: '$name' is a pre-installed template." >&2
+    echo "        To hide it, run: parishctl template hide $name" >&2
+    exit 1
+fi
+
+[ -d "/var/db/parishbsd/templates/$name" ] || { echo "parish: template '$name' not found." >&2; exit 1; }
+
+# B5: Check clones on actual snapshots
+ds="zroot/jails/templates/$name"
+in_use=0
+if zfs list -H -o name "$ds" >/dev/null 2>&1; then
+    for snap in $(zfs list -H -t snapshot -o name "$ds" 2>/dev/null); do
+        c=$(zfs get -H -o value clones "$snap")
+        if [ "$c" != "-" ]; then
+            in_use=1
+            echo "  in use: $snap -> $c" >&2
+        fi
+    done
+fi
+
+if [ "$in_use" -eq 1 ] && [ "$force" -eq 0 ]; then
+    echo "parish: template '$name' is in use by existing compartments." >&2
+    echo "        Use --force-in-use to destroy anyway." >&2
+    exit 1
+fi
+
+# B6: Typed confirmation
+if [ "$in_use" -eq 1 ]; then
+    echo "WARNING: Destroying this template will break the jails listed above!" >&2
+fi
+printf "Type 'destroy %s' to confirm: " "$name" >&2
+read -r ans < /dev/tty
+[ "$ans" = "destroy $name" ] || { echo "Aborted." >&2; exit 1; }
+
+zfs destroy -r "$ds" 2>/dev/null || true
+rm -rf "/var/db/parishbsd/templates/$name"
+echo "Template '$name' destroyed."
