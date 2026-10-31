@@ -682,7 +682,9 @@ BuildResult build_template(
                 {"/usr/local/sbin/pkg", "-r", staging_mp, "install", "-y"};
             std::string cur;
             for (char c : it->second) {
-                if (c == ',') { if (!cur.empty()) argv.push_back(cur); cur.clear(); }
+                if (c == ',' || c == ' ' || c == '\t') { 
+                    if (!cur.empty()) { argv.push_back(cur); cur.clear(); }
+                }
                 else cur.push_back(c);
             }
             if (!cur.empty()) argv.push_back(cur);
