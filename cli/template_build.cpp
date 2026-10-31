@@ -59,7 +59,9 @@ static int handle_cancel_kill(pid_t pid, int& wstatus) {
     if (!reaped) {
         ::kill(pid, SIGKILL);
         // Known limitation: if child is in uninterruptible kernel sleep
-        // (dead NFS/USB mount), this waitpid blocks forever.
+        // (dead NFS/USB mount), this waitpid blocks forever. Same class as
+        // Guardian's "zombie leak on post-SIGKILL bounded give-up" (§10).
+        // Correct response is host recovery, not tool retry.
         ::waitpid(pid, &wstatus, 0);
     }
     return -2;
@@ -106,7 +108,7 @@ int run_cmd_capture_impl(const std::vector<std::string>& argv, std::string& out)
     return -1;
 }
 
-// Tee helper: writes to log, warns once on failure, disables log_fd.
+// Tee helper (F56): writes to log, warns once on failure, disables log_fd.
 static void tee_to_log(int& log_fd, const char* buf, size_t n, bool& warned) {
     if (log_fd < 0) return;
     size_t off = 0;
@@ -234,7 +236,7 @@ std::string now_ts() {
     return buf;
 }
 
-// defensive name validation (mirrors validate_jail_name).
+// F63: defensive name validation (mirrors validate_jail_name).
 bool validate_name(const std::string& n) {
     if (n.empty() || n.size() > 63) return false;
     if (n[0] == '-' || n.back() == '-') return false;
@@ -283,7 +285,7 @@ Ops::Ops() {
 }
 
 // ---------------------------------------------------------------------
-// Base cache
+// Base cache (F54, F73, F76)
 // ---------------------------------------------------------------------
 
 namespace {
@@ -397,7 +399,7 @@ BuildResult build_template(
 {
     BuildResult result;
 
-    // --- Step 0: validate name ---
+    // --- Step 0: validate name (F63) ---
     if (!validate_name(name)) {
         auto r = step("validate name");
         fail_step(r, "invalid template name '" + name + "'");
@@ -405,12 +407,12 @@ BuildResult build_template(
         return result;
     }
 
-    // --- Step 1: install SIGTERM handler ---
+    // --- Step 1: install SIGTERM handler (F71) ---
     {
         struct sigaction sa{};
         sa.sa_handler = on_sigterm;
         sigemptyset(&sa.sa_mask);
-        sa.sa_flags = 0;   // no SA_RESTART: EINTR needed
+        sa.sa_flags = 0;
         if (::sigaction(SIGTERM, &sa, nullptr) != 0) {
             auto r = step("install SIGTERM handler");
             fail_step(r, std::string("sigaction: ") + std::strerror(errno));
@@ -435,6 +437,12 @@ BuildResult build_template(
     if (!mkdir_p(log_dir, 0755)) {
         auto r = step("prepare log dir");
         fail_step(r, "cannot create '" + log_dir + "': " + std::strerror(errno));
+        result.steps.push_back(r);
+        return result;
+    }
+    if (!mkdir_p(run_dir, 0755)) {
+        auto r = step("prepare run dir");
+        fail_step(r, "cannot create '" + run_dir + "': " + std::strerror(errno));
         result.steps.push_back(r);
         return result;
     }
@@ -473,10 +481,16 @@ BuildResult build_template(
         return true;
     };
 
+    // Variables moved here to prevent "goto bypasses variable initialization"
+    std::map<std::string, std::string> conf;
+    std::string err;
+    std::string base_cache_dataset = base_cache_dataset_in;
+    std::vector<Cluster> resolved;
+
     // --- Step 2: pre-pid cancel ---
     if (check_cancel()) goto fail;
 
-    // --- Step 3: acquire pid ---
+    // --- Step 3: acquire pid (F70) ---
     {
         auto& r = mark_step("acquire build lock");
         int fd = ::open(pid_path.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0600);
@@ -501,7 +515,7 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 4: name availability ---
+    // --- Step 4: name availability (F70 refinement) ---
     {
         auto& r = mark_step("check name availability");
         if (ops.zfs_dataset_exists(final_ds)) {
@@ -517,9 +531,7 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 5: ensure state exists + load from state ---
-    std::map<std::string, std::string> conf;
-    std::string err;
+    // --- Step 5: F57 ensure state exists + load from state (F72) ---
     {
         auto& r = mark_step("load template.conf");
         if (!ops.path_exists(state_conf)) {
@@ -563,8 +575,7 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 7: base cache ---
-    std::string base_cache_dataset = base_cache_dataset_in;
+    // --- Step 7: base cache (F54, F73) ---
     {
         auto& r = mark_step("base cache check");
         if (base_cache_dataset.empty()) {
@@ -613,7 +624,6 @@ BuildResult build_template(
     if (check_cancel()) goto fail;
 
     // --- Step 10: resolve clusters ---
-    std::vector<Cluster> resolved;
     {
         auto& r = mark_step("resolve components");
         ClustersDb db;
@@ -698,7 +708,7 @@ BuildResult build_template(
 
     if (check_cancel()) goto fail;
 
-    // --- Step 14: rename staging to final ---
+    // --- Step 14: rename staging to final (F52) ---
     {
         auto& r = mark_step("rename staging to final");
         if (!ops.zfs_rename(staging_ds, final_ds)) {
@@ -709,7 +719,7 @@ BuildResult build_template(
 
     // --- Step 15: measure size ---
     {
-        auto& r = mark_step("measure size");
+        mark_step("measure size");
         unsigned long long mb = 0;
         if (ops.zfs_get_used_mb(final_ds, mb)) {
             conf["build_size_mb"] = std::to_string(mb);
