@@ -1,5 +1,5 @@
 #!/bin/sh
-# 32-destroy-vault.sh — destroy a vault completely: jail + encrypted data.
+# 32-destroy-vault.sh  destroy a vault completely: jail + encrypted data.
 #
 # Usage: sh 32-destroy-vault.sh <name>
 #
@@ -28,8 +28,14 @@ container_ds="zroot/jails/containers/$name"
 has_data=0
 zfs list "$ds" >/dev/null 2>&1 && has_data=1
 
+jailroot=""
+for tier in app vault containers; do
+    d="/usr/local/jails/$tier/$name"
+    if [ -d "$d" ]; then jailroot="$d"; break; fi
+done
+
 has_jail=0
-{ [ -d "$jailroot" ] || zfs list "$container_ds" >/dev/null 2>&1; } && has_jail=1
+{ [ -n "$jailroot" ] || zfs list "$container_ds" >/dev/null 2>&1; } && has_jail=1
 
 if [ "$has_data" -eq 0 ] && [ "$has_jail" -eq 0 ]; then
 	err "no vault named '$name' (no data, no jail)"
