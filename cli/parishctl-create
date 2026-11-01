@@ -1,95 +1,195 @@
 #!/bin/sh
-# parishctl-create - Create a new container
+# parishctl-create  create a compartment from a template.
+#
+# Runs via pkexec. Polkit action .create at auth_admin_keep
+# (5-minute cache; creation is reversible by destroy).
+#
+# Usage forms:
+#   parishctl-create <name> --template=<template>   no prompts (GUI, scripts)
+#   parishctl-create <name>                          prompts for template (CLI)
+#   parishctl-create                                 prompts for both (CLI)
+#
+# Interactive prompts require a TTY on stdin. Under pkexec, stdin is
+# preserved, so a CLI user gets prompts. The GUI must pass explicit
+# arguments; there is no display-side prompt fallback.
+#
+# Vault templates (tier=vault in template.conf) run
+# 26-create-vault-data.sh FIRST (prompts for the passphrase on the
+# TTY), then 30-create-jail.sh. Then container_start handles vault
+# unlock + jail start. App templates skip the vault step.
+#
+# ASSUMPTIONS (verify against first-seat's 3b diffs):
+#   - validate_template_name exists in validate.sh (renamed from
+#     validate_personality_name; identical rules: [a-z0-9-]+, non-empty,
+#     no leading hyphen, no "/" or "..").
+#   - 30-create-jail.sh signature is <name> <template>.
+#   - container_start dispatches to 27-unlock-vault.sh for tier=vault
+#     and to parish_service_start for tier=app.
+#   - template.conf has tier= and state= fields. Legacy templates
+#     without tier= are refused (fail-closed: no silent app-default).
+#   - template.conf has data_mount= and data_source= fields; 30 uses
+#     them to render fstab.tmpl for vault templates.
+
 set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+PARISH_SCRIPTS=/usr/local/libexec/parishbsd
+TEMPLATES_STATE=/var/db/parishbsd/templates
+
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+. "$LIBDIR/container.sh"
+
+# --- Argument parsing ---
 
 name=""
 template=""
-personality=""
 
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --template=*) template="${1#*=}" ;;
-        --*) echo "parish: unknown flag $1" >&2; exit 2 ;;
+for arg in "$@"; do
+    case "$arg" in
+        --template=*) template="${arg#--template=}" ;;
+        -*) { printf 'parishctl: unknown option: %s\n' "$arg" >&2; exit 2; } ;;
         *)
-            if [ -z "$name" ]; then name="$1"
-            elif [ -z "$personality" ]; then personality="$1"
-            else echo "parish: too many arguments" >&2; exit 2; fi
+            if [ -z "$name" ]; then
+                name="$arg"
+            else
+                printf 'parishctl: unexpected argument: %s\n' "$arg" >&2
+                exit 2
+            fi
             ;;
     esac
-    shift
 done
 
+# --- Prompt for name if missing ---
+
 if [ -z "$name" ]; then
-    echo "parish: container name required" >&2
-    exit 2
+    [ -t 0 ] || { printf 'parishctl: container name is required (no terminal for prompt)\n' >&2; exit 2; }
+    printf 'Container name: '
+    read -r name
 fi
+[ -n "$name" ] || { printf 'parishctl: container name is required\n' >&2; exit 2; }
 
-case "$name" in
-    ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid container name '$name'" >&2; exit 2 ;;
-esac
+# Strict creation-time validation (creation policy, not runtime policy).
+validate_jail_name "$name" || exit 2
 
-if [ -n "$template" ]; then
-    case "$template" in
-        ''|*[!a-z0-9-]*|-*|*-|*--*) 
-            echo "parish: invalid template name '$template'" >&2; 
-            exit 2 ;;
-    esac
-    
-    # T4b-B6: Refuse vault templates (D-vault scope)
-    case "$template" in
-        vault-*)
-            echo "parish: vault creation is not supported through 'parishctl create --template=' yet." >&2
-            echo "        Vault support is planned for the D-vault module." >&2
-            echo "        No data was created." >&2
-            exit 1
-            ;;
-    esac
-    
-    # T4b R1: Derive tier from template prefix
-    case "$template" in
-        vault-*) tier="vault" ;;
-        *)       tier="app"   ;;
-    esac
-    
-    LIBDIR=/usr/local/libexec/parishbsd/lib
-    . "$LIBDIR/validate.sh"
-    . "$LIBDIR/state.sh"
-    . "$LIBDIR/service.sh"
-    
-    echo "Creating container '$name' from template '$template'..."
-    
-    cleanup_on_fail() {
-        /usr/local/libexec/parishbsd/31-destroy-jail.sh "$name" 2>/dev/null || true
-        rm -rf "/var/db/parishbsd/compartments/$name" 2>/dev/null || true
-        rm -rf "/var/parishbsd/exchange/$name" 2>/dev/null || true
-    }
-    trap cleanup_on_fail EXIT INT TERM
-    
-    # Reference implementation (mode switch)
-    /usr/local/libexec/parishbsd/30-create-jail.sh "$name" "--template=$template"
-    
-    meta_dir="/var/db/parishbsd/compartments/$name"
-    mkdir -p "$meta_dir"
-    _meta_tmp="${meta_dir}/metadata.conf.tmp.$$"
-    cat > "$_meta_tmp" <<EOF
-name=$name
-source_template=$template
-created=$(date -u +%Y%m%dT%H%M%SZ)
-EOF
-    chmod 0600 "$_meta_tmp"
-    sync
-    mv "$_meta_tmp" "${meta_dir}/metadata.conf"
-    
-    # Start the jail via the shared helper
-    parish_service_start "$name" "/usr/local/jails/$tier/$name"
-    
-    trap - EXIT INT TERM
-    echo "Container '$name' created from template '$template'"
-else
-    if [ -z "$personality" ]; then
-        echo "parish: personality or --template is required" >&2
+# --- Prompt for template if missing ---
+
+if [ -z "$template" ]; then
+    [ -t 0 ] || { printf 'parishctl: template is required (no terminal for prompt)\n' >&2; exit 2; }
+
+    _ready=""
+    _ready_count=0
+    for _tf in "$TEMPLATES_STATE"/*/template.conf; do
+        [ -f "$_tf" ] || continue
+        [ ! -L "$_tf" ] || continue
+        _tname="$(basename "$(dirname "$_tf")")"
+        _tstate="$(grep -F '^state=' "$_tf" 2>/dev/null | head -1 | cut -d= -f2-)"
+        _ttier="$(grep -F '^tier='  "$_tf" 2>/dev/null | head -1 | cut -d= -f2-)"
+        [ "$_tstate" = "ready" ] || continue
+        case "${_ttier:-<missing>}" in
+            app)   _kind="Application" ;;
+            vault) _kind="Vault" ;;
+            *)     continue ;;   # skip malformed; don't offer as option
+        esac
+        _ready="$_ready
+  $_tname ($_kind)"
+        _ready_count=$((_ready_count + 1))
+    done
+
+    if [ "$_ready_count" -eq 0 ]; then
+        printf 'parishctl: no ready templates are available.\n' >&2
+        printf 'Create one first with:\n' >&2
+        printf '  sudo parishctl template create\n' >&2
         exit 2
     fi
-    /usr/local/libexec/parishbsd/30-create-jail.sh "$name" "$personality"
-    echo "Container '$name' created from personality '$personality'"
+
+    printf '\nAvailable templates:' >&2
+    printf '%s\n' "$_ready" >&2
+    printf '\nTemplate name: ' >&2
+    read -r template
+fi
+
+[ -n "$template" ] || { printf 'parishctl: template is required\n' >&2; exit 2; }
+
+validate_template_name "$template" || exit 2
+
+# --- Load and validate template.conf ---
+
+_conf="$TEMPLATES_STATE/$template/template.conf"
+[ -f "$_conf" ] || { printf 'parishctl: no template named "%s" (expected %s)\n' "$template" "$_conf" >&2; exit 1; }
+[ ! -L "$_conf" ] || { printf 'parishctl: template config is a symlink; refusing\n' >&2; exit 1; }
+
+_tstate="$(grep -F '^state=' "$_conf" 2>/dev/null | head -1 | cut -d= -f2-)"
+case "$_tstate" in
+    ready) : ;;
+    building) printf 'parishctl: template "%s" is being built; wait or run:\n  sudo parishctl template show %s\n' "$template" "$template" >&2; exit 1 ;;
+    failed)   printf 'parishctl: template "%s" is in failed state; run:\n  sudo parishctl template reset %s\n' "$template" "$template" >&2; exit 1 ;;
+    '')       printf 'parishctl: template "%s" config has no state= field\n' "$template" >&2; exit 1 ;;
+    *)        printf 'parishctl: template "%s" has unexpected state "%s"\n' "$template" "$_tstate" >&2; exit 1 ;;
+esac
+
+_ttier="$(grep -F '^tier=' "$_conf" 2>/dev/null | head -1 | cut -d= -f2-)"
+case "$_ttier" in
+    app|vault) : ;;
+    '') printf 'parishctl: template "%s" config has no tier= field\n' "$template" >&2
+        printf 'This template was created before 3b. Run:\n  sudo parishctl template reset %s\n' "$template" >&2
+        exit 1 ;;
+    *)  printf 'parishctl: template "%s" has invalid tier "%s" (expected app or vault)\n' "$template" "$_ttier" >&2; exit 1 ;;
+esac
+
+# --- Existence check ---
+
+if container_path "$name" >/dev/null 2>&1; then
+    printf 'parishctl: container "%s" already exists\n' "$name" >&2
+    exit 1
+fi
+
+case "$_ttier" in
+    app)   _kind_label="Application" ;;
+    vault) _kind_label="Vault" ;;
+esac
+
+printf '\nCreating container "%s" from template "%s" (%s)...\n\n' "$name" "$template" "$_kind_label"
+
+# --- Vault: create encrypted storage first ---
+
+if [ "$_ttier" = "vault" ]; then
+    printf 'Step 1 of 2: configuring encrypted storage\n'
+    sh "$PARISH_SCRIPTS/26-create-vault-data.sh" "$name" \
+        || { printf 'parishctl: failed to create encrypted storage for "%s"\n' "$name" >&2; exit 1; }
+    printf '\n'
+    printf 'Step 2 of 2: installing container\n'
+else
+    printf 'Installing container\n'
+fi
+
+# --- Create the jail ---
+
+sh "$PARISH_SCRIPTS/30-create-jail.sh" "$name" "$template" \
+    || { printf 'parishctl: failed to create container "%s"\n' "$name" >&2; exit 1; }
+
+# Post-condition: the jail filesystem must exist.
+if ! container_path "$name" >/dev/null 2>&1; then
+    printf 'parishctl: 30-create-jail.sh reported success, but the filesystem for "%s" is not present.\n' "$name" >&2
+    printf 'This indicates a partial creation. Check:\n' >&2
+    printf '  ls -la /usr/local/jails/{app,vault,containers}/%s\n' "$name" >&2
+    exit 1
+fi
+
+printf '\n'
+
+# --- Start (container_start handles vault unlock + state post-condition) ---
+
+if ! container_start "$name"; then
+    printf '\nparishctl: container "%s" was created but failed to start.\n' "$name" >&2
+    printf 'Check with:\n  pkexec parishctl show %s\n' "$name" >&2
+    printf 'To retry start:\n  pkexec parishctl start %s\n' "$name" >&2
+    exit 1
+fi
+
+printf '\nContainer "%s" is ready.\n\n' "$name"
+printf '  pkexec parishctl console %s    Open a shell inside\n' "$name"
+printf '  parishctl show %s             Show details\n' "$name"
+if [ "$_ttier" = "vault" ]; then
+    printf '  pkexec parishctl lock %s      Lock the vault\n' "$name"
 fi
