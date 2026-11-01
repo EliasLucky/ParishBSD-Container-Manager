@@ -186,12 +186,54 @@ bool screen_name_desc(WizardState& st) {
         delwin(win);
     }
 }
-
+bool screen_purpose(WizardState& st) {
+    static const char* titles[] = {"Application", "File Vault", "Database Vault"};
+    static const char* descs[] = {
+        "Programs like a browser, office suite, or tools.",
+        "A locked, encrypted space for documents.",
+        "A locked, encrypted space for a PostgreSQL database."
+    };
+    int active_btn = 1;
+    while (true) {
+        WINDOW* win = create_win(18, 70, "Create Template: Step 2 of 5 (Purpose)");
+        mvwprintw(win, 2, 2, "What kind of compartments will this template produce?");
+        for (int i = 0; i < 3; ++i) {
+            const char* mark = (st.purpose_idx == i) ? "(*)" : "( )";
+            if (st.purpose_idx == i) wattron(win, A_BOLD);
+            mvwprintw(win, 4 + i * 3, 4, "%s %s", mark, titles[i]);
+            if (st.purpose_idx == i) wattroff(win, A_BOLD);
+            mvwprintw(win, 5 + i * 3, 8, "%s", descs[i]);
+        }
+        draw_buttons(win, true, "Continue", active_btn); wrefresh(win);
+        int ch = wgetch(win);
+        if (ch == KEY_UP   && st.purpose_idx > 0) st.purpose_idx--;
+        else if (ch == KEY_DOWN && st.purpose_idx < 2) st.purpose_idx++;
+        else if (ch == '\t' || ch == KEY_BTAB || ch == KEY_LEFT || ch == KEY_RIGHT) active_btn = 1 - active_btn;
+        else if (ch == '\n' || ch == KEY_ENTER) {
+            if (active_btn == 0) { delwin(win); return false; }
+            switch (st.purpose_idx) {
+                case 0: st.tier = "app";   st.kind = "application";    break;
+                case 1: st.tier = "vault"; st.kind = "file-vault";     break;
+                case 2: st.tier = "vault"; st.kind = "database-vault"; break;
+            }
+            for (size_t i = 0; i < st.components.size(); ++i) {
+                const std::string& n = st.components[i].name;
+                if (n == "T-xpra")           st.comp_selected[i] = (st.purpose_idx == 0);
+                else if (n == "T-file-tools") st.comp_selected[i] = (st.purpose_idx == 1);
+                else if (n == "T-postgres")   st.comp_selected[i] = (st.purpose_idx == 2);
+                else if (st.components[i].kind == ClusterKind::Required) st.comp_selected[i] = true;
+            }
+            delwin(win);
+            return true;
+        }
+        delwin(win);
+    }
+}
 bool screen_components(WizardState& st) {
     auto labels = get_labels(); int highlight = 0, scroll = 0; int n = st.components.size(); int active_btn = 2;
     static const int compat_cols[] = {17, 27, 38, 51}; 
     while (true) {
-        WINDOW* win = create_win(18, 70, "Create Template: Step 2 of 4 (System Components)");
+        WINDOW* win = create_win(18, 70, "Create Template: Step 3 of 5 (System Components)");
         mvwprintw(win, 2, 2, "Select components (F1 for Help):");
         mvwprintw(win, 2, 55, "[ F1 Help ]");
         
@@ -248,7 +290,7 @@ bool screen_presets(WizardState& st) {
     auto labels = get_labels(); int highlight = 0, scroll = 0; int n = st.presets.size(); if (n == 0) return true; int active_btn = 2;
     std::string error_msg;
     while (true) {
-        WINDOW* win = create_win(18, 70, "Create Template: Step 3 of 4 (Applications)");
+        WINDOW* win = create_win(18, 70, "Create Template: Step 4 of 5 (Applications)");
         mvwprintw(win, 2, 2, "Select applications:");
         int visible_items = 8;
         for (int i = 0; i < visible_items && (scroll + i) < n; ++i) {
@@ -301,7 +343,7 @@ bool screen_presets(WizardState& st) {
 bool screen_review(WizardState& st) {
     auto labels = get_labels(); int active_btn = 1;
     while (true) {
-        WINDOW* win = create_win(20, 70, "Create Template: Step 4 of 4 (Review)");
+        WINDOW* win = create_win(20, 70, "Create Template: Step 5 of 5 (Review)");
         mvwprintw(win, 2, 2, "Name: %s", st.name.c_str());
         mvwprintw(win, 3, 2, "Desc: %s", st.description.empty() ? "(none)" : st.description.c_str());
         
@@ -359,23 +401,38 @@ void run_build(const WizardState& st) {
     if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
         endwin(); std::cerr << "parish: cannot create state dir: " << strerror(errno) << "\n"; return;
     }
-    int fd = open(conf_path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0600);
-    if (fd < 0) { endwin(); std::cerr << "parish: cannot open template.conf: " << strerror(errno) << "\n"; return; }
-    
     std::string conf = "name=" + st.name + "\n";
     conf += "description.en=" + st.description + "\n";
+    conf += "tier=" + st.tier + "\n";
+    conf += "kind=" + st.kind + "\n";
+    if (st.tier == "vault") {
+        conf += "data_mount=" + std::string(
+            (st.kind == "database-vault") ? "/var/db/postgres/data" : "/var/db/data") + "\n";
+        conf += "data_source=/zroot/vault-data\n";
+    }
     conf += "clusters=";
     for (size_t i = 0; i < st.components.size(); ++i) if (st.comp_selected[i]) conf += st.components[i].name + ",";
-    
     if (st.compat_idx == 1) conf += "T-compat-linux,";
     if (st.compat_idx == 2) conf += "T-compat-windows,";
     if (st.compat_idx == 3) conf += "T-compat-linux,T-compat-windows,";
-    
     conf += "\napplications=";
     for (size_t i = 0; i < st.presets.size(); ++i) if (st.preset_selected[i]) conf += st.presets[i].name + ",";
-    
     conf += "\nextra_packages=" + st.extra_packages + "\ncompat=none\n";
-    (void)!write(fd, conf.c_str(), conf.length()); close(fd);
+
+    std::string tmp = conf_path + ".tmp." + std::to_string(getpid());
+    int fd = open(tmp.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, 0600);
+    if (fd < 0) { endwin(); std::cerr << "parish: cannot open " << tmp << ": " << strerror(errno) << "\n"; return; }
+    if (write(fd, conf.c_str(), conf.length()) != (ssize_t)conf.length()) {
+        close(fd); unlink(tmp.c_str());
+        endwin(); std::cerr << "parish: write failed: " << strerror(errno) << "\n"; return;
+    }
+    if (fsync(fd) != 0) { close(fd); unlink(tmp.c_str());
+        endwin(); std::cerr << "parish: fsync failed: " << strerror(errno) << "\n"; return; }
+    close(fd);
+    if (rename(tmp.c_str(), conf_path.c_str()) != 0) {
+        unlink(tmp.c_str());
+        endwin(); std::cerr << "parish: rename failed: " << strerror(errno) << "\n"; return;
+    }
     
     cleanup_ui();
     std::cout << "\nStarting build process...\n\n";
@@ -445,11 +502,12 @@ int main() {
 
     init_ui();
     int step = 1;
-    while (step >= 1 && step <= 4) {
-        if (step == 1) { if (screen_name_desc(st)) step = 2; else break; }
-        else if (step == 2) { if (screen_components(st)) step = 3; else step = 1; }
-        else if (step == 3) { if (screen_presets(st)) step = 4; else step = 2; }
-        else if (step == 4) { if (screen_review(st)) { run_build(st); return 0; } else step = 3; }
+    while (step >= 1 && step <= ) {
+        if      (step == 1) { if (screen_name_desc(st)) step = 2; else break; }
+        else if (step == 2) { if (screen_purpose(st))   step = 3; else step = 1; }
+        else if (step == 3) { if (screen_components(st)) step = 4; else step = 2; }
+        else if (step == 4) { if (screen_presets(st))    step = 5; else step = 3; }
+        else if (step == 5) { if (screen_review(st)) { run_build(st); return 0; } else step = 4; }
     }
     cleanup_ui();
     return 0;
