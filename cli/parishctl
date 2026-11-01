@@ -14,7 +14,6 @@
 #
 # Unprivileged dispatcher (this file) > pkexec parishctl-<verb> >
 # polkit action .<verb> > the verb runs as root > does the work.
-
 set -eu
 umask 022
 
