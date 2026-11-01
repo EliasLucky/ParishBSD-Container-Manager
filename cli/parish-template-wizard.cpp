@@ -22,6 +22,9 @@ struct WizardState {
     std::string name;
     std::string description;
     std::string extra_packages;
+    std::string tier;   // "app" | "vault"
+    std::string kind;   // "application" | "file-vault" | "database-vault"
+    int purpose_idx = 0;
     int compat_idx = 0; // 0=None, 1=Linux, 2=Windows, 3=Both
     std::vector<Cluster> components;
     std::vector<Cluster> presets;
