@@ -24,19 +24,23 @@ if [ -z "$name" ]; then
     exit 2
 fi
 
-# Validate name
 case "$name" in
-    ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid name" >&2; exit 2 ;;
+    ''|*[!a-z0-9-]*|-*|*-|*--*) echo "parish: invalid container name '$name'" >&2; exit 2 ;;
 esac
 
 if [ -n "$template" ]; then
-    # New T-template path
+    case "$template" in
+        ''|*[!a-z0-9-]*|-*|*-|*--*) 
+            echo "parish: invalid template name '$template'" >&2; 
+            exit 2 ;;
+    esac
     /usr/local/libexec/parishbsd/30-create-jail.sh "$name" "$template"
+    echo "Container '$name' created from template '$template'"
 else
-    # Legacy personality path
     if [ -z "$personality" ]; then
         echo "parish: personality or --template is required" >&2
         exit 2
     fi
     /usr/local/libexec/parishbsd/30-create-jail.sh "$name" "$personality"
+    echo "Container '$name' created from personality '$personality'"
 fi
