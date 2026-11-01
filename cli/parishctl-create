@@ -29,14 +29,87 @@ case "$name" in
 esac
 
 if [ -n "$template" ]; then
+    # Validate template name
     case "$template" in
         ''|*[!a-z0-9-]*|-*|*-|*--*) 
             echo "parish: invalid template name '$template'" >&2; 
             exit 2 ;;
     esac
-    /usr/local/libexec/parishbsd/30-create-jail.sh "$name" "$template"
+    
+    # T4b-B6 (Option A): Refuse vault templates until D-vault is implemented
+    case "$template" in
+        vault-*)
+            echo "parish: vault creation is not supported through 'parishctl create --template=' yet." >&2
+            echo "        Vault support is planned for the D-vault module." >&2
+            echo "        No data was created." >&2
+            exit 1
+            ;;
+    esac
+    
+    # --- (App Templates Only) ---
+    state_conf="/var/db/parishbsd/templates/$template/template.conf"
+    [ -f "$state_conf" ] || state_conf="/usr/local/share/parishbsd/templates/$template/template.conf"
+    [ -f "$state_conf" ] || { echo "parish: template '$template' not found" >&2; exit 1; }
+    
+    current_base=$(grep '^current_base=' "$state_conf" | cut -d= -f2 | sed 's/^@//')
+    [ -n "$current_base" ] || { echo "parish: template '$template' has no current_base (is it built?)" >&2; exit 1; }
+    
+    zfs list -H -t snapshot -o name "zroot/jails/templates/$template@$current_base" >/dev/null 2>&1 \
+        || { echo "parish: template '$template' is missing its current_base snapshot '$current_base'" >&2
+             echo "        Run: parishctl template update $template" >&2
+             exit 1; }
+             
+    if zfs list -H -o name "zroot/jails/app/$name" >/dev/null 2>&1; then
+        echo "parish: container '$name' already exists (dataset)" >&2
+        echo "        To recreate: parishctl destroy $name" >&2
+        exit 1
+    fi
+    if [ -d "/var/db/parishbsd/compartments/$name" ]; then
+        echo "parish: container '$name' metadata already exists" >&2
+        echo "        Check: parishctl show $name; remove manually if this is stale" >&2
+        exit 1
+    fi
+
+    echo "Creating container '$name' from template '$template'..."
+    
+    cleanup_on_fail() {
+        zfs destroy -r "zroot/jails/app/$name" 2>/dev/null || true
+        rm -rf "/var/db/parishbsd/compartments/$name" 2>/dev/null || true
+        rm -f "/etc/jail.conf.d/$name.conf" 2>/dev/null || true
+    }
+    
+    zfs clone "zroot/jails/templates/$template@$current_base" "zroot/jails/app/$name"
+    trap cleanup_on_fail EXIT INT TERM
+    
+    mkdir -p "/var/db/parishbsd/compartments/$name"
+    cat > "/var/db/parishbsd/compartments/$name/metadata.conf" <<EOF
+name=$name
+source_template=$template
+created=$(date -u +%Y%m%dT%H%M%SZ)
+EOF
+    chmod 0600 "/var/db/parishbsd/compartments/$name/metadata.conf"
+    
+    mkdir -p /etc/jail.conf.d
+    cat > "/etc/jail.conf.d/$name.conf" <<EOF
+exec.clean = 1;
+exec.start = "/bin/sh /etc/rc";
+exec.stop = "/bin/sh /etc/rc.shutdown";
+exec.consolelog = "/var/log/jail_${name}_console.log";
+path = "/usr/local/jails/app/$name";
+host.hostname = "${name}.parishbsd.local";
+securelevel = 1;
+allow.mlock;
+mount.devfs;
+devfs_ruleset = 4;
+EOF
+
+    . /usr/local/libexec/parishbsd/lib/service.sh
+    parish_service_start "$name" "/usr/local/jails/app/$name"
+    
+    trap - EXIT INT TERM
     echo "Container '$name' created from template '$template'"
 else
+    # --- Legacy Personality Flow ---
     if [ -z "$personality" ]; then
         echo "parish: personality or --template is required" >&2
         exit 2
