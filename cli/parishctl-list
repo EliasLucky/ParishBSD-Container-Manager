@@ -2,11 +2,20 @@
 # parishctl-list - List containers (JSON)
 set -eu
 
-# Determine if --json is requested
+PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/state.sh"
+
 json_mode=0
-if [ "${1:-}" = "--json" ]; then
-    json_mode=1
-fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --json) json_mode=1 ;;
+        *) echo "parish: unknown flag $1" >&2; exit 2 ;;
+    esac
+    shift
+done
 
 if [ "$json_mode" -eq 1 ]; then
     printf '[\n'
@@ -25,14 +34,15 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
     is_vault=0
     [ "$tier" = "vault" ] && is_vault=1
     
-    # Get state from state.sh
+    # JSON escape name
+    name_esc=$(printf '%s' "$name" | sed 's/["\\]/\\&/g')
+    
     state=$(parish_jail_state "$name")
     
-    # Get key_state for vaults
     key_state="null"
     if [ "$is_vault" -eq 1 ]; then
         ds="zroot/vault-data/$name"
-        ks=$(zfs get -H -o value keystatus "$ds" 2>/dev/null || echo "unavailable")
+        ks=$(/sbin/zfs get -H -o value keystatus "$ds" 2>/dev/null || echo "unavailable")
         if [ "$ks" = "available" ]; then
             key_state='"unlocked"'
         else
@@ -40,9 +50,8 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
         fi
     fi
     
-    # Get disk usage
-    ds_used=$(zfs list -H -o used "zroot/jails/containers/$name" 2>/dev/null || echo "0")
-    # Convert human readable (e.g. 1.5G) to bytes
+    # Use mountpoint $d to find dataset usage
+    ds_used=$(/sbin/zfs get -H -o value used "$d" 2>/dev/null || echo "0")
     bytes=$(echo "$ds_used" | awk '
         /^[0-9]+$/ { print $1; exit }
         /K$/ { sub(/K/,""); print $1 * 1024; exit }
@@ -53,14 +62,14 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
     ')
     [ -z "$bytes" ] && bytes=0
     
-    # Read metadata
     source_template=""
     meta="/var/db/parishbsd/compartments/$name/metadata.conf"
     if [ -f "$meta" ]; then
         source_template=$(grep '^source_template=' "$meta" 2>/dev/null | cut -d= -f2 || true)
     fi
+    # T4b-S2: JSON escape source_template
+    st_esc=$(printf '%s' "$source_template" | sed 's/["\\]/\\&/g')
     
-    # Compute kind
     kind="Container"
     case "$source_template" in
         vault-files*) kind="File Vault" ;;
@@ -69,15 +78,14 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
         apps|browser-*) kind="Application" ;;
     esac
     
-    # Output
     if [ "$json_mode" -eq 1 ]; then
         [ "$first" -eq 1 ] || printf ',\n'
         first=0
         printf '  {\n'
-        printf '    "name": "%s",\n' "$name"
+        printf '    "name": "%s",\n' "$name_esc"
         printf '    "jail_state": "%s",\n' "$state"
         printf '    "key_state": %s,\n' "$key_state"
-        printf '    "source_template": "%s",\n' "$source_template"
+        printf '    "source_template": "%s",\n' "$st_esc"
         printf '    "kind": "%s",\n' "$kind"
         printf '    "tier": "%s",\n' "$tier"
         printf '    "disk_usage": %s,\n' "$bytes"
