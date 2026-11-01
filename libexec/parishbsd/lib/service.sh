@@ -2,7 +2,7 @@
 # libexec/parishbsd/lib/service.sh
 #
 # The single `service jail start` / `service jail stop` call site.
-# Any other site is a bug (item 118).
+# Any other site is a bug.
 #
 # REQUIRES (sourced by caller, in this order):
 #   validate.sh     validate_jail_name_existing (re-validated here as
@@ -43,10 +43,11 @@
 # trap. Every error path does explicit cleanup.
 
 _write_event() {
-    { exec 9<>/var/run/parishbsd/compartment-events; } 2>/dev/null && {
-        printf '%s\n' "$1" >&9 2>/dev/null || true
+    /usr/bin/timeout 1 /bin/sh -c '
+        { exec 9<>/var/run/parishbsd/compartment-events; } 2>/dev/null || exit 0
+        printf "%s\n" "$1" >&9 2>/dev/null || true
         exec 9>&-
-    } || true
+    ' _ "$1" || true
 }
 parish_service_start() {
     _ps_jail="${1:?parish_service_start: jail name required}"
