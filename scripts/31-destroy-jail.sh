@@ -24,7 +24,7 @@ err()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # --- Locate the jail root ---
 jailroot=""
-for tier in app vault; do
+for tier in app vault containers; do
     d="/usr/local/jails/$tier/$name"
     if [ -d "$d" ]; then
         jailroot="$d"
