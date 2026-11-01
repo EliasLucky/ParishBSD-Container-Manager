@@ -24,13 +24,14 @@ jailroot="$(container_path "$name")" || {
     exit 1
 }
 
-personality="$(container_personality "$jailroot")"
-kind="$(container_kind "$personality")"
+tier="$(container_tier "$jailroot")"
+template="$(container_template "$jailroot" || true)"
+kind="$(container_kind_label "$jailroot")"
 state="$(parish_jail_state "$name")"
 
 printf 'Compartment: %s\n' "$name"
 printf '  %-18s %s\n' "kind"        "$kind"
-printf '  %-18s %s\n' "personality" "$personality"
+printf '  %-18s %s\n' "template"    "${template:-<legacy>}"
 printf '  %-18s %s\n' "path"        "$jailroot"
 
 case "$state" in
@@ -44,7 +45,7 @@ case "$state" in
     *)                  printf '  %-18s unknown\n' "state" ;;
 esac
 
-if container_is_vault "$personality"; then
+if container_is_vault "$tier"; then
     _vls="$(container_vault_lock_state "$name")"
     case "$_vls" in
         unlocked) printf '  %-18s unlocked\n' "vault" ;;
