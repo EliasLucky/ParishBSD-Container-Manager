@@ -141,6 +141,17 @@ case "$verb" in
         sub="$1"; shift
         verb="$verb-$sub"
         ;;
+    template)
+        subverb="${1:-}"
+        [ -n "$subverb" ] || { echo "parish: usage: parishctl template <list|show|create|kill|destroy|scrub|hide|unhide|rename|reset>" >&2; exit 2; }
+        shift
+        wrapper="/usr/local/sbin/parishctl-template-$subverb"
+        if [ ! -x "$wrapper" ]; then
+            echo "parish: template subcommand '$subverb' not found." >&2
+            exit 2
+        fi
+        exec /usr/local/bin/pkexec "$wrapper" "$@"
+        ;;
 esac
 
 # Special-case: launcher creation routes to a single privileged binary
