@@ -118,35 +118,35 @@ validate_jail_name_existing() {
 }
 
 # --------------------------------------------------------------------
-# Personality names
+# Template names
 # --------------------------------------------------------------------
 
-# validate_personality_name <name>
+# validate_template_name <name>
 #
-# Personalities are shipped by the port (personalities/<name>/). The
-# alphabet is narrower than jail names because personality names are
-# never user-chosen - they are directory names in a package the user
-# installed.
+# Template names are user-chosen at wizard time and stored as directory
+# names under /var/db/parishbsd/templates/ and /usr/local/share/parishbsd/
+# templates/. Narrower than jail names because they are directory names
+# in a shipped package or a user-chosen identifier.
 #
 # Accepts: [a-z0-9-]+, non-empty, no leading hyphen.
 # Rejects: empty; leading hyphen; any "/" or ".."; any character
 #          outside [a-z0-9-].
 #
-# The ".." rejection prevents a compromised personality directory
+# The ".." rejection prevents a compromised or malformed template name
 # from causing path traversal when the name is used to build a path
-# like "$PERSONALITIES/$personality".
-validate_personality_name() {
+# like "$TEMPLATES_STATE/$template/template.conf".
+validate_template_name() {
     _p="${1-}"
-    [ -n "$_p" ] || { printf 'parish: personality name is empty\n' >&2; return 1; }
+    [ -n "$_p" ] || { printf 'parish: template name is empty\n' >&2; return 1; }
     case "$_p" in
         -*)
-            printf 'parish: personality name may not start with a hyphen\n' >&2
+            printf 'parish: template name may not start with a hyphen\n' >&2
             return 1 ;;
         */*|*..*)
-            printf 'parish: personality name may not contain a path\n' >&2
+            printf 'parish: template name may not contain a path\n' >&2
             return 1 ;;
         *[!a-z0-9-]*)
-            printf 'parish: personality name may only contain a-z, 0-9, and hyphen\n' >&2
+            printf 'parish: template name may only contain a-z, 0-9, and hyphen\n' >&2
             return 1 ;;
     esac
     return 0
