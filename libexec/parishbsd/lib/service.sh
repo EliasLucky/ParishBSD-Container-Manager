@@ -42,6 +42,12 @@
 # No EXIT trap: an EXIT trap in this file would clobber the caller's
 # trap. Every error path does explicit cleanup.
 
+_write_event() {
+    { exec 9<>/var/run/parishbsd/compartment-events; } 2>/dev/null && {
+        printf '%s\n' "$1" >&9 2>/dev/null || true
+        exec 9>&-
+    } || true
+}
 parish_service_start() {
     _ps_jail="${1:?parish_service_start: jail name required}"
     _ps_jailroot="${2:?parish_service_start: jailroot required}"
@@ -106,6 +112,7 @@ parish_service_start() {
     chmod 0600 "/var/log/jail_${_ps_jail}_console.log" 2>/dev/null || true
 
     exec 9>&-
+    _write_event "start $_ps_jail"
     return 0
 }
 
@@ -134,6 +141,7 @@ parish_service_stop() {
         echo "" >&2
         rm -f "$_ps_err"
         exec 9>&-
+    _write_event "stop $_ps_jail"
         return 1
     fi
 
