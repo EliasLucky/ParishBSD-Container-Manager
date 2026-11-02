@@ -104,7 +104,7 @@ int run_cmd_capture_impl(const std::vector<std::string>& argv, std::string& out)
     return -1;
 }
 
-// Tee helper (F56): writes to log, warns once on failure, disables log_fd.
+// Tee helper: writes to log, warns once on failure, disables log_fd.
 static void tee_to_log(int& log_fd, const char* buf, size_t n, bool& warned) {
     if (log_fd < 0) return;
     size_t off = 0;
@@ -206,7 +206,7 @@ bool zfs_rollback_r_impl(const std::string& ds, const std::string& snap) {
 
 bool zfs_get_used_mb_impl(const std::string& name, unsigned long long& mb) {
     std::string out;
-    if (run_cmd_capture_impl({"/sbin/zfs", "get", "-H", "-o", "value", "used",
+    if (run_cmd_capture_impl({"/sbin/zfs", "get", "-H", "-p", "-o", "value", "used",
                               name}, out) != 0) return false;
     if (out.empty()) return false;
     errno = 0;

@@ -37,7 +37,7 @@ private:
 	enum class InstallMode { Installer, Portable };
 	enum class LauncherMode { None, Menu, Desktop, Both };
 
-	void buildUi()
+	void buildUi():
 	void buildInstalledTab(QWidget *parent);
 	void buildInstalNewTab(QWidget *parent);
 	void populateInstalled();
@@ -56,7 +56,7 @@ private:
 	void removeLauncher(const QString &name);
 
 	QString selectedNames() const;
-	PackaeInfo selectedPackage() const;
+	PackageInfo selectedPackage() const;
 	void updateActionStates();
 
 	ContainerBackend *m_backend;

@@ -9,7 +9,7 @@ struct CatalogEntry {
 	QString description;
 };
 
-class CatalogTableMOdel : public QAbstractTableModel {
+class CatalogTableModel : public QAbstractTableModel {
 	Q_OBJECT
 public:
 	enum Column {
@@ -17,14 +17,14 @@ public:
 		CategoryColumn,
 		DescriptionColumn,
 		ColumnCount
-	}
+	}:
 
-	explicit CaatalogTableModel(QObject *parent = nullptr);
+	explicit CatalogTableModel(QObject *parent = nullptr);
 
 	int rowCount(const QModelIndex &parent = QModelIndex()) const override;
 	int columnCount(const QModelIndex &parent = QModelIndex()) const override;
 	QVariant data(const QModelIndex &index, int role) const override;
-	QVariant headerData(int section, Qt::Orientation orientation, int role) constoverride;
+	QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
 
 	void reload();
 	void setFilter(const QString &text);
@@ -32,5 +32,5 @@ public:
 
 private:
 	QList<CatalogEntry> m_all;
-	QSlist<CatalogEntry> m_filtered;
+	QList<CatalogEntry> m_filtered;
 };
