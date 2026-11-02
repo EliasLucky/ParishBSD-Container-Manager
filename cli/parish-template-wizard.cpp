@@ -502,7 +502,7 @@ int main() {
 
     init_ui();
     int step = 1;
-    while (step >= 1 && step <= ) {
+    while (step >= 1 && step <= 5) {
         if      (step == 1) { if (screen_name_desc(st)) step = 2; else break; }
         else if (step == 2) { if (screen_purpose(st))   step = 3; else step = 1; }
         else if (step == 3) { if (screen_components(st)) step = 4; else step = 2; }
