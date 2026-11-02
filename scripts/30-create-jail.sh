@@ -46,8 +46,7 @@ if [ ! -f "$tmpl_dir/jail.conf.tmpl" ] && \
 fi
 
 read_field() {
-    _v="$(grep -F "^$1=" "$conf" 2>/dev/null | head -1 | cut -d= -f2-)"
-    printf '%s' "$_v"
+    awk -F= -v k="$1" '$1==k { sub(/^[^=]*=/, ""); print; exit }' "$conf" 2>/dev/null
 }
 
 state="$(read_field state)"
