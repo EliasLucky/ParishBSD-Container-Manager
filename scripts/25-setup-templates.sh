@@ -51,7 +51,7 @@ else
 fi
 
 log "Building shipped templates"
-for tmpl in app apps-compatible vault-postgres vault-files; do
+for tmpl in apps apps-compatible vault-postgres vault-files; do
     if zfs list "zroot/jails/templates/$tmpl" >/dev/null 2>&1; then
         log "  $tmpl: already built"
         continue
