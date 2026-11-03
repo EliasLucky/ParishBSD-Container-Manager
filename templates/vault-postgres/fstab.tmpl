@@ -1,1 +1,3 @@
-${PERSONALITY_DATA_SOURCE}/${name}    /usr/local/jails/${tier}/${name}${PERSONALITY_DATA_MOUNT}    nullfs    rw,noexec,nosuid    0    0
+/var/run/xpra/${name}	/usr/local/jails/containers/${name}/xpra	nullfs	rw,nosuid,noexec	0	0
+/${data_source}/${name}	/usr/local/jails/containers/${name}${data_mount}	nullfs	rw,noexec,nosuid	0	0
+/var/parishbsd/exchange/${name}	/usr/local/jails/containers/${name}/exchange	nullfs	rw,nosuid,noexec	0	0
