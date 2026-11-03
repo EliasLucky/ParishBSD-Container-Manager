@@ -119,20 +119,20 @@ _conf="$TEMPLATES_STATE/$template/template.conf"
 [ -f "$_conf" ] || { printf 'parishctl: no template named "%s" (expected %s)\n' "$template" "$_conf" >&2; exit 1; }
 [ ! -L "$_conf" ] || { printf 'parishctl: template config is a symlink; refusing\n' >&2; exit 1; }
 
-_tstate="$(awk -F= '$1=="state"{sub(/^[^=]*=/,""); print; exit}' "$_tf" 2>/dev/null)"
+_tstate="$(awk -F= '$1=="state"{sub(/^[^=]*=/,""); print; exit}' "$_conf" 2>/dev/null)"
 case "$_tstate" in
     ready) : ;;
-    building) printf 'parishctl: template "%s" is being built; wait or run:\n  sudo parishctl template show %s\n' "$template" "$template" >&2; exit 1 ;;
-    failed)   printf 'parishctl: template "%s" is in failed state; run:\n  sudo parishctl template reset %s\n' "$template" "$template" >&2; exit 1 ;;
+    building) printf 'parishctl: template "%s" is being built; wait or run:\n  parishctl template show %s\n' "$template" "$template" >&2; exit 1 ;;
+    failed)   printf 'parishctl: template "%s" is in failed state; run:\n  parishctl template reset %s\n' "$template" "$template" >&2; exit 1 ;;
     '')       printf 'parishctl: template "%s" config has no state= field\n' "$template" >&2; exit 1 ;;
     *)        printf 'parishctl: template "%s" has unexpected state "%s"\n' "$template" "$_tstate" >&2; exit 1 ;;
 esac
 
-_ttier="$(awk  -F= '$1=="tier"{ sub(/^[^=]*=/,""); print; exit}' "$_tf" 2>/dev/null)"
+_ttier="$(awk  -F= '$1=="tier"{ sub(/^[^=]*=/,""); print; exit}' "$_conf" 2>/dev/null)"
 case "$_ttier" in
     app|vault) : ;;
     '') printf 'parishctl: template "%s" config has no tier= field\n' "$template" >&2
-        printf 'This template was created before 3b. Run:\n  sudo parishctl template reset %s\n' "$template" >&2
+        printf 'Run:\n  parishctl template reset %s\n' "$template" >&2
         exit 1 ;;
     *)  printf 'parishctl: template "%s" has invalid tier "%s" (expected app or vault)\n' "$template" "$_ttier" >&2; exit 1 ;;
 esac
