@@ -34,10 +34,10 @@ jailroot="$(container_path "$name")" || {
     exit 1
 }
 
-personality="$(container_personality "$jailroot")"
-container_is_vault "$personality" || {
+tier="$(container_tier "$jailroot")"
+container_is_vault "$tier" || {
     printf 'parishctl: "%s" is not a vault (kind: %s)\n' \
-        "$name" "$(container_kind "$personality")" >&2
+        "$name" "$(container_kind_label "$jailroot")" >&2
     exit 1
 }
 

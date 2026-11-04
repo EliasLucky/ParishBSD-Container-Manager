@@ -38,6 +38,7 @@ TEMPLATES_STATE=/var/db/parishbsd/templates
 
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
 . "$LIBDIR/container.sh"
 
 # --- Argument parsing ---
