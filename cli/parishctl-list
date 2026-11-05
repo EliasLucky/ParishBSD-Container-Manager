@@ -1,5 +1,5 @@
 #!/bin/sh
-# parishctl-list - List containers (JSON)
+# parishctl-list  list compartments (text or JSON).
 set -eu
 
 PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
@@ -24,21 +24,43 @@ else
     printf "%-20s %-15s %-15s %-15s\n" "----" "----" "-----" "--------"
 fi
 
+read_meta() {
+    _rm_root="$1"
+    _rm_key="$2"
+    _rm_m="$_rm_root/usr/local/etc/parishbsd/metadata"
+    [ -f "$_rm_m" ] && [ ! -L "$_rm_m" ] || return 0
+    awk -F= -v k="$_rm_key" '$1==k { sub(/^[^=]*=/,""); print; exit }' "$_rm_m" 2>/dev/null
+}
+
 first=1
-for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
+for d in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/containers/*; do
     [ -d "$d" ] || continue
     [ -f "$d/bin/sh" ] || continue
-    
+
     name=$(basename "$d")
-    tier=$(basename "$(dirname "$d")")
+
+    tier=$(read_meta "$d" TIER)
+    source_template=$(read_meta "$d" SOURCE_TEMPLATE)
+    meta_kind=$(read_meta "$d" KIND)
+
+    case "${tier:-}" in
+        app|vault) : ;;
+        *)
+            case "$(basename "$(dirname "$d")")" in
+                vault) tier="vault" ;;
+                app)   tier="app" ;;
+                *)     tier="unknown" ;;
+            esac
+            ;;
+    esac
+
     is_vault=0
     [ "$tier" = "vault" ] && is_vault=1
-    
-    # JSON escape name
+
     name_esc=$(printf '%s' "$name" | sed 's/["\\]/\\&/g')
-    
+
     state=$(parish_jail_state "$name")
-    
+
     key_state="null"
     if [ "$is_vault" -eq 1 ]; then
         ds="zroot/vault-data/$name"
@@ -49,8 +71,7 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
             key_state='"locked"'
         fi
     fi
-    
-    # Use mountpoint $d to find dataset usage
+
     ds_used=$(/sbin/zfs get -H -o value used "$d" 2>/dev/null || echo "0")
     bytes=$(echo "$ds_used" | awk '
         /^[0-9]+$/ { print $1; exit }
@@ -61,23 +82,23 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/*; do
         { print 0 }
     ')
     [ -z "$bytes" ] && bytes=0
-    
-    source_template=""
-    meta="/var/db/parishbsd/compartments/$name/metadata.conf"
-    if [ -f "$meta" ]; then
-        source_template=$(grep '^source_template=' "$meta" 2>/dev/null | cut -d= -f2 || true)
-    fi
-    # T4b-S2: JSON escape source_template
+
     st_esc=$(printf '%s' "$source_template" | sed 's/["\\]/\\&/g')
-    
-    kind="Container"
-    case "$source_template" in
-        vault-files*) kind="File Vault" ;;
-        vault-postgres*) kind="Database Vault" ;;
-        apps-compat-*) kind="Compatibility" ;;
-        apps|browser-*) kind="Application" ;;
+
+    case "${meta_kind:-}" in
+        application)    kind="Application" ;;
+        file-vault)     kind="File Vault" ;;
+        database-vault) kind="Database Vault" ;;
+        *)
+            case "$source_template" in
+                vault-files*|vault-postgres*) kind="Vault" ;;
+                apps-compat*)                 kind="Compatibility" ;;
+                *)                            kind="Application" ;;
+            esac
+            [ "$is_vault" -eq 1 ] && [ "$kind" = "Application" ] && kind="Vault"
+            ;;
     esac
-    
+
     if [ "$json_mode" -eq 1 ]; then
         [ "$first" -eq 1 ] || printf ',\n'
         first=0
