@@ -6,6 +6,7 @@ PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
 . "$LIBDIR/state.sh"
 
 json_mode=0
