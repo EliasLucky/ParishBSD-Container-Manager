@@ -42,30 +42,6 @@ container_path() {
     done
     return 1
 }
-# --- Deprecated shims (delete in 3c) ---
-# These exist so pre-3b callers do not break at command-not-found or
-# silent-wrong-answer. They preserve the old signatures where possible.
-# New code must use container_template / container_tier / container_kind_label.
-
-container_personality() {
-    _jt="${1-}"
-    if _t="$(container_template "$_jt")"; then printf '%s' "$_t"; return 0; fi
-    case "$(container_tier "$_jt")" in
-        vault) printf 'vault-unknown' ;;
-        *)     printf 'app-xpra' ;;
-    esac
-}
-
-container_kind() {
-    case "${1-}" in
-        /usr/local/jails/*)                                container_kind_label "$1" ;;
-        app|app-xpra|application)                          printf 'Application' ;;
-        vault-files|file-vault|files|files-vault)          printf 'File Vault' ;;
-        vault-postgres|vault-pg|database|db)               printf 'Database Vault' ;;
-        vault|vault-*)                                     printf 'Vault' ;;
-        *)                                                 printf '%s' "${1-}" ;;
-    esac
-}
 
 container_is_vault() {
     case "${1-}" in
@@ -74,14 +50,6 @@ container_is_vault() {
     esac
 }
 
-container_kind_to_personality() {
-    case "${1-}" in
-        app|application)                          printf 'app-xpra' ;;
-        vault-files|file-vault|files|files-vault) printf 'vault-files' ;;
-        vault-postgres|vault-pg|database|db)      printf 'vault-postgres' ;;
-        *)                                        printf '%s' "${1-}" ;;
-    esac
-}
 # container_meta_field <jailroot> <field>
 # Echo the field value from <jailroot>/usr/local/etc/parishbsd/metadata.
 # Empty + return 1 if the file is absent, is a symlink, or lacks the field.
