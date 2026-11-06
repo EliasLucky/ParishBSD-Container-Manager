@@ -51,13 +51,15 @@ ensure_dir() {
 resolve_jail_root() {
     local jail="$1"
     validate_jail_name_existing "$jail"
-    if [ -d "$JAIL_ROOT_APP/$jail" ]; then
-        echo "$JAIL_ROOT_APP/$jail"
-    elif [ -d "$JAIL_ROOT_VAULT/$jail" ]; then
-        echo "$JAIL_ROOT_VAULT/$jail"
-    else
-        err "jail not found: $jail"
-    fi
+    local d
+    for tier in app vault containers; do
+        d="/usr/local/jails/$tier/$jail"
+        if [ -d "$d" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    err "jail not found: $jail"
 }
 
 validate_jail_root() {

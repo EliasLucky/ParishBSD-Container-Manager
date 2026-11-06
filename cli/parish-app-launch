@@ -203,10 +203,9 @@ Run for details:
         ;;
 esac
 
-# --- Vault-locked pre-check (defense in depth; parishctl start has the
-#     second layer) ---
+# --- Vault-locked pre-check (defense in depth; parishctl start has the second layer) ---
 
-if [ -d "/usr/local/jails/vault/${jail}" ]; then
+if zfs list "zroot/vault-data/${jail}" >/dev/null 2>&1; then
     _keystatus="$(zfs get -H -o value keystatus "zroot/vault-data/$jail" 2>/dev/null || true)"
     case "$_keystatus" in
         available) : ;;
