@@ -15,9 +15,13 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 
 EXCHANGE_ROOT="/var/parishbsd/exchange"
 
-log() { logger -t parish-exchange -p user.info -- "$*" 2>/dev/null || true; }
-err() { logger -t parish-exchange -p user.err -- "$*" 2>/dev/null || true; \
-        echo "parish-exchange: $*" >&2; exit 1; }
+_sanitize_for_log() {
+    printf '%s' "$1" | tr -d '\000-\037\177'
+}
+
+log() { logger -t parish-exchange -p user.info -- "$(_sanitize_for_log "$*")" 2>/dev/null || true; }
+err() { logger -t parish-exchange -p user.err -- "$(_sanitize_for_log "$*")" 2>/dev/null || true; \
+        printf 'parish-exchange: %s\n' "$*" >&2; exit 1; }
 require_root() { [ "$(id -u)" -eq 0 ] || err "must be run as root"; }
 
 ensure_exchange_root() {

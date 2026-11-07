@@ -5,7 +5,7 @@
 set -eu
 
 # refuse if the host is missing the module.
-if ! kldstat -m linux64 >/dev/null 2>&1 && ! kldstat -m linux >/dev/null 2>&1; then
+if ! kldstat -m linux64 >/dev/null 2>&1 && ! kldstat -m linux >/dev/null 2>&1 && ! sysctl -n kern.conftxt 2>/dev/null | grep -q 'COMPAT_LINUXKPI'; then
     printf 'parish: Linux compatibility requires the host kernel module\n' >&2
     printf '        "linux64". Load it with:\n' >&2
     printf '            kldload linux64\n' >&2

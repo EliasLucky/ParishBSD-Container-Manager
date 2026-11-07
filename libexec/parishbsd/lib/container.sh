@@ -43,13 +43,6 @@ container_path() {
     return 1
 }
 
-container_is_vault() {
-    case "${1-}" in
-        vault|vault-*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 # container_meta_field <jailroot> <field>
 # Echo the field value from <jailroot>/usr/local/etc/parishbsd/metadata.
 # Empty + return 1 if the file is absent, is a symlink, or lacks the field.
