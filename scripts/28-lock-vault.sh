@@ -35,6 +35,9 @@ fi
 # (regex on the jail name matches other mount points if the name
 # contains a dot).
 if zfs list "$ds" >/dev/null 2>&1; then
+	mount -p | awk -v ds="$ds" '$1 == ds {print $2}' | while read -r _t; do
+		[ -n "$_t" ] && umount -f "$_t" 2>/dev/null || true
+	done
 	mounted_state="$(zfs get -H -o value mounted "$ds" 2>/dev/null || echo unknown)"
 	case "$mounted_state" in
 		yes)
