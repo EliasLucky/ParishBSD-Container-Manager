@@ -74,17 +74,6 @@ require_root() {
 # Validation
 # --------------------------------------------------------------------
 
-validate_package_name() {
-    [ -n "${1-}" ] || err "package name required"
-    # reject leading hyphen before the charset check. A package
-    # name starting with '-' reaches `pkg install -y "-foo"` and pkg parses it as an option.
-    case "$1" in
-        -*) err "invalid package name: '$1' (may not start with -)" ;;
-    esac
-    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9._+-]+$' \
-        || err "invalid package name: '$1'"
-}
-
 require_jail() {
     validate_jail_name_existing "$1"
     jls name 2>/dev/null | grep -qxF "$1" || err "jail '$1' is not running"
@@ -279,7 +268,7 @@ cmd_install() {
     package="${2:?usage: parish-apps install <jail> <package>}"
     require_jail "$jail"
     parish_require_not_contained "$jail" || exit 1
-    validate_package_name "$package"
+    validate_package_name "$package" || err "invalid package: $package"
     log "Installing $package in $jail"
     pkg -j "$jail" install -y "$package" || return $?
 
@@ -458,7 +447,7 @@ do_freebsd_pkg() {
     # read the package's own name before install.
     pkg_name="$(pkg query -F "$host_file" %n 2>/dev/null)"
     [ -n "$pkg_name" ] || err "cannot determine package name from $host_file (pkg query -F failed)"
-    validate_package_name "$pkg_name"
+    validate_package_name "$pkg_name" || err "invalid package: $pkg_name"
 
     base="$(copy_to_exchange "$jail" "$host_file")"
     # trap function, not trap string.
@@ -702,7 +691,7 @@ cmd_remove() {
     package="${2:?usage: parish-apps remove <jail> <package>}"
     require_jail "$jail"
     parish_require_not_contained "$jail" || exit 1
-    validate_package_name "$package"
+    validate_package_name "$package" || err "invalid package: $package"
     log "Removing $package from $jail"
     pkg -j "$jail" delete -y "$package"
 }
@@ -745,7 +734,7 @@ cmd_upgrade() {
     parish_require_not_contained "$jail" || exit 1
 
     if [ -n "$package" ]; then
-        validate_package_name "$package"
+        validate_package_name "$package" || err "invalid package: $package"
         log "Upgrading $package in $jail"
         pkg -j "$jail" upgrade -y "$package"
     else
@@ -783,7 +772,7 @@ cmd_pkg_launcher() {
     jail="${1:?usage: parish-apps pkg-launcher <jail> <package> [where]}"
     package="${2:?}"
     where="${3:-menu}"
-    validate_package_name "$package"
+    validate_package_name "$package" || err "invalid package: $package"
     parish_require_not_contained "$jail" || exit 1
     exec "$PARISH_APP_CREATE_LAUNCHER" "$jail" "$package" "$where"
 }

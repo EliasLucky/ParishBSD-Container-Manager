@@ -88,7 +88,7 @@ row "mode"    "$([ -n "$keyfile" ] && echo keyfile || echo passphrase)"
 
 if [ -z "$keyfile" ]; then
 	log "Vault is UNLOCKED. To lock it now:"
-	log "    zfs unmount $ds && zfs unload-key $ds"
+	log "    parishctl lock $name"
 else
 	log "Vault is UNLOCKED and will auto-unlock at boot."
 fi
