@@ -14,5 +14,18 @@ if ! kldstat -m linux64 >/dev/null 2>&1 && ! kldstat -m linux >/dev/null 2>&1 &&
     printf '        And reboot.\n' >&2
     exit 1
 fi
-
+# /compat/linux is provided by the host (sysutils/linux_base-rl9).
+# The apps-compatible template nullfs-mounts it read-only at jail
+# start. Verify it exists before letting the template build succeed.
+if [ ! -d /compat/linux/bin ] || [ ! -x /compat/linux/bin/sh ]; then
+    printf 'parish: Linux userland missing on host.\n' >&2
+    printf '        The apps-compatible template needs /compat/linux\n' >&2
+    printf '        (from sysutils/linux_base-rl9) to be installed on\n' >&2
+    printf '        this machine.\n' >&2
+    printf '        Install it with:\n' >&2
+    printf '            pkg install linux_base-rl9\n' >&2
+    printf '        Then rebuild the template:\n' >&2
+    printf '            pkexec parishctl template build apps-compatible\n' >&2
+    exit 1
+fi
 exit 0
