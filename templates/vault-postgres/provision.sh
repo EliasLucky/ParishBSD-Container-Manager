@@ -41,6 +41,7 @@ else
 fi
 
 sysrc postgresql_enable=YES
+sysrc postgresql_data=/var/db/postgres/data
 service postgresql start || {
 	log "WARN: postgresql start returned non-zero"
 }
