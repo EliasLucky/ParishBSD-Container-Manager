@@ -7,7 +7,8 @@ ${name} {
 	allow.mount       = 0;
 	allow.quotas      = 0;
 	allow.socket_af   = 0;
-	allow.sysvipc     = 0;
+	allow.sysvipc     = 1;
+	mount.devfs;
 	devfs_ruleset     = 4;
 	enforce_statfs    = 2;
 	exec.clean        = 1;
