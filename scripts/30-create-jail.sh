@@ -160,7 +160,9 @@ EOF
         row "rc.local" "provisioning hook installed"
     fi
 fi
-
+if [ -d "$jailroot/dev" ]; then
+    find "$jailroot/dev" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+fi
 install -d "$jailroot/usr/local/etc/parishbsd"
 meta_tmp="$jailroot/usr/local/etc/parishbsd/metadata.tmp.$$"
 {
