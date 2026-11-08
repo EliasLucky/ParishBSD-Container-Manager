@@ -192,7 +192,14 @@ case ",$clusters," in
         row "xpra dirs" "/var/run/xpra/$name"
         ;;
 esac
-
+if [ -f "$tmpl_dir/fstab.tmpl" ] && grep -q '/compat/linux' "$tmpl_dir/fstab.tmpl"; then
+    if [ -d /compat/linux ]; then
+        mkdir -p "$jailroot/compat/linux"
+        row "compat dir" "$jailroot/compat/linux"
+    else
+        row "compat dir" "WARN: host /compat/linux missing - install sysutils/linux_base-rl9"
+    fi
+fi
 if [ "$tier" = "vault" ]; then
     mkdir -p "$jailroot$data_mount"
     row "data dir" "$jailroot$data_mount"
