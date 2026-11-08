@@ -59,16 +59,47 @@ else
     log "  cached ($(du -h "$cached_txz" | awk '{print $1}'))"
 fi
 
+# Status file for the first-boot rc.d service. No-op if the directory
+# is absent (e.g., when 25 is run manually).
+_rundir="${PARISHBSD_RUNDIR:-/var/run/parishbsd}"
+_status_file="$_rundir/templates.status"
+_status() {
+    [ -d "$_rundir" ] || return 0
+    { printf 'state=%s\ncurrent=%s\nupdated=%s\n' \
+        "$1" "${2:-}" "$(date -u +%FT%TZ)"; } \
+        > "$_status_file" 2>/dev/null || true
+}
+
 log "Building shipped templates"
+
+# Count how many actually need building, for progress display.
+_total=0
+for _t in apps vault-postgres vault-files; do
+    zfs list "zroot/jails/templates/$_t" >/dev/null 2>&1 || _total=$((_total+1))
+done
+
+_i=0
+_failed=""
 for tmpl in apps apps-compatible vault-postgres vault-files; do
     if zfs list "zroot/jails/templates/$tmpl" >/dev/null 2>&1; then
         log "  $tmpl: already built"
         continue
     fi
+    _i=$((_i+1))
+    _status running "$tmpl ($_i of $_total)"
     log "  $tmpl: building..."
-    parish-template-build "$tmpl" --source=shipped \
-        || err "parish-template-build $tmpl failed"
+    if ! parish-template-build "$tmpl" --source=shipped; then
+        log "  $tmpl: FAILED"
+        _failed="$_failed $tmpl"
+    fi
 done
+
+if [ -z "$_failed" ]; then
+    _status done
+else
+    _status failed "$_failed"
+    err "parish-template-build failed for:$_failed"
+fi
 
 log "All shipped templates built."
 log "Verify with: zfs list -t snapshot -r zroot/jails/templates"
