@@ -23,10 +23,19 @@ zfs list zroot/jails/templates  >/dev/null 2>&1 || zfs create -p zroot/jails/tem
 zfs list zroot/jails/containers >/dev/null 2>&1 || zfs create -p zroot/jails/containers
 zfs list zroot/vault-data       >/dev/null 2>&1 || zfs create -p zroot/vault-data
 
-zfs set mountpoint=/zroot/jails            zroot/jails
-zfs set mountpoint=/zroot/jails/templates  zroot/jails/templates
-zfs set mountpoint=/zroot/jails/containers zroot/jails/containers
-zfs set mountpoint=/zroot/vault-data       zroot/vault-data
+_ensure_ds() {
+    _ds="$1"; _mp="$2"
+    zfs list "$_ds" >/dev/null 2>&1 || zfs create -p "$_ds" || return 1
+    [ "$(zfs get -H -o value mountpoint "$_ds")" = "$_mp" ] || \
+        zfs set mountpoint="$_mp" "$_ds" || return 1
+    [ "$(zfs get -H -o value mounted "$_ds")" = "yes" ] || \
+        zfs mount "$_ds" 2>/dev/null || return 1
+}
+
+_ensure_ds zroot/jails            /zroot/jails
+_ensure_ds zroot/jails/templates  /zroot/jails/templates
+_ensure_ds zroot/jails/containers /zroot/jails/containers
+_ensure_ds zroot/vault-data       /zroot/vault-data
 
 arch="$(uname -m)"
 version="$(freebsd-version -u | awk -F'-p' '{print $1}')"
