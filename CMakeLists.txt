@@ -15,6 +15,8 @@ endif()
 
 list(APPEND CMAKE_PREFIX_PATH /usr/local)
 
+include(GNUInstallDirs)
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 find_package(Curses REQUIRED)
 
@@ -23,48 +25,57 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # ============================================================
+# Build options
+# ============================================================
+
+# GUI src/ has compile errors.
+option(BUILD_GUI "Build the Qt6 GUI" OFF)
+
+# ============================================================
 # Qt GUI executable
 # ============================================================
 
-set(SOURCES
-    src/main.cpp
-    src/MainWindow.cpp
-    src/ContainerBackend.cpp
-    src/ContainerModel.cpp
-    src/ContainerInfo.cpp
-    src/ActionsDialog.cpp
-    src/ApplicationsDialog.cpp
-    src/InstallLogDialog.cpp
-    src/CatalogTableModel.cpp
-    src/PackageTableModel.cpp
-)
+if(BUILD_GUI)
+    set(SOURCES
+        src/main.cpp
+        src/MainWindow.cpp
+        src/ContainerBackend.cpp
+        src/ContainerModel.cpp
+        src/ContainerInfo.cpp
+        src/ActionsDialog.cpp
+        src/ApplicationsDialog.cpp
+        src/InstallLogDialog.cpp
+        src/CatalogTableModel.cpp
+        src/PackageTableModel.cpp
+    )
 
-set(HEADERS
-    src/MainWindow.h
-    src/ContainerBackend.h
-    src/ContainerModel.h
-    src/ContainerInfo.h
-    src/ActionsDialog.h
-    src/ApplicationsDialog.h
-    src/InstallLogDialog.h
-    src/CatalogTableModel.h
-    src/PackageTableModel.h
-    src/CustomApp.h
-    src/PackageInfo.h
-)
+    set(HEADERS
+        src/MainWindow.h
+        src/ContainerBackend.h
+        src/ContainerModel.h
+        src/ContainerInfo.h
+        src/ActionsDialog.h
+        src/ApplicationsDialog.h
+        src/InstallLogDialog.h
+        src/CatalogTableModel.h
+        src/PackageTableModel.h
+        src/CustomApp.h
+        src/PackageInfo.h
+    )
 
-add_executable(parish-compartments ${SOURCES} ${HEADERS})
+    add_executable(parish-compartments ${SOURCES} ${HEADERS})
 
-set_target_properties(parish-compartments PROPERTIES
-    AUTOMOC ON
-    AUTORCC ON
-    AUTOUIC ON
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
+    set_target_properties(parish-compartments PROPERTIES
+        AUTOMOC ON
+        AUTORCC ON
+        AUTOUIC ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
 
-target_link_libraries(parish-compartments PRIVATE
-    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
-)
+    target_link_libraries(parish-compartments PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
+    )
+endif()  # BUILD_GUI
 
 # ============================================================
 # parish-template-build (C++)
@@ -94,7 +105,7 @@ target_include_directories(template_build_test PRIVATE cli)
 add_test(NAME template_build_test COMMAND template_build_test)
 
 # ============================================================
-# parish-template-wizard (C++)
+# parish-template-wizard (C++, ncurses)
 # ============================================================
 
 add_executable(parish-template-wizard
@@ -106,15 +117,35 @@ target_link_libraries(parish-template-wizard PRIVATE ${CURSES_LIBRARIES})
 target_include_directories(parish-template-wizard PRIVATE ${CURSES_INCLUDE_DIRS})
 
 # ============================================================
-# Install (binaries only)
+# parish-compartment-dialog (Qt6 dialog helper)
 # ============================================================
 
-include(GNUInstallDirs)
+add_executable(parish-compartment-dialog cli/parish-compartment-dialog.cpp)
+target_link_libraries(parish-compartment-dialog PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 
-install(TARGETS parish-compartments
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# ============================================================
+# xpra-sup
+# ============================================================
+
+add_executable(xpra-sup cli/xpra-sup.cpp)
+
+# ============================================================
+# Install
+# ============================================================
+
+if(BUILD_GUI)
+    install(TARGETS parish-compartments
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(TARGETS parish-template-build
     RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR})
 
-install(TARGETS parish-template-wizard RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS parish-template-wizard
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(TARGETS parish-compartment-dialog
+    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/parishbsd)
+
+install(TARGETS xpra-sup
+    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/parishbsd)
