@@ -17,7 +17,7 @@ public:
 		CategoryColumn,
 		DescriptionColumn,
 		ColumnCount
-	}:
+	};
 
 	explicit CatalogTableModel(QObject *parent = nullptr);
 
