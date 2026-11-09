@@ -8,7 +8,7 @@ log() { printf '    [apps-compatible] %s\n' "$*"; }
 # wine prefix lives under the app user's home if run as app, or root
 # if run as root. Currently apps run as root in-jail (G-runtime is a
 # separate module). Use root's home.
-PREFIX="${HOME:-/root}/.wine64"
+PREFIX="/root/.wine64"
 
 if [ -d "$PREFIX/drive_c" ]; then
     log "wine prefix already initialized"
