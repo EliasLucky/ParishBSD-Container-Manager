@@ -72,15 +72,22 @@ _status() {
 
 log "Building shipped templates"
 
+_build_list="apps vault-postgres vault-files"
+if [ -d /compat/linux/bin ] && [ -x /compat/linux/bin/sh ]; then
+    _build_list="$_build_list apps-compatible"
+else
+    log "  apps-compatible: skipped (host lacks /compat/linux; pkg install linux_base-rl9)"
+fi
+
 # Count how many actually need building, for progress display.
 _total=0
-for _t in apps vault-postgres vault-files; do
+for _t in $_build_list; do
     zfs list "zroot/jails/templates/$_t" >/dev/null 2>&1 || _total=$((_total+1))
 done
-
+ 
 _i=0
 _failed=""
-for tmpl in apps apps-compatible vault-postgres vault-files; do
+for tmpl in $_build_list; do
     if zfs list "zroot/jails/templates/$tmpl" >/dev/null 2>&1; then
         log "  $tmpl: already built"
         continue
