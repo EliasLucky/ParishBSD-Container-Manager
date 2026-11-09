@@ -9,72 +9,52 @@ class QLineEdit;
 class QLabel;
 class QPushButton;
 
-class ContainerBacked;
+class ContainerBackend;
 class PackageTableModel;
 class CatalogTableModel;
 
 class ApplicationsDialog : public QDialog {
-	Q_OBJECT
+    Q_OBJECT
 public:
-	ApplicationsDialog(ContainerBacked *backend, const QString &jailName, QWidget *parent = nullptr);
+    ApplicationsDialog(ContainerBackend *backend, const QString &jailName, QWidget *parent = nullptr);
 
 signals:
-	void applicationsChanged();
+    void applicationsChanged();
 
 private slots:
-	void refresh();
-	void onSelectionChanged();
-	void onUpdateSelected();
-	void onRemoveSelected();
-	void onInstallCatalog();
-	void onInstallFromFile();
-	void onLaunchSelected();
-	void onManageLauncher();
-	void onEditLauncher();
-	void onOperationFinished(const QString &desc, bool ok, const QString &err);
+    void refresh();
+    void onSelectionChanged();
+    void onUpdateSelected();
+    void onRemoveSelected();
+    void onInstallCatalog();
+    void onInstallFromFile();
+    void onLaunchSelected();
+    void onOperationFinished(const QString &desc, bool ok, const QString &err);
 
 private:
-	enum class InstallMode { Installer, Portable };
-	enum class LauncherMode { None, Menu, Desktop, Both };
+    void buildUi();
+    void buildInstalledTab(QWidget *parent);
+    void buildInstallNewTab(QWidget *parent);
+    void populateInstalled();
+    void populateCatalog();
+    void updateActionStates();
 
-	void buildUi():
-	void buildInstalledTab(QWidget *parent);
-	void buildInstalNewTab(QWidget *parent);
-	void populateInstalled();
-	void populateCatalog();
+    PackageInfo selectedPackage() const;
 
-	void handleFileInstall(const QString &file);
-	void confirmAndInstall(const QString &file, const QString &detected, InstallMode mode);
-	void askInstallerOrPortable(const QString &file, const QString &detected);
-	LauncherMode askLauncherPreference() const;
+    ContainerBackend *m_backend;
+    QString m_jail;
 
-	bool launcherExists(const QString &jail, const QString &name, bool onDesktop) const;
-	LauncherMode currentLauncherState(const QString &name) const;
-	void launchCustomApp(const QString &appName);
-	void launchNativePackage(const QString &packageName);
-	void createLauncher(const QString &name, LauncherMode mode);
-	void removeLauncher(const QString &name);
+    QTabWidget *m_tabs = nullptr;
 
-	QString selectedNames() const;
-	PackageInfo selectedPackage() const;
-	void updateActionStates();
+    QTableView *m_installedView = nullptr;
+    PackageTableModel *m_installedModel = nullptr;
+    QPushButton *m_updateBtn = nullptr;
+    QPushButton *m_removeBtn = nullptr;
+    QPushButton *m_launchBtn = nullptr;
+    QLabel *m_installedSummary = nullptr;
 
-	ContainerBackend *m_backend;
-	QString m_jail;
-
-	QTabWidget *m_tabs = nullptr;
-
-	QTableView *m_installedView = nullptr;
-	PackageTableModel *m_installedModel = nullptr;
-	QPushButton *m_updateBtn = nullptr;
-	QPushButton *m_removeBtn = nullptr;
-	QPushButton *m_launchBtn = nullptr;
-	QPushButton *m_launcherBtn = nullptr;
-	QPushButton *m_editLauncherBtn = nullptr;
-	QLabel *m_installedSummary = nullptr;
-
-	QLineEdit *m_catalogSearch = nullptr;
-	QTableView *m_catalogView = nullptr;
-	CatalogTableModel *m_catalogModel = nullptr;
-	QPushButton *m_installFromFileBtn = nullptr;
+    QLineEdit *m_catalogSearch = nullptr;
+    QTableView *m_catalogView = nullptr;
+    CatalogTableModel *m_catalogModel = nullptr;
+    QPushButton *m_installFromFileBtn = nullptr;
 };
