@@ -13,7 +13,23 @@
 
 set -eu
 
-name="${1:?usage: 32-destroy-vault.sh <name>}"
+name=""
+token=""
+for arg in "$@"; do
+    case "$arg" in
+        --confirmation-token=*) token="${arg#--confirmation-token=}" ;;
+        -*) { printf 'ERROR: unknown option: %s\n' "$arg" >&2; exit 2; } ;;
+        *)
+            if [ -z "$name" ]; then
+                name="$arg"
+            else
+                printf 'ERROR: unexpected argument: %s\n' "$arg" >&2
+                exit 2
+            fi
+            ;;
+    esac
+done
+[ -n "$name" ] || { printf 'usage: 32-destroy-vault.sh <name> [--confirmation-token=<value>]\n' >&2; exit 2; }
 
 log()  { printf '    %s\n' "$*"; }
 row()  { printf '    %-22s %s\n' "$1" "$2"; }
@@ -54,11 +70,19 @@ fi
 printf '\n'
 printf '    Encrypted contents are NOT recoverable after this.\n'
 printf '\n'
-printf '    Type exactly  destroy-%s  to proceed: ' "$name" > /dev/tty
-read -r answer < /dev/tty 2>/dev/null || {
-	printf '\nvault destroy: cannot read confirmation from terminal\n' >&2
-	exit 1
-}
+if [ -n "$token" ]; then
+	if [ "$token" != "destroy-$name" ]; then
+		printf 'vault destroy: confirmation token does not match (expected destroy-%s)\n' "$name" >&2
+		exit 1
+	fi
+	answer="$token"
+else
+	printf '    Type exactly  destroy-%s  to proceed: ' "$name" > /dev/tty
+	read -r answer < /dev/tty 2>/dev/null || {
+		printf '\nvault destroy: cannot read confirmation from terminal\n' >&2
+		exit 1
+	}
+fi
 
 if [ "$answer" != "destroy-$name" ]; then
 	log "aborted - nothing was destroyed"
