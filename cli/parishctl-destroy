@@ -25,7 +25,23 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 
-name="$1"
+name=""
+token=""
+for arg in "$@"; do
+    case "$arg" in
+        --confirmation-token=*) token="${arg#--confirmation-token=}" ;;
+        -*) { printf 'parishctl: unknown option: %s\n' "$arg" >&2; exit 2; } ;;
+        *)
+            if [ -z "$name" ]; then
+                name="$arg"
+            else
+                printf 'parishctl: unexpected argument: %s\n' "$arg" >&2
+                exit 2
+            fi
+            ;;
+    esac
+done
+[ -n "$name" ] || { printf 'usage: parishctl destroy <name> [--confirmation-token=<value>]\n' >&2; exit 2; }
 validate_jail_name_existing "$name" || exit 2
 
 jailroot="$(container_path "$name")" || {
@@ -53,27 +69,39 @@ case "$state" in
 esac
 
 if container_is_vault "$tier"; then
-    # Vault: 32-destroy-vault.sh does its own typed confirmation.
-    # No prompt here. State check above ensures we do not invoke
-    # the script on a running jail.
+    if [ -n "$token" ] && [ "$token" != "destroy-$name" ]; then
+        printf 'parishctl: confirmation token does not match (expected destroy-%s)\n' "$name" >&2
+        exit 1
+    fi
     printf 'This will destroy container "%s" (%s).\n' "$name" "$kind"
     printf 'Because it is a vault, the encrypted data will also be destroyed.\n'
     printf 'This cannot be undone.\n\n'
-    sh "$PARISH_SCRIPTS/32-destroy-vault.sh" "$name" \
-        || { printf 'parishctl: destroy failed for "%s"\n' "$name" >&2; exit 1; }
+    if [ -n "$token" ]; then
+        sh "$PARISH_SCRIPTS/32-destroy-vault.sh" "$name" --confirmation-token="$token" \
+            || { printf 'parishctl: destroy failed for "%s"\n' "$name" >&2; exit 1; }
+    else
+        sh "$PARISH_SCRIPTS/32-destroy-vault.sh" "$name" \
+            || { printf 'parishctl: destroy failed for "%s"\n' "$name" >&2; exit 1; }
+    fi
 else
-    # Non-vault: typed confirmation in this binary (matches pre-split
-    # behavior). The underlying 31-destroy-jail.sh does not prompt.
-    printf 'This will destroy container "%s" (%s).\n' "$name" "$kind"
-    printf 'Its filesystem will be removed. Nothing else is affected.\n\n'
-    printf 'Type the container name to confirm, or press Enter to abort: ' > /dev/tty
-    read -r answer < /dev/tty 2>/dev/null || {
-        printf '\nparishctl: cannot read confirmation from terminal\n' >&2
-        exit 1
-    }
-    if [ "$answer" != "$name" ]; then
-        printf 'Aborted.\n'
-        exit 1
+    if [ -n "$token" ]; then
+        if [ "$token" != "$name" ]; then
+            printf 'parishctl: confirmation token does not match container name\n' >&2
+            exit 1
+        fi
+        answer="$token"
+    else
+        printf 'This will destroy container "%s" (%s).\n' "$name" "$kind"
+        printf 'Its filesystem will be removed. Nothing else is affected.\n\n'
+        printf 'Type the container name to confirm, or press Enter to abort: ' > /dev/tty
+        read -r answer < /dev/tty 2>/dev/null || {
+            printf '\nparishctl: cannot read confirmation from terminal\n' >&2
+            exit 1
+        }
+        if [ "$answer" != "$name" ]; then
+            printf 'Aborted.\n'
+            exit 1
+        fi
     fi
 
     # Re-check state after the prompt. The user took time to type;
