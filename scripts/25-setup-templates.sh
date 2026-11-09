@@ -82,16 +82,34 @@ fi
 # Count how many actually need building, for progress display.
 _total=0
 for _t in $_build_list; do
-    zfs list "zroot/jails/templates/$_t" >/dev/null 2>&1 || _total=$((_total+1))
+    _sf="/var/db/parishbsd/templates/$_t/template.conf"
+    # Only count if ZFS is missing OR state is not ready
+    if ! zfs list "zroot/jails/templates/$_t" >/dev/null 2>&1 || \
+       ! grep -q '^state=ready' "$_sf" 2>/dev/null; then
+        _total=$((_total+1))
+    fi
 done
  
 _i=0
 _failed=""
 for tmpl in $_build_list; do
-    if zfs list "zroot/jails/templates/$tmpl" >/dev/null 2>&1; then
+    _sf="/var/db/parishbsd/templates/$tmpl/template.conf"
+    
+    # Already built and state is intact?
+    if zfs list "zroot/jails/templates/$tmpl" >/dev/null 2>&1 && \
+       grep -q '^state=ready' "$_sf" 2>/dev/null; then
         log "  $tmpl: already built"
         continue
     fi
+    
+    # ZFS exists but state is missing/incomplete? Clean it up first.
+    if zfs list "zroot/jails/templates/$tmpl" >/dev/null 2>&1 && \
+       ! grep -q '^state=ready' "$_sf" 2>/dev/null; then
+        log "  $tmpl: ZFS exists but state manifest is missing/incomplete - removing so rebuild can proceed"
+        zfs destroy -r "zroot/jails/templates/$tmpl" 2>/dev/null || true
+        rm -rf "/var/db/parishbsd/templates/$tmpl"
+    fi
+
     _i=$((_i+1))
     _status running "$tmpl ($_i of $_total)"
     log "  $tmpl: building..."
