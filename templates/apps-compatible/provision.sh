@@ -18,7 +18,7 @@ fi
 log "initializing wine prefix (first start, ~15s)"
 mkdir -p "$(dirname "$PREFIX")"
 
-if ! WINEPREFIX="$PREFIX" wineboot --init >/dev/null 2>&1; then
+if ! WINEPREFIX="$PREFIX" /usr/local/bin/wineboot --init >/dev/null 2>&1; then
     log "WARN: wineboot failed; wine prefix not initialized"
     log "WARN: first wine app launch will retry"
     exit 0    # non-fatal; wine retries on next invocation

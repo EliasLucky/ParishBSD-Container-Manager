@@ -38,4 +38,4 @@ case "$state" in
         ;;
 esac
 
-exec jexec -- "$name" /bin/sh
+exec jexec -- "$name" /bin/sh -l
