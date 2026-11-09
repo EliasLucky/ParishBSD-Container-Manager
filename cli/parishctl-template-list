@@ -1,34 +1,149 @@
 #!/bin/sh
-# parishctl-template-list - List available templates
+# parishctl-template-list  list available templates (text or JSON)
+#
+# Flags:
+#   --json      emit JSON array (consumed by the GUI)
+#   --hidden    include hidden templates (default: shipped non-hidden only)
+#
+# Text outputs the NAME/SOURCE/STATE columns.
+#
+# JSON schema (per template):
+#   name            string   basename of template dir
+#   state           string   "ready" | "building" | "failed" | "not-built"
+#   tier            string   "app" | "vault" | "unknown"
+#   kind            string   "application" | "file-vault" | "database-vault" | ""
+#   description_en  string   from description.en= (translation key: description_en)
+#   current_base    string   "@base-<ts>" or null if not built
+#   build_size_mb   integer  or null if not measured
+#   hidden          boolean
+#   shipped         boolean  true if the template exists in /usr/local/share
+#
+# jails_using is deliberately NOT included: it is aggregate data derived
+# from parishctl-list --json's per-container source_template field. GUI
+# computes it client-side.
+
 set -eu
 
+json_mode=0
 show_hidden=0
-[ "${1:-}" = "--hidden" ] && show_hidden=1
+for arg in "$@"; do
+    case "$arg" in
+        --json)   json_mode=1 ;;
+        --hidden) show_hidden=1 ;;
+        *) printf 'parish: unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
 
+# Read a field from a template.conf. Uses awk -F= so values containing
+# '=' are preserved and keys with '.' (like description.en) match exactly.
+read_field() {
+    awk -F= -v k="$1" '$1==k { sub(/^[^=]*=/,""); print; exit }' "$2" 2>/dev/null || true
+}
+
+# JSON string escape: backslash and double-quote.
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Deduplicate template names. A shipped-and-built template exists in BOTH
+# /usr/local/share/... and /var/db/...; without dedup it is listed twice.
+_seen=" "
+_names=""
+for _dir in /usr/local/share/parishbsd/templates/* /var/db/parishbsd/templates/*; do
+    [ -d "$_dir" ] || continue
+    _n=$(basename "$_dir")
+    case "$_seen" in *" $_n "*) continue ;; esac
+    _seen="$_seen$_n "
+    _names="$_names$_n
+"
+done
+
+if [ "$json_mode" -eq 1 ]; then
+    printf '[\n'
+    _first=1
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+
+        state_file="/var/db/parishbsd/templates/$name/template.conf"
+        [ -f "$state_file" ] || state_file="/usr/local/share/parishbsd/templates/$name/template.conf"
+        if [ ! -f "$state_file" ]; then
+            printf 'parish: warning: template "%s": no template.conf in /var/db or /usr/local/share; skipping\n' "$name" >&2
+            continue
+        fi
+
+        hidden=$(read_field hidden "$state_file")
+        if [ "$hidden" = "1" ] && [ "$show_hidden" -eq 0 ]; then continue; fi
+
+        state=$(read_field state "$state_file")
+        [ -z "$state" ] && state="not-built"
+        tier=$(read_field tier "$state_file")
+        kind=$(read_field kind "$state_file")
+        desc=$(read_field "description.en" "$state_file")
+        current_base=$(read_field current_base "$state_file")
+        build_size=$(read_field build_size_mb "$state_file")
+
+        if [ -f "/usr/local/share/parishbsd/templates/$name/template.conf" ]; then
+            shipped="true"
+        else
+            shipped="false"
+        fi
+
+        if [ "$hidden" = "1" ]; then hidden_json="true"; else hidden_json="false"; fi
+
+        case "$build_size" in
+            ''|*[!0-9]*) size_json="null" ;;
+            *)           size_json="$build_size" ;;
+        esac
+
+        if [ -n "$current_base" ]; then
+            cb_json="\"$(json_escape "$current_base")\""
+        else
+            cb_json="null"
+        fi
+
+        [ "$_first" -eq 1 ] || printf ',\n'
+        _first=0
+        printf '  {\n'
+        printf '    "name": "%s",\n'            "$(json_escape "$name")"
+        printf '    "state": "%s",\n'           "$(json_escape "$state")"
+        printf '    "tier": "%s",\n'            "$(json_escape "${tier:-unknown}")"
+        printf '    "kind": "%s",\n'            "$(json_escape "${kind:-}")"
+        printf '    "description_en": "%s",\n'  "$(json_escape "$desc")"
+        printf '    "current_base": %s,\n'      "$cb_json"
+        printf '    "build_size_mb": %s,\n'     "$size_json"
+        printf '    "hidden": %s,\n'            "$hidden_json"
+        printf '    "shipped": %s\n'            "$shipped"
+        printf '  }'
+    done <<EOF
+$_names
+EOF
+    printf '\n]\n'
+    exit 0
+fi
+
+# Text mode.
 printf "%-20s %-10s %-10s\n" "NAME" "SOURCE" "STATE"
 printf "%-20s %-10s %-10s\n" "----" "------" "-----"
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
 
-for dir in /usr/local/share/parishbsd/templates/* /var/db/parishbsd/templates/*; do
-    [ -d "$dir" ] || continue
-    name=$(basename "$dir")
-    
-    # B4: Read state from /var/db first
-    state_from=""
-    if [ -f "/var/db/parishbsd/templates/$name/template.conf" ]; then
-        state_from="/var/db/parishbsd/templates/$name/template.conf"
-    elif [ -f "$dir/template.conf" ]; then
-        state_from="$dir/template.conf"
+    state_file="/var/db/parishbsd/templates/$name/template.conf"
+    [ -f "$state_file" ] || state_file="/usr/local/share/parishbsd/templates/$name/template.conf"
+    [ -f "$state_file" ] || continue
+
+    hidden=$(read_field hidden "$state_file")
+    if [ "$hidden" = "1" ] && [ "$show_hidden" -eq 0 ]; then continue; fi
+
+    state=$(read_field state "$state_file")
+    [ -z "$state" ] && state="not-built"
+
+    if [ -f "/usr/local/share/parishbsd/templates/$name/template.conf" ]; then
+        source="shipped"
+    else
+        source="user"
     fi
 
-    [ -n "$state_from" ] || continue
-
-    hidden=$(grep '^hidden=' "$state_from" | cut -d= -f2 || true)
-    if [ "$hidden" = "1" ] && [ "$show_hidden" -eq 0 ]; then continue; fi
-    
-    state=$(grep '^state=' "$state_from" | cut -d= -f2 || true)
-    [ -z "$state" ] && state="not-built"
-    
-    if echo "$dir" | grep -q '^/usr/local'; then source="shipped"; else source="user"; fi
-    
     printf "%-20s %-10s %-10s\n" "$name" "$source" "$state"
-done
+done <<EOF
+$_names
+EOF
