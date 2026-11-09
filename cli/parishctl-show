@@ -1,9 +1,5 @@
 #!/bin/sh
-# parishctl-show  show details for one compartment.
-#
-# Runs via pkexec parishctl-show. Polkit action .show has
-# allow_active=yes (same reasoning as parishctl-list).
-
+# parishctl-show  show one compartment. Text or JSON.
 set -eu
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
@@ -11,15 +7,27 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
 
-if [ "$#" -ne 1 ]; then
-    printf 'usage: parishctl show <name>\n' >&2
-    exit 2
-fi
-
-name="$1"
+json_mode=0
+name=""
+for arg in "$@"; do
+    case "$arg" in
+        --json) json_mode=1 ;;
+        -*) { printf 'parishctl: unknown option: %s\n' "$arg" >&2; exit 2; } ;;
+        *)
+            if [ -z "$name" ]; then name="$arg"
+            else printf 'parishctl: unexpected argument: %s\n' "$arg" >&2; exit 2
+            fi
+            ;;
+    esac
+done
+[ -n "$name" ] || { printf 'usage: parishctl show <name> [--json]\n' >&2; exit 2; }
 validate_jail_name_existing "$name" || exit 2
 
 jailroot="$(container_path "$name")" || {
+    if [ "$json_mode" -eq 1 ]; then
+        printf '{"error": "no compartment named %s"}\n' "$name"
+        exit 1
+    fi
     printf 'parishctl: no compartment named "%s"\n' "$name" >&2
     exit 1
 }
@@ -29,37 +37,85 @@ template="$(container_template "$jailroot" || true)"
 kind="$(container_kind_label "$jailroot")"
 state="$(parish_jail_state "$name")"
 
-printf 'Compartment: %s\n' "$name"
-printf '  %-18s %s\n' "kind"        "$kind"
-printf '  %-18s %s\n' "template"    "${template:-<legacy>}"
-printf '  %-18s %s\n' "path"        "$jailroot"
+is_vault=0
+[ "$tier" = "vault" ] && is_vault=1
 
+key_state="null"
+if [ "$is_vault" -eq 1 ]; then
+    ds="zroot/vault-data/$name"
+    if ! /sbin/zfs list "$ds" >/dev/null 2>&1; then
+        printf 'parish: warning: container "%s": tier=vault but dataset %s is missing\n' "$name" "$ds" >&2
+        key_state='"locked"'
+    else
+        ks=$(/sbin/zfs get -H -o value keystatus "$ds" 2>/dev/null || echo "unavailable")
+        if [ "$ks" = "available" ]; then key_state='"unlocked"'; else key_state='"locked"'; fi
+    fi
+fi
+
+ds_used=$(/sbin/zfs get -H -o value used "$jailroot" 2>/dev/null || echo "0")
+bytes=$(echo "$ds_used" | awk '
+    /^[0-9]+$/ { print $1; exit }
+    /K$/ { sub(/K/,""); print $1 * 1024; exit }
+    /M$/ { sub(/M/,""); print $1 * 1024 * 1024; exit }
+    /G$/ { sub(/G/,""); print $1 * 1024 * 1024 * 1024; exit }
+    /T$/ { sub(/T/,""); print $1 * 1024 * 1024 * 1024 * 1024; exit }
+    { print 0 }
+')
+[ -z "$bytes" ] && bytes=0
+
+internal_ip=""
 case "$state" in
-    running)            printf '  %-18s running\n' "state" ;;
-    stopped)            printf '  %-18s stopped\n' "state" ;;
-    containing)         printf '  %-18s containing (in progress)\n' "state" ;;
-    contained)          printf '  %-18s CONTAINED by Guardian\n' "state" ;;
-    containment-failed) printf '  %-18s CONTAINMENT FAILED\n' "state" ;;
-    contained-but-running) printf '  %-18s CONTAINED (running again - investigate)\n' "state" ;;
-    stopped-maybe-contained) printf '  %-18s may be contained (another compartment was contained this boot)\n' "state" ;;
-    *)                  printf '  %-18s unknown\n' "state" ;;
+    running|running-other-contained)
+        internal_ip=$(jexec -- "$name" ifconfig 2>/dev/null | awk '/inet 10\.0\.0\./ {print $2; exit}')
+        ;;
 esac
 
-if container_is_vault "$tier"; then
-    _vls="$(container_vault_lock_state "$name")"
-    case "$_vls" in
-        unlocked) printf '  %-18s unlocked\n' "vault" ;;
-        locked)   printf '  %-18s locked\n' "vault" ;;
+if [ "$json_mode" -eq 1 ]; then
+    st_esc=$(printf '%s' "$template" | sed 's/["\\]/\\&/g')
+    path_esc=$(printf '%s' "$jailroot" | sed 's/["\\]/\\&/g')
+    printf '{\n'
+    printf '  "name": "%s",\n' "$name"
+    printf '  "jail_state": "%s",\n' "$state"
+    printf '  "key_state": %s,\n' "$key_state"
+    printf '  "source_template": "%s",\n' "$st_esc"
+    printf '  "kind": "%s",\n' "$kind"
+    printf '  "tier": "%s",\n' "$tier"
+    printf '  "disk_usage": %s,\n' "$bytes"
+    printf '  "is_vault": %s,\n' "$([ "$is_vault" -eq 1 ] && echo true || echo false)"
+    printf '  "path": "%s",\n' "$path_esc"
+    if [ -n "$internal_ip" ]; then
+        printf '  "internal_ip": "%s"\n' "$internal_ip"
+    else
+        printf '  "internal_ip": null\n'
+    fi
+    printf '}\n'
+    exit 0
+fi
+
+printf 'Compartment: %s\n' "$name"
+printf '  %-18s %s\n' "kind"     "$kind"
+printf '  %-18s %s\n' "template" "${template:-<legacy>}"
+printf '  %-18s %s\n' "path"     "$jailroot"
+
+case "$state" in
+    running)                 printf '  %-18s running\n' "state" ;;
+    stopped)                 printf '  %-18s stopped\n' "state" ;;
+    containing)              printf '  %-18s containing (in progress)\n' "state" ;;
+    contained)               printf '  %-18s CONTAINED by Guardian\n' "state" ;;
+    containment-failed)      printf '  %-18s CONTAINMENT FAILED\n' "state" ;;
+    contained-but-running)   printf '  %-18s CONTAINED (running again - investigate)\n' "state" ;;
+    stopped-maybe-contained) printf '  %-18s may be contained (another compartment was contained this boot)\n' "state" ;;
+    *)                       printf '  %-18s unknown\n' "state" ;;
+esac
+
+if [ "$is_vault" -eq 1 ]; then
+    case "$key_state" in
+        '"unlocked"') printf '  %-18s unlocked\n' "vault" ;;
+        '"locked"')   printf '  %-18s locked\n' "vault" ;;
     esac
 fi
 
-case "$state" in
-    running|contained-but-running)
-        ip="$(jexec -- "$name" ifconfig 2>/dev/null \
-              | awk '/inet 10\.0\.0\./ {print $2; exit}')"
-        [ -n "$ip" ] && printf '  %-18s %s\n' "internal IP" "$ip"
-        ;;
-esac
+[ -n "$internal_ip" ] && printf '  %-18s %s\n' "internal IP" "$internal_ip"
 
 case "$state" in
     contained|containment-failed|contained-but-running|stopped-maybe-contained|containing|unknown)
@@ -67,3 +123,11 @@ case "$state" in
         parish_jail_state_message "$name" "$state"
         ;;
 esac
+
+if [ "$tier" = "legacy" ]; then
+    printf '\n'
+    printf 'This compartment was created before the template system.\n'
+    printf 'It cannot be started, locked, or unlocked. To replace it:\n'
+    printf '  pkexec parishctl destroy %s\n' "$name"
+    printf '  pkexec parishctl create %s --template=<new-template>\n' "$name"
+fi
