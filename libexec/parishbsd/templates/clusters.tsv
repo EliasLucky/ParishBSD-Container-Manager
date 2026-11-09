@@ -5,7 +5,7 @@ T-fonts-min	required	fontconfig,dejavu	-
 T-xpra	optional	xpra,xorg-vfbserver,xorg-libraries,xauth	requires:T-fonts-min
 T-fonts-cjk	optional	noto-basic,wqy,fcitx5,ibus	-
 T-compat-linux	optional	-	provision:linux-enable
-T-compat-windows	optional	wine,wine-mono,wine-gecko	requires:T-compat-linux,provision:wineboot-init
+T-compat-windows	optional	wine,wine-mono,wine-gecko	requires:T-compat-linux
 T-audio-sndio	optional	sndio,sndio-libressl	-
 T-file-tools	optional	pcmanfm,mousepad	-
 T-postgres	optional	postgresql16-server	-
