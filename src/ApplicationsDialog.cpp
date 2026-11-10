@@ -13,7 +13,6 @@
 #include <QHeaderView>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QProcess>
 #include <QFileInfo>
 #include <QDir>
 #include <QTimer>
@@ -213,11 +212,10 @@ void ApplicationsDialog::onRemoveSelected()
             "Custom apps will only have their metadata removed; "
             "their files stay in the container.").arg(custom.join("\n  "));
 
-    if (QMessageBox::question(this, tr("Remove"), msg) != QMessageBox::Yes)
-        return;
+    if (QMessageBox::question(this, tr("Remove"), msg) != QMessageBox::Yes) return;
 
-    for (const QString &n : native)
-        m_backend->removePackage(m_jail, n);
+    for (const QString &n : native) m_backend->removePackage(m_jail, n);
+    for (const QString &c : custom) m_backend->removeCustomApp(m_jail, c);
 }
 
 void ApplicationsDialog::onInstallCatalog()
@@ -228,8 +226,7 @@ void ApplicationsDialog::onInstallCatalog()
     if (pkg.isEmpty()) return;
 
     if (QMessageBox::question(this, tr("Install"),
-        tr("Install '%1' in '%2'?").arg(pkg, m_jail)) != QMessageBox::Yes)
-        return;
+        tr("Install '%1' in '%2'?").arg(pkg, m_jail)) != QMessageBox::Yes) return;
 
     m_backend->installPackage(m_jail, pkg);
 }
@@ -248,14 +245,12 @@ void ApplicationsDialog::onLaunchSelected()
 {
     const PackageInfo p = selectedPackage();
     if (!p.isValid()) return;
-    
-    // Placeholder for launching app
     QMessageBox::information(this, tr("Launch"), tr("Launching '%1' is implemented in F4.").arg(p.name));
 }
 
 void ApplicationsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)
 {
-    if (!ok && desc.contains(QLatin1String("Install"))) {
+    if (!ok) {
         QMessageBox::warning(this, tr("Operation failed"), desc + "\n\n" + err);
     }
     refresh();
