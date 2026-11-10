@@ -26,7 +26,12 @@ QString ContainerBackend::runSync(const QString &program, const QStringList &arg
         if (exitCode) *exitCode = -1;
         return QString();
     }
-    proc.waitForFinished(30000);
+    // M2: Check timeout and capture stderr if it fails
+    if (!proc.waitForFinished(30000)) {
+        proc.kill();
+        if (exitCode) *exitCode = -1;
+        return QString();
+    }
     if (exitCode) *exitCode = proc.exitCode();
     return QString::fromUtf8(proc.readAllStandardOutput());
 }
@@ -35,8 +40,6 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 {
     QList<ContainerInfo> result;
     int exitCode = 0;
-    
-    // The GUI backend uses the JSON flag
     const QString out = runSync(m_pkexecPath, { QStringLiteral("/usr/local/sbin/parishctl-list"), QStringLiteral("--json") }, &exitCode);
     
     if (exitCode != 0) {
@@ -46,13 +49,8 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
 
     QJsonParseError parseError;
     QJsonDocument doc = QJsonDocument::fromJson(out.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError) {
-        if (errorOut) *errorOut = parseError.errorString();
-        return result;
-    }
-
-    if (!doc.isArray()) {
-        if (errorOut) *errorOut = tr("JSON root is not an array");
+    if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
+        if (errorOut) *errorOut = tr("JSON parse error");
         return result;
     }
 
@@ -72,9 +70,7 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
         info.isCompatibility = obj["is_compatibility"].toBool();
         info.path = QStringLiteral("/usr/local/jails/containers/%1").arg(info.name);
 
-        if (!info.name.isEmpty()) {
-            result.append(info);
-        }
+        if (!info.name.isEmpty()) result.append(info);
     }
 
     if (errorOut) errorOut->clear();
@@ -154,7 +150,9 @@ void ContainerBackend::runInTerminal(const QString &title, const QString &progra
         quoted.append("'" + esc + "'");
     }
     const QString shellLine = quoted.join(' ');
-    const QString wrapped = QStringLiteral("%1; echo; echo '[press Enter to close]'; read _").arg(shellLine);
+    
+    // F2: Preserve the exit code of the command, ignoring the `read` exit code
+    const QString wrapped = QStringLiteral("%1; _rc=$?; echo; echo '[press Enter to close]'; read _; exit $_rc").arg(shellLine);
 
     auto *proc = new QProcess(this);
     proc->setProgram(program);
@@ -236,54 +234,32 @@ QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *
 {
     QList<PackageInfo> result;
     int rc = 0;
-    const QString infoOut = runSync(m_pkexecPath, { QStringLiteral("/usr/sbin/pkg"), QStringLiteral("-j"), jail, QStringLiteral("info") }, &rc);
+    
+    // F1: Use the parishctl wrapper, not /usr/sbin/pkg directly
+    const QString infoOut = runSync(m_pkexecPath, { QStringLiteral("/usr/local/sbin/parishctl-apps-list"), jail }, &rc);
     if (rc != 0) {
-        if (errorOut) *errorOut = tr("pkg info failed");
+        if (errorOut) *errorOut = tr("parishctl-apps-list failed");
         return result;
     }
 
     for (const QString &line : infoOut.split('\n', Qt::SkipEmptyParts)) {
-        const int sp = line.indexOf(' ');
-        if (sp <= 0) continue;
-        const QString nameVer = line.left(sp).trimmed();
-        const QString comment = line.mid(sp).trimmed();
-
-        int dashPos = -1;
-        for (int i = nameVer.size()-1; i > 0; --i) {
-            if (nameVer.at(i) == '-' && i+1 < nameVer.size() && nameVer.at(i+1).isDigit()) {
-                dashPos = i;
-                break;
-            }
-        }
-        if (dashPos < 0) continue;
-
-        PackageInfo p;
-        p.kind = PackageInfo::NativePackage;
-        p.name = nameVer.left(dashPos);
-        p.version = nameVer.mid(dashPos+1);
-        p.comment = comment;
-        result.append(p);
-    }
-
-    // Custom apps from host-side metadata
-    const QString launcherDir = QStringLiteral("/var/db/parishbsd/launchers/%1").arg(jail);
-    QDir d(launcherDir);
-    if (d.exists()) {
-        for (const QString &fname : d.entryList({ "*.conf" }, QDir::Files)) {
-            QFile f(d.filePath(fname));
-            if (!f.open(QIODevice::ReadOnly)) continue;
-            QTextStream in(&f);
+        if (line.startsWith("Compartment ")) continue;
+        
+        const QStringList parts = line.split('\t');
+        if (parts.size() >= 3) {
             PackageInfo p;
-            p.kind = PackageInfo::CustomApp;
-            while (!in.atEnd()) {
-                const QString line = in.readLine().trimmed();
-                if (line.startsWith("name=")) p.name = line.mid(5);
-                else if (line.startsWith("version=")) p.version = line.mid(8);
-                else if (line.startsWith("method=")) p.installMethod = line.mid(7);
-                else if (line.startsWith("install_path=")) p.origin = line.mid(13);
-                else if (line.startsWith("written_at=")) p.installDate = line.mid(11);
+            if (parts[0] == "native") {
+                p.kind = PackageInfo::NativePackage;
+                p.name = parts[1];
+                p.version = parts[2];
+                result.append(p);
+            } else if (parts[0] == "custom") {
+                p.kind = PackageInfo::CustomApp;
+                p.name = parts[1];
+                p.version = parts[2];
+                if (parts.size() > 3) p.installMethod = parts[3];
+                result.append(p);
             }
-            if (!p.name.isEmpty()) result.append(p);
         }
     }
 
@@ -293,27 +269,20 @@ QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *
 
 void ContainerBackend::upgradePackages(const QString &jail)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-apps-upgrade' '%2'; echo; echo 'Press Enter to close...'; read _").arg(m_pkexecPath, jail);
-    runInTerminal(tr("Upgrading packages in %1").arg(jail), m_terminalPath,
-        { QStringLiteral("--title"), tr("Upgrade: %1").arg(jail),
-          QStringLiteral("--geometry"), QStringLiteral("100x28"),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    runParishctl(tr("Upgrading packages in %1").arg(jail), { QStringLiteral("parishctl-apps-upgrade"), jail });
 }
 
 void ContainerBackend::installPackage(const QString &jail, const QString &package)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-apps-install' '%2' '%3'; echo; echo 'Press Enter to close...'; read _").arg(m_pkexecPath, jail, package);
-    runInTerminal(tr("Installing %1 in %2").arg(package, jail), m_terminalPath,
-        { QStringLiteral("--title"), tr("Install: %1").arg(jail),
-          QStringLiteral("--geometry"), QStringLiteral("100x28"),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    runParishctl(tr("Installing %1 in %2").arg(package, jail), { QStringLiteral("parishctl-apps-install"), jail, package });
 }
 
 void ContainerBackend::removePackage(const QString &jail, const QString &package)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-apps-remove' '%2' '%3'; echo; echo 'Press Enter to close...'; read _").arg(m_pkexecPath, jail, package);
-    runInTerminal(tr("Removing %1 from %2").arg(package, jail), m_terminalPath,
-        { QStringLiteral("--title"), tr("Remove: %1").arg(jail),
-          QStringLiteral("--geometry"), QStringLiteral("100x28"),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    runParishctl(tr("Removing %1 from %2").arg(package, jail), { QStringLiteral("parishctl-apps-remove"), jail, package });
+}
+
+void ContainerBackend::removeCustomApp(const QString &jail, const QString &appName)
+{
+    runParishctl(tr("Removing %1 from %2").arg(appName, jail), { QStringLiteral("parishctl-apps-remove-custom"), jail, appName });
 }
