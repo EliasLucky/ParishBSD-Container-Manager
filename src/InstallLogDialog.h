@@ -2,30 +2,30 @@
 
 #include <QDialog>
 
-class QPlaintTextEdit;
+class QPlainTextEdit;
 class QProgressBar;
 class QLabel;
 class QPushButton;
-class QProcess;
+class ContainerBackend;
 
 class InstallLogDialog : public QDialog
 {
-	Q_OBJECT
+    Q_OBJECT
 public:
-	InstallLogDialog(const QString &title, const QString &command, const QStringList &args, QWidget *parent = nullptr);
+    InstallLogDialog(ContainerBackend *backend, const QString &title, const QString &jail, const QString &package, QWidget *parent = nullptr);
 
 signals:
-	void finished(bool success);
+    void finished(bool success);
 
 private slots:
-	void onReadyRead();
-	void onProcessFinished(int exitCode, QProcess::ExitStatus status);
-	void onCancel();
+    void onInstallOutput(const QString &text);
+    void onInstallFinished(bool ok, const QString &err);
+    void onCancel();
 
 private:
-	QPlainTextEdit *m_log = nullptr;
-	QProgressBar *m_progress = nullptr;
-	QLabel *m_status = nullptr;
-	QPushButton *m_cancelBtn = nullptr;
-	QProcess *m_process = nullptr;
+    ContainerBackend *m_backend;
+    QPlainTextEdit *m_log = nullptr;
+    QProgressBar *m_progress = nullptr;
+    QLabel *m_status = nullptr;
+    QPushButton *m_cancelBtn = nullptr;
 };
