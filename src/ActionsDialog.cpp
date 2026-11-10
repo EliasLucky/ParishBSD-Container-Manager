@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QIcon>
 
 ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent) : QDialog(parent), m_backend(backend), m_info(info)
 {
@@ -71,8 +72,7 @@ void ActionsDialog::rebuildButtons()
         auto *banner = new QLabel(tr("<b style='color:white;background-color:red;padding:4px;'>CONTAINED BY GUARDIAN</b>"), this);
         banner->setAlignment(Qt::AlignCenter);
         m_buttonLayout->addWidget(banner);
-        addButton(tr("Open Console"), "utilities-terminal", &ActionsDialog::onConsole);
-        return; // Do not show standard actions
+        return; 
     }
 
     if (m_info.isVault) {
@@ -89,7 +89,7 @@ void ActionsDialog::rebuildButtons()
             addButton(tr("Open console"), "utilities-terminal", &ActionsDialog::onConsole);
         }   
         else {
-            addButton(tr("Start"), "media-play-start", &ActionsDialog::onStart);
+            addButton(tr("Start"), "media-playback-start", &ActionsDialog::onStart);
         }
     }
 
@@ -128,7 +128,7 @@ void ActionsDialog::onConsole() { m_backend->openConsole(m_info.name); }
 
 void ActionsDialog::onOpenFiles()
 {
-    // Placeholder: open file manager if vault unlocked
+    m_backend->openConsole(m_info.name);
 }
 
 void ActionsDialog::onRefresh()
@@ -138,11 +138,7 @@ void ActionsDialog::onRefresh()
 }
 
 void ActionsDialog::onDestroy() {
-    if (m_info.isContained()) {
-        QMessageBox::critical(this, tr("Cannot Destroy"),
-            tr("This compartment is CONTAINED by Guardian. Investigate the incident first."));
-        return;
-    }
+    if (m_info.isContained()) return;
 
     bool ok = false;
     const QString token = QInputDialog::getText(this, tr("Confirm Destruction"),
@@ -162,6 +158,11 @@ void ActionsDialog::onOperationFinished(const QString &desc, bool ok, const QStr
     if (!ok) {
         QMessageBox::warning(this, tr("Operation failed"), desc + "\n\n" + err);
     }
-    emit containerChanged();
-    accept();
+    
+    if (desc.contains("Destroying") || desc.contains("Creating")) {
+        emit containerChanged();
+        accept();
+    } else {
+        emit containerChanged();
+    }
 }
