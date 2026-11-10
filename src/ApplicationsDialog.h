@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QString>
+#include "PackageInfo.h"
 
 class QTabWidget;
 class QTableView;
