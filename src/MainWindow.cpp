@@ -23,6 +23,8 @@
 #include <QDialogButtonBox>
 #include <QDialog>
 #include <QItemSelectionModel>
+#include <QRegularExpression>
+#include <QIcon>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
@@ -36,7 +38,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_proxy->setSortCaseSensitivity(Qt::CaseInsensitive);
 
     m_pollTimer = new QTimer(this);
-    m_pollTimer->setInterval(10000); // 10s poll (D2/7.4)
+    m_pollTimer->setInterval(10000); // 10s poll
 
     buildMenus();
     buildToolBar();
@@ -198,15 +200,6 @@ void MainWindow::buildStatusBar()
     statusBar()->addWidget(m_statusLabel, 1);
 }
 
-QString MainWindow::selectedName() const
-{
-    const QModelIndexList sel = m_table->selectionModel()->selectedRows();
-    if (sel.isEmpty()) return QString();
-    const QModelIndex sourceIdx = m_proxy->mapToSource(sel.first());
-    if (!sourceIdx.isValid()) return QString();
-    return m_model->containerAt(sourceIdx.row()).name;
-}
-
 ContainerInfo MainWindow::selectedContainer() const
 {
     const QModelIndexList sel = m_table->selectionModel()->selectedRows();
@@ -242,8 +235,7 @@ void MainWindow::onRefresh()
 {
     m_model->refresh();
     updateActionStates();
-    if (m_statusLabel)
-        m_statusLabel->setText(tr("Refreshed."));
+    if (m_statusLabel) m_statusLabel->setText(tr("Refreshed."));
 }
 
 void MainWindow::onCreate()
@@ -276,16 +268,14 @@ void MainWindow::onCreate()
     const QString name = nameEdit->text().trimmed();
     const QString tmpl = templateBox->currentText();
 
-    if (name.isEmpty()) {
-        QMessageBox::warning(this, tr("Invalid name"), tr("Please enter a name."));
+    QRegularExpression re("^[a-z0-9-]{1,31}$");
+    if (!re.match(name).hasMatch()) {
+        QMessageBox::warning(this, tr("Invalid name"), tr("Name may contain only lowercase letters, digits, and hyphens (max 31 characters)."));
         return;
     }
-
-    for (const QChar &ch : name) {
-        if (!ch.isLetterOrNumber() && ch != QLatin1Char('-')) {
-            QMessageBox::warning(this, tr("Invalid name"), tr("Name may contain only letters, digits, and '-'."));
-            return;
-        }
+    if (name.startsWith('-') || name.endsWith('-') || name.contains("--")) {
+        QMessageBox::warning(this, tr("Invalid name"), tr("Name cannot start/end with a hyphen or contain consecutive hyphens."));
+        return;
     }
 
     m_backend->createContainer(name, tmpl);
