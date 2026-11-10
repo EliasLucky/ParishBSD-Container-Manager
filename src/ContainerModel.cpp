@@ -21,11 +21,12 @@ int ContainerModel::columnCount(const QModelIndex &parent) const
 QIcon ContainerModel::iconFor(const ContainerInfo &c) const
 {
     if (c.isVault) {
-        if (c.isLocked()) return QIcon::fromTheme("parish-container-vault-locked");
-        return QIcon::fromTheme("parish-container-vault-unlocked");
+        return QIcon::fromTheme("folder-locked");
     }
-    if (c.isCompatibility) return QIcon::fromTheme("parish-container-compat");
-    return QIcon::fromTheme("parish-container-app");
+    if (c.isCompatibility) {
+        return QIcon::fromTheme("applications-other");
+    }
+    return QIcon::fromTheme("package-x-generic");
 }
 
 QVariant ContainerModel::data(const QModelIndex &index, int role) const
@@ -57,9 +58,15 @@ QVariant ContainerModel::data(const QModelIndex &index, int role) const
     if (role == Qt::ToolTipRole)
         return c.accessibleDescription();
 
-    // D2: Accessibility is mandatory
     if (role == Qt::AccessibleTextRole) {
-        return c.accessibleText();
+        switch (index.column()) {
+        case NameColumn: return c.accessibleText();
+        case KindColumn: return c.kind;
+        case StateColumn: return c.humanState();
+        case TemplateColumn: return c.sourceTemplate;
+        case DiskUsageColumn: return formatDiskUsage(c.diskUsage);
+        default: return QVariant();
+        }
     }
     if (role == Qt::AccessibleDescriptionRole) {
         return c.accessibleDescription();
@@ -95,23 +102,20 @@ void ContainerModel::refresh()
         m_lastError.clear();
     } else {
         m_lastError = err;
-        // N18: Fail closed. Do not update the model if the JSON was malformed.
     }
     endResetModel();
 }
 
 ContainerInfo ContainerModel::containerAt(int row) const
 {
-    if (row < 0 || row >= m_rows.size())
-        return ContainerInfo();
+    if (row < 0 || row >= m_rows.size()) return ContainerInfo();
     return m_rows.at(row);
 }
 
 int ContainerModel::rowForName(const QString &name) const
 {
     for (int i = 0; i < m_rows.size(); ++i)
-        if (m_rows.at(i).name == name)
-            return i;
+        if (m_rows.at(i).name == name) return i;
     return -1;
 }
 
