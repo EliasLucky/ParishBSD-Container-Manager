@@ -20,7 +20,6 @@ struct ContainerInfo {
     
     bool isRunning() const {
         return jailState == QLatin1String("running") ||
-               jailState == QLatin1String("unlocked") ||
                jailState == QLatin1String("contained-but-running") ||
                jailState == QLatin1String("running-other-contained");
     }
