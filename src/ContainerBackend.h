@@ -15,11 +15,9 @@ class ContainerBackend : public QObject {
 public:
     explicit ContainerBackend(QObject *parent = nullptr);
 
-    // JSON-backed calls
     QList<ContainerInfo> listContainers(QString *errorOut = nullptr) const;
     QStringList listTemplatesNames() const;
 
-    // Lifecycle Actions
     void startContainer(const QString &name);
     void stopContainer(const QString &name);
     void unlockVault(const QString &name);
@@ -28,17 +26,24 @@ public:
     void createContainer(const QString &name, const QString &templateName);
     void openConsole(const QString &name);
 
-    // Apps
     QList<PackageInfo> listPackages(const QString &jail, QString *errorOut = nullptr) const;
     void upgradePackages(const QString &jail);
     void installPackage(const QString &jail, const QString &package);
+    
+    void installPackageAsync(const QString &jail, const QString &package);
+    void cancelInstall();
+
     void removePackage(const QString &jail, const QString &package);
+    void removeCustomApp(const QString &jail, const QString &appName);
 
 signals:
     void operationStarted(const QString &description);
     void operationFinished(const QString &description, bool success, const QString &errorMessage);
     void terminalLaunched(const QString &description);
     void terminalClosed(const QString &description);
+
+    void installOutputReady(const QString &text);
+    void installFinished(bool success, const QString &errorMessage);
 
 private:
     void runParishctl(const QString &description, const QStringList &args);
@@ -49,4 +54,5 @@ private:
 
     QString m_pkexecPath;
     QString m_terminalPath;
+    QProcess *m_installProcess = nullptr;
 };
