@@ -29,6 +29,10 @@ public:
     QList<PackageInfo> listPackages(const QString &jail, QString *errorOut = nullptr) const;
     void upgradePackages(const QString &jail);
     void installPackage(const QString &jail, const QString &package);
+    
+    void installPackageAsync(const QString &jail, const QString &package);
+    void cancelInstall();
+
     void removePackage(const QString &jail, const QString &package);
     void removeCustomApp(const QString &jail, const QString &appName);
 
@@ -37,6 +41,9 @@ signals:
     void operationFinished(const QString &description, bool success, const QString &errorMessage);
     void terminalLaunched(const QString &description);
     void terminalClosed(const QString &description);
+
+    void installOutputReady(const QString &text);
+    void installFinished(bool success, const QString &errorMessage);
 
 private:
     void runParishctl(const QString &description, const QStringList &args);
@@ -47,4 +54,5 @@ private:
 
     QString m_pkexecPath;
     QString m_terminalPath;
+    QProcess *m_installProcess = nullptr;
 };
