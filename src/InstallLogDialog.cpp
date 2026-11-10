@@ -1,4 +1,5 @@
 #include "InstallLogDialog.h"
+#include "ContainerBackend.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -6,17 +7,17 @@
 #include <QProgressBar>
 #include <QLabel>
 #include <QPushButton>
-#include <QProcess>
 #include <QCloseEvent>
 #include <QTimer>
 
-InstallLogDialog::InstallLogDialog(const QString &title, const QString &command, const QStringList &args, QWidget *parent) : QDialog(parent)
+InstallLogDialog::InstallLogDialog(ContainerBackend *backend, const QString &title, const QString &jail, const QString &package, QWidget *parent) 
+    : QDialog(parent), m_backend(backend)
 {
     setWindowTitle(title);
     setMinimumSize(640,420);
 
     auto *root = new QVBoxLayout(this);
-    m_status = new QLabel(tr("Working..."),this);
+    m_status = new QLabel(tr("Starting installation..."), this);
     root->addWidget(m_status);
 
     m_progress = new QProgressBar(this);
@@ -35,29 +36,24 @@ InstallLogDialog::InstallLogDialog(const QString &title, const QString &command,
     buttons->addWidget(m_cancelBtn);
     root->addLayout(buttons);
 
-    m_process = new QProcess(this);
-    
-    connect(m_process, &QProcess::readyReadStandardOutput, this, &InstallLogDialog::onReadyRead);
-    connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &InstallLogDialog::onProcessFinished);
+    connect(m_backend, &ContainerBackend::installOutputReady, this, &InstallLogDialog::onInstallOutput);
+    connect(m_backend, &ContainerBackend::installFinished, this, &InstallLogDialog::onInstallFinished);
     connect(m_cancelBtn, &QPushButton::clicked, this, &InstallLogDialog::onCancel);
 
-    m_process->setProgram(command);
-    m_process->setArguments(args);
-    m_process->start();
+    // Tell backend to start (F4 integration)
+    m_backend->installPackageAsync(jail, package);
 }
 
-void InstallLogDialog::onReadyRead()
+void InstallLogDialog::onInstallOutput(const QString &text)
 {
-    const QByteArray chunk = m_process->readAllStandardOutput();
     m_log->moveCursor(QTextCursor::End);
-    m_log->insertPlainText(QString::fromUtf8(chunk));
+    m_log->insertPlainText(text);
     m_log->moveCursor(QTextCursor::End);
 }
 
-void InstallLogDialog::onProcessFinished(int exitCode, QProcess::ExitStatus status)
+void InstallLogDialog::onInstallFinished(bool ok, const QString &err)
 {
     m_progress->setRange(0,1);
-    const bool ok = (status == QProcess::NormalExit && exitCode == 0);
     m_progress->setValue(ok ? 1 : 0);
 
     if (ok) {
@@ -65,10 +61,11 @@ void InstallLogDialog::onProcessFinished(int exitCode, QProcess::ExitStatus stat
         m_cancelBtn->setText(tr("Close"));
         m_cancelBtn->disconnect();
         connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::accept);
-        QTimer::singleShot(2000,this,&QDialog::accept);
+        QTimer::singleShot(2000, this, &QDialog::accept);
     }
     else {
-        m_status->setText(tr("Installation failed. See log above."));
+        m_status->setText(tr("Installation failed."));
+        if (!err.isEmpty()) onInstallOutput("\nERROR: " + err + "\n");
         m_cancelBtn->setText(tr("Close"));
         m_cancelBtn->disconnect();
         connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
@@ -79,11 +76,7 @@ void InstallLogDialog::onProcessFinished(int exitCode, QProcess::ExitStatus stat
 
 void InstallLogDialog::onCancel()
 {
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->terminate();
-        if (!m_process->waitForFinished(3000))
-            m_process->kill();
-    }
+    m_backend->cancelInstall();
     reject();
 }
 
