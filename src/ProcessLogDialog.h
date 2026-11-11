@@ -1,5 +1,4 @@
 #pragma once
-
 #include <QDialog>
 
 class QPlainTextEdit;
@@ -7,12 +6,13 @@ class QProgressBar;
 class QLabel;
 class QPushButton;
 class ContainerBackend;
+class QCloseEvent;
 
-class InstallLogDialog : public QDialog
+class ProcessLogDialog : public QDialog
 {
     Q_OBJECT
 public:
-    InstallLogDialog(ContainerBackend *backend, const QString &title, const QString &jail, const QString &package, QWidget *parent = nullptr);
+    ProcessLogDialog(ContainerBackend *backend, const QString &title, QWidget *parent = nullptr);
 
 signals:
     void finished(bool success);
@@ -21,8 +21,8 @@ protected:
     void closeEvent(QCloseEvent *e) override;
 
 private slots:
-    void onInstallOutput(const QString &text);
-    void onInstallFinished(bool ok, const QString &err);
+    void onOutput(const QString &text);
+    void onFinished(bool ok, const QString &err);
     void onCancel();
 
 private:
