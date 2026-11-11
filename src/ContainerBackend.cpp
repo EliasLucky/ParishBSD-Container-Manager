@@ -26,7 +26,6 @@ QString ContainerBackend::runSync(const QString &program, const QStringList &arg
         if (exitCode) *exitCode = -1;
         return QString();
     }
-    // M2: Check timeout and capture stderr if it fails
     if (!proc.waitForFinished(30000)) {
         proc.kill();
         if (exitCode) *exitCode = -1;
@@ -138,24 +137,16 @@ void ContainerBackend::runParishctl(const QString &description, const QStringLis
     runAsync(description, m_pkexecPath, pkArgs);
 }
 
-void ContainerBackend::runInTerminal(const QString &title, const QString &program, const QStringList &args)
+void ContainerBackend::runInTerminal(const QString &title, const QString &shellCommand)
 {
     emit operationStarted(title);
     emit terminalLaunched(title);
 
-    QStringList quoted;
-    for (const QString &a : args) {
-        QString esc = a;
-        esc.replace("'", "'\\''");
-        quoted.append("'" + esc + "'");
-    }
-    const QString shellLine = quoted.join(' ');
-    
-    const QString wrapped = QStringLiteral("%1; _rc=$?; echo; echo '[press Enter to close]'; read _; exit $_rc").arg(shellLine);
+    const QString wrapped = QStringLiteral("%1; _rc=$?; echo; echo '[press Enter to close]'; read _; exit $_rc").arg(shellCommand);
 
     auto *proc = new QProcess(this);
-    proc->setProgram(program);
-    proc->setArguments({ QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), wrapped });
+    proc->setProgram(m_terminalPath);
+    proc->setArguments({ QStringLiteral("--title"), title, QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), wrapped });
 
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, proc, title](int code, QProcess::ExitStatus status) {
         const bool ok = (status == QProcess::NormalExit && code == 0);
@@ -188,11 +179,8 @@ void ContainerBackend::stopContainer(const QString &name) {
 
 void ContainerBackend::unlockVault(const QString &name)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-unlock' '%2'; echo; echo 'Press Enter to close...'; read _").arg(m_pkexecPath, name);
-    runInTerminal(tr("Unlocking '%1'").arg(name), m_terminalPath,
-        { QStringLiteral("--title"), tr("Unlock Vault: %1").arg(name),
-          QStringLiteral("--geometry"), QStringLiteral("90x20"),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-unlock' '%2'").arg(m_pkexecPath, name);
+    runInTerminal(tr("Unlock Vault: %1").arg(name), cmd);
 }
 
 void ContainerBackend::lockVault(const QString &name)
@@ -202,31 +190,22 @@ void ContainerBackend::lockVault(const QString &name)
 
 void ContainerBackend::destroyContainer(const QString &name, const QString &confirmationToken)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-destroy' '%2' --confirmation-token='%3'; echo; echo 'Press Enter to close...'; read _")
+    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-destroy' '%2' --confirmation-token='%3'")
         .arg(m_pkexecPath, name, confirmationToken);
-    runInTerminal(tr("Destroying '%1'").arg(name), m_terminalPath,
-        { QStringLiteral("--title"), tr("Destroy: %1").arg(name),
-          QStringLiteral("--geometry"), QStringLiteral("90x24"),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    runInTerminal(tr("Destroy: %1").arg(name), cmd);
 }
 
 void ContainerBackend::createContainer(const QString &name, const QString &templateName)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-create' '%2' --template='%3'; echo; echo 'Press Enter to close...'; read _")
+    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-create' '%2' --template='%3'")
         .arg(m_pkexecPath, name, templateName);
-    runInTerminal(tr("Creating '%1'").arg(name), m_terminalPath,
-        { QStringLiteral("--title"), tr("Create: %1").arg(name),
-          QStringLiteral("--geometry"), QStringLiteral("90x24"),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    runInTerminal(tr("Create: %1").arg(name), cmd);
 }
 
 void ContainerBackend::openConsole(const QString &name)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-console' '%2'; echo; echo '[console closed]'; read _")
-        .arg(m_pkexecPath, name);
-    runInTerminal(tr("Console: '%1'").arg(name), m_terminalPath,
-        { QStringLiteral("--title"), tr("Console: %1").arg(name),
-          QStringLiteral("-x"), QStringLiteral("sh"), QStringLiteral("-c"), cmd });
+    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-console' '%2'").arg(m_pkexecPath, name);
+    runInTerminal(tr("Console: %1").arg(name), cmd);
 }
 
 QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *errorOut) const
@@ -234,7 +213,6 @@ QList<PackageInfo> ContainerBackend::listPackages(const QString &jail, QString *
     QList<PackageInfo> result;
     int rc = 0;
     
-    // F1: Use the parishctl wrapper, not /usr/sbin/pkg directly
     const QString infoOut = runSync(m_pkexecPath, { QStringLiteral("/usr/local/sbin/parishctl-apps-list"), jail }, &rc);
     if (rc != 0) {
         if (errorOut) *errorOut = tr("parishctl-apps-list failed");
