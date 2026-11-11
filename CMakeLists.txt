@@ -44,7 +44,7 @@ if(BUILD_GUI)
         src/ContainerInfo.cpp
         src/ActionsDialog.cpp
         src/ApplicationsDialog.cpp
-        src/InstallLogDialog.cpp
+        src/ProcessLogDialog.cpp
         src/CatalogTableModel.cpp
         src/PackageTableModel.cpp
     )
@@ -56,7 +56,7 @@ if(BUILD_GUI)
         src/ContainerInfo.h
         src/ActionsDialog.h
         src/ApplicationsDialog.h
-        src/InstallLogDialog.h
+        src/ProcessLogDialog.h
         src/CatalogTableModel.h
         src/PackageTableModel.h
         src/CustomApp.h
