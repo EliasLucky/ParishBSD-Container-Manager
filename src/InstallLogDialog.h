@@ -17,6 +17,9 @@ public:
 signals:
     void finished(bool success);
 
+protected:
+    void closeEvent(QCloseEvent *e) override;
+
 private slots:
     void onInstallOutput(const QString &text);
     void onInstallFinished(bool ok, const QString &err);
