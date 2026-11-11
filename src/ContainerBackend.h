@@ -28,11 +28,9 @@ public:
 
     QList<PackageInfo> listPackages(const QString &jail, QString *errorOut = nullptr) const;
     void upgradePackages(const QString &jail);
-    void installPackage(const QString &jail, const QString &package);
-    
+    void installPackage(const QString &jail, const QString &package); 
     void installPackageAsync(const QString &jail, const QString &package);
     void cancelInstall();
-
     void removePackage(const QString &jail, const QString &package);
     void removeCustomApp(const QString &jail, const QString &appName);
 
@@ -47,7 +45,7 @@ signals:
 
 private:
     void runParishctl(const QString &description, const QStringList &args);
-    void runInTerminal(const QString &title, const QString &program, const QStringList &args);
+    void runInTerminal(const QString &title, const QString &shellCommand);
     void runAsync(const QString &description, const QString &program, const QStringList &args);
 
     QString runSync(const QString &program, const QStringList &args, int *exitCode = nullptr) const;
