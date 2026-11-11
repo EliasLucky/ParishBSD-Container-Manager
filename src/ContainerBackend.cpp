@@ -26,7 +26,7 @@ QString ContainerBackend::runSync(const QString &program, const QStringList &arg
         if (exitCode) *exitCode = -1;
         return QString();
     }
-    if (!proc.waitForFinished(30000)) {
+    if (!proc.waitForFinished(300000)) {
         proc.kill();
         if (exitCode) *exitCode = -1;
         return QString();
@@ -128,6 +128,30 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
     proc->start();
 }
 
+void ContainerBackend::runCommandAsync(const QString &title, const QStringList &args)
+{
+    emit operationStarted(title);
+    if (m_installProcess) { m_installProcess->kill(); m_installProcess->deleteLater(); }
+    m_installProcess = new QProcess(this);
+    m_installProcess->setProgram(m_pkexecPath);
+    m_installProcess->setArguments(args);
+    connect(m_installProcess, &QProcess::readyReadStandardOutput, this, [this]() { emit installOutputReady(QString::fromUtf8(m_installProcess->readAllStandardOutput())); });
+    connect(m_installProcess, &QProcess::readyReadStandardError, this, [this]() { emit installOutputReady(QString::fromUtf8(m_installProcess->readAllStandardError())); });
+    connect(m_installProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, title](int exitCode, QProcess::ExitStatus status) {
+            const bool ok = (status == QProcess::NormalExit && exitCode == 0);
+            QString err;
+            if (!ok) {
+                err = QString::fromUtf8(m_installProcess->readAllStandardError()).trimmed();
+                if (err.isEmpty()) err = tr("Exit code %1").arg(exitCode);
+            }
+            emit installFinished(ok, err);
+            emit operationFinished(title, ok, err);
+            m_installProcess->deleteLater();
+            m_installProcess = nullptr;
+    });
+    m_installProcess->start();
+}
+
 void ContainerBackend::runParishctl(const QString &description, const QStringList &args)
 {
     QString bin = args.first();
@@ -190,16 +214,12 @@ void ContainerBackend::lockVault(const QString &name)
 
 void ContainerBackend::destroyContainer(const QString &name, const QString &confirmationToken)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-destroy' '%2' --confirmation-token='%3'")
-        .arg(m_pkexecPath, name, confirmationToken);
-    runInTerminal(tr("Destroy: %1").arg(name), cmd);
+    runCommandAsync(tr("Destroy: %1").arg(name), { QStringLiteral("/usr/local/sbin/parishctl-destroy"), name, QStringLiteral("--confirmation-token=%1").arg(confirmationToken) });
 }
 
 void ContainerBackend::createContainer(const QString &name, const QString &templateName)
 {
-    const QString cmd = QStringLiteral("'%1' '/usr/local/sbin/parishctl-create' '%2' --template='%3'")
-        .arg(m_pkexecPath, name, templateName);
-    runInTerminal(tr("Create: %1").arg(name), cmd);
+    runCommandAsync(tr("Create: %1").arg(name), { QStringLiteral("/usr/local/sbin/parishctl-create"), name, QStringLiteral("--template=%1").arg(templateName) });
 }
 
 void ContainerBackend::openConsole(const QString &name)
@@ -252,43 +272,6 @@ void ContainerBackend::upgradePackages(const QString &jail)
 void ContainerBackend::installPackage(const QString &jail, const QString &package)
 {
     runParishctl(tr("Installing %1 in %2").arg(package, jail), { QStringLiteral("parishctl-apps-install"), jail, package });
-}
-
-void ContainerBackend::installPackageAsync(const QString &jail, const QString &package)
-{
-    emit operationStarted(tr("Installing %1").arg(package));
-    
-    if (m_installProcess) {
-        m_installProcess->kill();
-        m_installProcess->deleteLater();
-    }
-
-    m_installProcess = new QProcess(this);
-    m_installProcess->setProgram(m_pkexecPath);
-    m_installProcess->setArguments({ QStringLiteral("/usr/local/sbin/parishctl-apps-install"), jail, package });
-
-    connect(m_installProcess, &QProcess::readyReadStandardOutput, this, [this]() {
-        emit installOutputReady(QString::fromUtf8(m_installProcess->readAllStandardOutput()));
-    });
-    connect(m_installProcess, &QProcess::readyReadStandardError, this, [this]() {
-        emit installOutputReady(QString::fromUtf8(m_installProcess->readAllStandardError()));
-    });
-
-    connect(m_installProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, 
-        [this, package](int exitCode, QProcess::ExitStatus status) {
-            const bool ok = (status == QProcess::NormalExit && exitCode == 0);
-            QString err;
-            if (!ok) {
-                err = QString::fromUtf8(m_installProcess->readAllStandardError()).trimmed();
-                if (err.isEmpty()) err = tr("Exit code %1").arg(exitCode);
-            }
-            emit installFinished(ok, err);
-            emit operationFinished(tr("Installing %1").arg(package), ok, err);
-            m_installProcess->deleteLater();
-            m_installProcess = nullptr;
-    });
-
-    m_installProcess->start();
 }
 
 void ContainerBackend::cancelInstall()
