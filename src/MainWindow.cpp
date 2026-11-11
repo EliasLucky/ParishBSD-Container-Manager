@@ -2,6 +2,7 @@
 #include "ContainerBackend.h"
 #include "ContainerModel.h"
 #include "ActionsDialog.h"
+#include "ProcessLogDialog.h"
 
 #include <QApplication>
 #include <QMenuBar>
@@ -279,6 +280,9 @@ void MainWindow::onCreate()
     }
 
     m_backend->createContainer(name, tmpl);
+    auto *dlg = new ProcessLogDialog(m_backend, tr("Creating %1").arg(name), this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
 }
 
 void MainWindow::onDestroy()
@@ -303,6 +307,9 @@ void MainWindow::onDestroy()
     }
 
     m_backend->destroyContainer(c.name, token);
+    auto *dlg = new ProcessLogDialog(m_backend, tr("Destroying %1").arg(c.name), this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
 }
 
 void MainWindow::onStart()
