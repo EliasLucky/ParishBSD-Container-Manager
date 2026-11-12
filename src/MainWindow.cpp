@@ -280,9 +280,9 @@ void MainWindow::onCreate()
     }
 
     m_backend->createContainer(name, tmpl);
-    auto *dlg = new ProcessLogDialog(m_backend, tr("Creating %1").arg(name), this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->show();
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Creating %1").arg(name), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
 }
 
 void MainWindow::onDestroy()
@@ -307,9 +307,9 @@ void MainWindow::onDestroy()
     }
 
     m_backend->destroyContainer(c.name, token);
-    auto *dlg = new ProcessLogDialog(m_backend, tr("Destroying %1").arg(c.name), this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->show();
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Destroying %1").arg(c.name), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
 }
 
 void MainWindow::onStart()
