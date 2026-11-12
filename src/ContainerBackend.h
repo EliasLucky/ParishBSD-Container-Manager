@@ -25,7 +25,6 @@ public:
     
     void destroyContainer(const QString &name, const QString &confirmationToken);
     void createContainer(const QString &name, const QString &templateName);
-    
     void openConsole(const QString &name);
 
     QList<PackageInfo> listPackages(const QString &jail, QString *errorOut = nullptr) const;
