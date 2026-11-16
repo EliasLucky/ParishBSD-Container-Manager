@@ -75,23 +75,38 @@ QList<ContainerInfo> ContainerBackend::listContainers(QString *errorOut) const
     if (errorOut) errorOut->clear();
     return result;
 }
-
-QStringList ContainerBackend::listTemplatesNames() const
+QList<TemplateInfo> ContainerBackend::listTemplates(QString *errorOut) const
 {
-    QStringList names;
+    QList<TemplateInfo> result;
     int exitCode = 0;
     const QString out = runSync(m_pkexecPath, { QStringLiteral("/usr/local/sbin/parishctl-template-list"), QStringLiteral("--json") }, &exitCode);
-    if (exitCode != 0) return names;
-
+    if (exitCode != 0) { if (errorOut) *errorOut = tr("Failed to run parishctl-template-list"); return result; }
+    
     QJsonDocument doc = QJsonDocument::fromJson(out.toUtf8());
-    if (!doc.isArray()) return names;
-
+    if (!doc.isArray()) { if (errorOut) *errorOut = tr("JSON parse error"); return result; }
+    
     for (const QJsonValue &val : doc.array()) {
         if (!val.isObject()) continue;
         QJsonObject obj = val.toObject();
-        if (obj["state"].toString() == "ready") {
-            names.append(obj["name"].toString());
-        }
+        TemplateInfo info;
+        info.name = obj["name"].toString();
+        info.state = obj["state"].toString();
+        info.tier = obj["tier"].toString();
+        info.kind = obj["kind"].toString();
+        info.description = obj["description_en"].toString();
+        info.currentBase = obj["current_base"].toString();
+        info.buildSizeMb = obj["build_size_mb"].toInt();
+        info.hidden = obj["hidden"].toBool();
+        info.shipped = obj["shipped"].toBool();
+        if (!info.name.isEmpty()) result.append(info);
+    }
+    return result;
+}
+QStringList ContainerBackend::listTemplatesNames() const
+{
+    QStringList names;
+    for (const auto &t : listTemplates()) {
+        if (t.isReady()) names.append(t.name);
     }
     return names;
 }
@@ -272,6 +287,10 @@ void ContainerBackend::upgradePackages(const QString &jail)
 void ContainerBackend::installPackage(const QString &jail, const QString &package)
 {
     runParishctl(tr("Installing %1 in %2").arg(package, jail), { QStringLiteral("parishctl-apps-install"), jail, package });
+}
+
+void ContainerBackend::installPackageAsync(const QString &jail, const QString &package) {
+  runCommandAsync(tr("Installing %1").arg(package), { QStringLiteral("/usr/local/sbin/parishctl-apps-install"), jail, package });
 }
 
 void ContainerBackend::cancelInstall()
