@@ -7,6 +7,7 @@
 
 #include "ContainerInfo.h"
 #include "PackageInfo.h"
+#include "TemplateInfo.h"
 
 class QProcess;
 
@@ -16,6 +17,7 @@ public:
     explicit ContainerBackend(QObject *parent = nullptr);
 
     QList<ContainerInfo> listContainers(QString *errorOut = nullptr) const;
+    QList<TemplateInfo> listTemplates(QString *errorOut = nullptr) const;
     QStringList listTemplatesNames() const;
 
     void startContainer(const QString &name);
@@ -25,6 +27,7 @@ public:
     
     void destroyContainer(const QString &name, const QString &confirmationToken);
     void createContainer(const QString &name, const QString &templateName);
+    
     void openConsole(const QString &name);
 
     QList<PackageInfo> listPackages(const QString &jail, QString *errorOut = nullptr) const;
