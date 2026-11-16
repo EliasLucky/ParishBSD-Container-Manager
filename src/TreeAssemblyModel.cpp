@@ -71,11 +71,11 @@ QVariant TreeAssemblyModel::data(const QModelIndex &index, int role) const {
             if (index.column() == NameColumn) return c.name;
             if (index.column() == SourceColumn) return c.sourceTemplate;
             if (index.column() == StateColumn) return c.humanState();
+            if (index.column() == DescriptionColumn) return QString("Kind: %1").arg(c.kind);
         }
         if (role == Qt::AccessibleTextRole) return c.accessibleText();
         if (role == Qt::AccessibleDescriptionRole) return c.accessibleDescription();
         if (role == Qt::DecorationRole && index.column() == NameColumn) {
-            // Basic icon simulation for now
             QPixmap pm(16,16); pm.fill(c.isVault ? Qt::darkYellow : Qt::darkBlue);
             return QIcon(pm);
         }
@@ -87,7 +87,7 @@ QVariant TreeAssemblyModel::data(const QModelIndex &index, int role) const {
         
         if (role == Qt::DisplayRole) {
             if (index.column() == NameColumn) return t.name;
-            if (index.column() == SourceColumn) return QString("%1 uses").arg(groupRowCount(0)); // simple mock for use count
+            if (index.column() == SourceColumn) return QString("%1 uses").arg(groupRowCount(0));
             if (index.column() == StateColumn) return t.humanState();
             if (index.column() == DescriptionColumn) return t.description;
         }
@@ -110,4 +110,9 @@ QVariant TreeAssemblyModel::headerData(int section, Qt::Orientation orientation,
 void TreeAssemblyModel::refresh() {
     beginResetModel();
     endResetModel();
+}
+
+ContainerInfo TreeAssemblyModel::getContainer(const QModelIndex &index) const {
+    if (!index.isValid() || index.internalId() != 1) return ContainerInfo(); // Must be in group 0
+    return m_cModel->containerAt(index.row());
 }
