@@ -4,14 +4,15 @@
 #include <QTimer>
 
 class QLineEdit;
-class QTableView;
+class QTreeView;
 class QSortFilterProxyModel;
 class QAction;
 class QLabel;
-class QSocketNotifier;
 
 class ContainerBackend;
 class ContainerModel;
+class TemplateModel;
+class TreeAssemblyModel;
 
 class MainWindow : public QMainWindow
 {
@@ -45,13 +46,13 @@ private:
 
     struct ContainerInfo selectedContainer() const;
     void updateActionStates();
-    QString selectedName() const;
 
     ContainerBackend *m_backend = nullptr;
     ContainerModel *m_model = nullptr;
-    QSortFilterProxyModel *m_proxy = nullptr;
-
-    QTableView *m_table = nullptr;
+    TemplateModel *m_templateModel = nullptr;
+    TreeAssemblyModel *m_treeModel = nullptr;
+    
+    QTreeView *m_tree = nullptr;
     QLineEdit *m_search = nullptr;
     QLabel *m_statusLabel = nullptr;
 
