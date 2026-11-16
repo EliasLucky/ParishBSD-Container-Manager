@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 #include "ContainerBackend.h"
 #include "ContainerModel.h"
+#include "TemplateModel.h"
+#include "TreeAssemblyModel.h"
 #include "ActionsDialog.h"
 #include "ProcessLogDialog.h"
 
@@ -9,9 +11,8 @@
 #include <QToolBar>
 #include <QStatusBar>
 #include <QLineEdit>
-#include <QTableView>
+#include <QTreeView>
 #include <QHeaderView>
-#include <QSortFilterProxyModel>
 #include <QAction>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -31,12 +32,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     m_backend = new ContainerBackend(this);
     m_model = new ContainerModel(m_backend, this);
-
-    m_proxy = new QSortFilterProxyModel(this);
-    m_proxy->setSourceModel(m_model);
-    m_proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
-    m_proxy->setFilterKeyColumn(ContainerModel::NameColumn);
-    m_proxy->setSortCaseSensitivity(Qt::CaseInsensitive);
+    m_templateModel = new TemplateModel(m_backend, this);
+    m_treeModel = new TreeAssemblyModel(m_model, m_templateModel, this);
 
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(10000); // 10s poll
@@ -52,8 +49,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_backend, &ContainerBackend::terminalClosed, this, &MainWindow::onTerminalClosed);
 
     connect(m_pollTimer, &QTimer::timeout, this, [this]() {
-        m_model->refresh();
-        updateActionStates();
+        onRefresh();
     });
 
     m_pollTimer->start();
@@ -157,41 +153,27 @@ void MainWindow::buildCentralWidget()
     searchRow->addWidget(m_search,1);
     layout->addLayout(searchRow);
 
-    m_table = new QTableView(central);
-    m_table->setModel(m_proxy);
-    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setSortingEnabled(true);
-    m_table->sortByColumn(ContainerModel::NameColumn, Qt::AscendingOrder);
-    m_table->setAlternatingRowColors(true);
-    m_table->setShowGrid(false);
-    m_table->verticalHeader()->setVisible(false);
-
-    QHeaderView *h = m_table->horizontalHeader();
-    h->setSectionResizeMode(ContainerModel::IconColumn, QHeaderView::Fixed);
-    h->setSectionResizeMode(ContainerModel::NameColumn, QHeaderView::Interactive);
-    h->setSectionResizeMode(ContainerModel::KindColumn, QHeaderView::ResizeToContents);
-    h->setSectionResizeMode(ContainerModel::StateColumn, QHeaderView::ResizeToContents);
-    h->setSectionResizeMode(ContainerModel::TemplateColumn, QHeaderView::Interactive);
-    h->setSectionResizeMode(ContainerModel::DiskUsageColumn, QHeaderView::ResizeToContents);
-    h->setStretchLastSection(false);
-    h->resizeSection(ContainerModel::IconColumn, 36);
-    h->resizeSection(ContainerModel::NameColumn, 220);
-    h->resizeSection(ContainerModel::TemplateColumn, 180);
-
-    layout->addWidget(m_table, 1);
+    m_tree = new QTreeView(central);
+    m_tree->setModel(m_treeModel);
+    m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_tree->setAlternatingRowColors(true);
+    m_tree->setUniformRowHeights(true);
     
+    QHeaderView *h = m_tree->header();
+    h->setStretchLastSection(true);
+    h->resizeSection(TreeAssemblyModel::NameColumn, 220);
+    h->resizeSection(TreeAssemblyModel::SourceColumn, 180);
+    h->resizeSection(TreeAssemblyModel::StateColumn, 100);
+
+    layout->addWidget(m_tree, 1);
     setCentralWidget(central);
 
-    connect(m_search, &QLineEdit::textChanged, this, [this](const QString &t) {
-        m_proxy->setFilterFixedString(t);
-    });
-
-    connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged,
+    connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged,
         this, &MainWindow::onSelectionChanged);
 
-    connect(m_table, &QTableView::doubleClicked,
+    connect(m_tree, &QTreeView::doubleClicked,
         this, &MainWindow::onActions);
 }
 
@@ -203,11 +185,9 @@ void MainWindow::buildStatusBar()
 
 ContainerInfo MainWindow::selectedContainer() const
 {
-    const QModelIndexList sel = m_table->selectionModel()->selectedRows();
+    const QModelIndexList sel = m_tree->selectionModel()->selectedIndexes();
     if (sel.isEmpty()) return ContainerInfo();
-    const QModelIndex sourceIdx = m_proxy->mapToSource(sel.first());
-    if (!sourceIdx.isValid()) return ContainerInfo();
-    return m_model->containerAt(sourceIdx.row());
+    return m_treeModel->getContainer(sel.first());
 }
 
 void MainWindow::updateActionStates()
@@ -235,6 +215,7 @@ void MainWindow::onSelectionChanged()
 void MainWindow::onRefresh()
 {
     m_model->refresh();
+    m_templateModel->refresh();
     updateActionStates();
     if (m_statusLabel) m_statusLabel->setText(tr("Refreshed."));
 }
@@ -280,6 +261,7 @@ void MainWindow::onCreate()
     }
 
     m_backend->createContainer(name, tmpl);
+    
     auto *logDlg = new ProcessLogDialog(m_backend, tr("Creating %1").arg(name), this);
     logDlg->setAttribute(Qt::WA_DeleteOnClose);
     logDlg->show();
@@ -307,6 +289,7 @@ void MainWindow::onDestroy()
     }
 
     m_backend->destroyContainer(c.name, token);
+    
     auto *logDlg = new ProcessLogDialog(m_backend, tr("Destroying %1").arg(c.name), this);
     logDlg->setAttribute(Qt::WA_DeleteOnClose);
     logDlg->show();
@@ -336,6 +319,7 @@ void MainWindow::onUnlock()
 void MainWindow::onLock()
 {
     const ContainerInfo c = selectedContainer();
+    if (!c.isValid()) return;
     if (QMessageBox::question(this, tr("Lock vault"),
         tr("Lock vault '%1'?").arg(c.name)) != QMessageBox::Yes) return;
     m_backend->lockVault(c.name);
