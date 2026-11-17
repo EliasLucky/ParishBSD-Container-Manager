@@ -2,10 +2,11 @@
 
 #include <QMainWindow>
 #include <QTimer>
+#include <QList>
+#include <QString>
 
 class QLineEdit;
 class QTreeView;
-class QSortFilterProxyModel;
 class QAction;
 class QLabel;
 
@@ -45,6 +46,7 @@ private:
     void buildStatusBar();
 
     struct ContainerInfo selectedContainer() const;
+    bool isTemplateSelected() const;
     void updateActionStates();
 
     ContainerBackend *m_backend = nullptr;
@@ -58,6 +60,7 @@ private:
 
     QAction *m_actRefresh = nullptr;
     QAction *m_actCreate = nullptr;
+    QAction *m_actCreateFromTemplate = nullptr;
     QAction *m_actDestroy = nullptr;
     QAction *m_actStart = nullptr;
     QAction *m_actStop = nullptr;
@@ -68,4 +71,6 @@ private:
     QAction *m_actAbout = nullptr;
 
     QTimer *m_pollTimer = nullptr;
+    QString m_selectedName;
+    bool m_selectedIsTemplate = false;
 };
