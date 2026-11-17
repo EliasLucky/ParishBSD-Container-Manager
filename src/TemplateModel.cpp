@@ -9,7 +9,7 @@ int TemplateModel::rowCount(const QModelIndex &parent) const {
 }
 
 int TemplateModel::columnCount(const QModelIndex &parent) const {
-    return parent.isValid() ? 0 : 2; // Name, Description
+    return parent.isValid() ? 0 : 2; 
 }
 
 QVariant TemplateModel::data(const QModelIndex &index, int role) const {
@@ -30,9 +30,20 @@ QVariant TemplateModel::data(const QModelIndex &index, int role) const {
     return QVariant();
 }
 
+void TemplateModel::setFilter(const QString &text) {
+    m_filter = text;
+    refresh();
+}
+
 void TemplateModel::refresh() {
+    const QList<TemplateInfo> all = m_backend->listTemplates();
     beginResetModel();
-    m_templates = m_backend->listTemplates();
+    m_templates.clear();
+    for (const auto &t : all) {
+        if (m_filter.isEmpty() || t.name.contains(m_filter, Qt::CaseInsensitive)) {
+            m_templates.append(t);
+        }
+    }
     endResetModel();
 }
 
