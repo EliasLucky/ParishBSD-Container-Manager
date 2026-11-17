@@ -21,12 +21,11 @@ int ContainerModel::columnCount(const QModelIndex &parent) const
 QIcon ContainerModel::iconFor(const ContainerInfo &c) const
 {
     if (c.isVault) {
-        return QIcon::fromTheme("folder-locked");
+        if (c.isLocked()) return QIcon::fromTheme("parish-container-vault-locked");
+        return QIcon::fromTheme("parish-container-vault-unlocked");
     }
-    if (c.isCompatibility) {
-        return QIcon::fromTheme("applications-other");
-    }
-    return QIcon::fromTheme("package-x-generic");
+    if (c.isCompatibility) return QIcon::fromTheme("parish-container-compat");
+    return QIcon::fromTheme("parish-container-app");
 }
 
 QVariant ContainerModel::data(const QModelIndex &index, int role) const
@@ -91,31 +90,41 @@ QVariant ContainerModel::headerData(int section, Qt::Orientation orientation, in
     return QVariant();
 }
 
+void ContainerModel::setFilter(const QString &text)
+{
+    m_filter = text;
+    refresh();
+}
+
 void ContainerModel::refresh()
 {
     QString err;
-    const QList<ContainerInfo> newRows = m_backend->listContainers(&err);
+    const QList<ContainerInfo> allRows = m_backend->listContainers(&err);
 
     beginResetModel();
+    m_rows.clear();
     if (err.isEmpty()) {
-        m_rows = newRows;
-        m_lastError.clear();
-    } else {
-        m_lastError = err;
+        for (const auto &c : allRows) {
+            if (m_filter.isEmpty() || c.name.contains(m_filter, Qt::CaseInsensitive)) {
+                m_rows.append(c);
+            }
+        }
     }
     endResetModel();
 }
 
 ContainerInfo ContainerModel::containerAt(int row) const
 {
-    if (row < 0 || row >= m_rows.size()) return ContainerInfo();
+    if (row < 0 || row >= m_rows.size())
+        return ContainerInfo();
     return m_rows.at(row);
 }
 
 int ContainerModel::rowForName(const QString &name) const
 {
     for (int i = 0; i < m_rows.size(); ++i)
-        if (m_rows.at(i).name == name) return i;
+        if (m_rows.at(i).name == name)
+            return i;
     return -1;
 }
 
@@ -125,16 +134,16 @@ QIcon ContainerModel::makeStateIcon(const QString &state)
     bool filled = true;
 
     if (state == QLatin1String("running")) {
-        color = QColor(0x4c, 0xaf, 0x50); // green
+        color = QColor(0x4c, 0xaf, 0x50);
     }
     else if (state == QLatin1String("contained") || state == QLatin1String("containment-failed")) {
-        color = QColor(0xdf, 0x38, 0x2e); // red
+        color = QColor(0xdf, 0x38, 0x2e);
     }
     else if (state == QLatin1String("containing") || state == QLatin1String("stopped-maybe-contained")) {
-        color = QColor(0xd4, 0xaf, 0x37); // amber
+        color = QColor(0xd4, 0xaf, 0x37);
     }
     else {
-        color = QColor(0x80, 0x80, 0x80); // gray, hollow
+        color = QColor(0x80, 0x80, 0x80);
         filled = false;
     }
 
