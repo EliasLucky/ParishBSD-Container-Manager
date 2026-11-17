@@ -12,20 +12,20 @@ TreeAssemblyModel::TreeAssemblyModel(ContainerModel *cModel, TemplateModel *tMod
 
 QModelIndex TreeAssemblyModel::index(int row, int column, const QModelIndex &parent) const {
     if (!hasIndex(row, column, parent)) return QModelIndex();
-    if (!parent.isValid()) return createIndex(row, column, quintptr(0)); // Group level
-    return createIndex(row, column, quintptr(parent.row() + 1)); // Item level
+    if (!parent.isValid()) return createIndex(row, column, quintptr(0)); 
+    return createIndex(row, column, quintptr(parent.row() + 1)); 
 }
 
 QModelIndex TreeAssemblyModel::parent(const QModelIndex &index) const {
     if (!index.isValid()) return QModelIndex();
     quintptr id = index.internalId();
-    if (id == 0) return QModelIndex(); // Group has no parent
-    return createIndex(id - 1, 0, quintptr(0)); // Parent is the group
+    if (id == 0) return QModelIndex(); 
+    return createIndex(id - 1, 0, quintptr(0)); 
 }
 
 int TreeAssemblyModel::rowCount(const QModelIndex &parent) const {
-    if (!parent.isValid()) return 3; // 3 groups
-    if (parent.internalId() != 0) return 0; // Items have no children
+    if (!parent.isValid()) return 3; 
+    if (parent.internalId() != 0) return 0; 
     return groupRowCount(parent.row());
 }
 
@@ -51,6 +51,14 @@ QString TreeAssemblyModel::groupName(int group) const {
     if (group == 1) return "Shipped Templates";
     if (group == 2) return "Custom Templates";
     return "";
+}
+
+int TreeAssemblyModel::getUseCount(const QString &templateName) const {
+    int count = 0;
+    for (const auto &c : m_cModel->allContainers()) {
+        if (c.sourceTemplate == templateName) count++;
+    }
+    return count;
 }
 
 QVariant TreeAssemblyModel::data(const QModelIndex &index, int role) const {
@@ -87,9 +95,13 @@ QVariant TreeAssemblyModel::data(const QModelIndex &index, int role) const {
         
         if (role == Qt::DisplayRole) {
             if (index.column() == NameColumn) return t.name;
-            if (index.column() == SourceColumn) return QString("%1 uses").arg(groupRowCount(0));
+            if (index.column() == SourceColumn) return QString(); // Empty for templates
             if (index.column() == StateColumn) return t.humanState();
-            if (index.column() == DescriptionColumn) return t.description;
+            if (index.column() == DescriptionColumn) {
+                int uses = getUseCount(t.name);
+                QString useStr = uses == 1 ? "1 compartment uses this. " : QString("%1 compartments use this. ").arg(uses);
+                return useStr + t.description;
+            }
         }
         if (role == Qt::AccessibleTextRole) return QString("%1, %2").arg(t.name, t.humanState());
     }
@@ -113,6 +125,6 @@ void TreeAssemblyModel::refresh() {
 }
 
 ContainerInfo TreeAssemblyModel::getContainer(const QModelIndex &index) const {
-    if (!index.isValid() || index.internalId() != 1) return ContainerInfo(); // Must be in group 0
+    if (!index.isValid() || index.internalId() != 1) return ContainerInfo(); 
     return m_cModel->containerAt(index.row());
 }
