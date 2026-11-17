@@ -47,6 +47,8 @@ if(BUILD_GUI)
         src/ProcessLogDialog.cpp
         src/CatalogTableModel.cpp
         src/PackageTableModel.cpp
+        src/TemplateModel.cpp
+        src/TreeAssemblyModel.cpp
     )
 
     set(HEADERS
@@ -61,6 +63,9 @@ if(BUILD_GUI)
         src/PackageTableModel.h
         src/CustomApp.h
         src/PackageInfo.h
+        src/TemplateInfo.h
+        src/TemplateModel.h
+        src/TreeAssemblyModel.h
     )
 
     add_executable(parish-compartments ${SOURCES} ${HEADERS})
