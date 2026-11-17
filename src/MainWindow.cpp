@@ -36,7 +36,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_treeModel = new TreeAssemblyModel(m_model, m_templateModel, this);
 
     m_pollTimer = new QTimer(this);
-    m_pollTimer->setInterval(10000); // 10s poll
+    m_pollTimer->setInterval(10000); 
 
     buildMenus();
     buildToolBar();
@@ -48,12 +48,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_backend, &ContainerBackend::terminalLaunched, this, &MainWindow::onTerminalLaunched);
     connect(m_backend, &ContainerBackend::terminalClosed, this, &MainWindow::onTerminalClosed);
 
-    connect(m_pollTimer, &QTimer::timeout, this, [this]() {
-        onRefresh();
-    });
+    connect(m_pollTimer, &QTimer::timeout, this, [this]() { onRefresh(); });
 
     m_pollTimer->start();
     onRefresh();
+
+    // Default expand the Compartments group on first launch
+    QTimer::singleShot(100, this, [this]() {
+        m_tree->expand(m_treeModel->index(0, 0));
+    });
 }
 
 void MainWindow::buildMenus()
@@ -83,9 +86,7 @@ void MainWindow::buildMenus()
     m_actStart = runMenu->addAction(tr("&Start"));
     m_actStart->setIcon(QIcon::fromTheme("media-playback-start"));
     m_actStop = runMenu->addAction(tr("Sto&p"));
-
     runMenu->addSeparator();
-
     m_actUnlock = runMenu->addAction(tr("&Unlock vault"));
     m_actUnlock->setIcon(QIcon::fromTheme("security-medium"));
     m_actLock = runMenu->addAction(tr("&Lock Vault"));
@@ -125,6 +126,11 @@ void MainWindow::buildToolBar()
     };
 
     add(m_actCreate, QStringLiteral("list-add"));
+    
+    m_actCreateFromTemplate = new QAction(tr("Create From Template"), this);
+    add(m_actCreateFromTemplate, QStringLiteral("document-new"));
+    connect(m_actCreateFromTemplate, &QAction::triggered, this, &MainWindow::onCreate);
+
     add(m_actDestroy, QStringLiteral("edit-delete"));
     tb->addSeparator();
     add(m_actStart, QStringLiteral("media-playback-start"));
@@ -149,6 +155,7 @@ void MainWindow::buildCentralWidget()
     auto *searchLabel = new QLabel(tr("Search:"),central);
     m_search = new QLineEdit(central);
     m_search->setClearButtonEnabled(true);
+    m_search->clear();
     searchRow->addWidget(searchLabel);
     searchRow->addWidget(m_search,1);
     layout->addLayout(searchRow);
@@ -170,11 +177,13 @@ void MainWindow::buildCentralWidget()
     layout->addWidget(m_tree, 1);
     setCentralWidget(central);
 
-    connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged,
-        this, &MainWindow::onSelectionChanged);
+    connect(m_search, &QLineEdit::textChanged, this, [this](const QString &t) {
+        m_model->setFilter(t);
+        m_templateModel->setFilter(t);
+    });
 
-    connect(m_tree, &QTreeView::doubleClicked,
-        this, &MainWindow::onActions);
+    connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::onSelectionChanged);
+    connect(m_tree, &QTreeView::doubleClicked, this, &MainWindow::onActions);
 }
 
 void MainWindow::buildStatusBar()
@@ -190,21 +199,46 @@ ContainerInfo MainWindow::selectedContainer() const
     return m_treeModel->getContainer(sel.first());
 }
 
+bool MainWindow::isTemplateSelected() const
+{
+    const QModelIndexList sel = m_tree->selectionModel()->selectedIndexes();
+    if (sel.isEmpty()) return false;
+    quintptr id = sel.first().internalId();
+    return (id == 2 || id == 3);
+}
+
 void MainWindow::updateActionStates()
 {
     const ContainerInfo c = selectedContainer();
-    const bool have = c.isValid();
-    const bool running = have && c.isRunning();
-    const bool locked = have && c.isLocked();
-    const bool contained = have && c.isContained();
+    const bool haveContainer = c.isValid();
+    const bool haveTemplate = isTemplateSelected();
+    
+    const bool running = haveContainer && c.isRunning();
+    const bool locked = haveContainer && c.isVault && c.isLocked();
+    const bool contained = haveContainer && c.isContained();
 
-    m_actStart->setEnabled(have && !running && !c.isVault && !contained);
-    m_actStop->setEnabled(have && running && !contained);
-    m_actUnlock->setEnabled(have && c.isVault && locked && !contained);
-    m_actLock->setEnabled(have && c.isVault && !locked && !contained);
-    m_actConsole->setEnabled(have && running && !contained);
-    m_actDestroy->setEnabled(have && !contained);
-    m_actActions->setEnabled(have);
+    // Contextual Visibility
+    bool isApp = haveContainer && !c.isVault;
+    bool isVault = haveContainer && c.isVault;
+
+    m_actStart->setVisible(isApp);
+    m_actStop->setVisible(isApp);
+    m_actConsole->setVisible(isApp);
+    m_actUnlock->setVisible(isVault);
+    m_actLock->setVisible(isVault);
+    
+    m_actDestroy->setVisible(haveContainer);
+    m_actActions->setVisible(haveContainer);
+    m_actCreateFromTemplate->setVisible(haveTemplate);
+
+    // Enabled States
+    m_actStart->setEnabled(haveContainer && !running && !contained);
+    m_actStop->setEnabled(haveContainer && running && !contained);
+    m_actUnlock->setEnabled(haveContainer && locked && !contained);
+    m_actLock->setEnabled(haveContainer && !locked && !contained);
+    m_actConsole->setEnabled(haveContainer && running && !contained);
+    m_actDestroy->setEnabled(haveContainer && !contained);
+    m_actActions->setEnabled(haveContainer);
 }
 
 void MainWindow::onSelectionChanged()
@@ -214,19 +248,61 @@ void MainWindow::onSelectionChanged()
 
 void MainWindow::onRefresh()
 {
+    // Save selection
+    QModelIndexList sel = m_tree->selectionModel()->selectedIndexes();
+    if (!sel.isEmpty()) {
+        m_selectedName = sel.first().data(Qt::DisplayRole).toString();
+        m_selectedIsTemplate = (sel.first().internalId() > 1);
+    } else {
+        m_selectedName.clear();
+    }
+
+    // Save expanded state
+    QList<bool> expandedState;
+    for (int i=0; i<3; ++i) {
+        expandedState.append(m_tree->isExpanded(m_treeModel->index(i, 0)));
+    }
+
     m_model->refresh();
     m_templateModel->refresh();
+    
+    // Restore expanded state
+    for (int i=0; i<3; ++i) {
+        m_tree->setExpanded(m_treeModel->index(i, 0), expandedState[i]);
+    }
+
+    // Restore selection
+    if (!m_selectedName.isEmpty()) {
+        for (int g = 0; g < 3; ++g) {
+            QModelIndex groupIdx = m_treeModel->index(g, 0);
+            for (int r = 0; r < m_treeModel->rowCount(groupIdx); ++r) {
+                QModelIndex idx = m_treeModel->index(r, 0, groupIdx);
+                if (idx.data(Qt::DisplayRole).toString() == m_selectedName) {
+                    m_tree->setCurrentIndex(idx);
+                    break;
+                }
+            }
+        }
+    }
+    
     updateActionStates();
     if (m_statusLabel) m_statusLabel->setText(tr("Refreshed."));
 }
 
 void MainWindow::onCreate()
 {
+    m_templateModel->refresh();
     const QStringList templates = m_backend->listTemplatesNames();
+    
     if (templates.isEmpty()) {
-        QMessageBox::warning(this, tr("No templates"),
-                tr("No ready templates found. Build one first via CLI."));
+        QMessageBox::warning(this, tr("No templates"), tr("No ready templates found. Build one first via CLI."));
         return;
+    }
+
+    QString preselected = "";
+    const QModelIndexList sel = m_tree->selectionModel()->selectedIndexes();
+    if (!sel.isEmpty() && sel.first().internalId() > 1) {
+        preselected = sel.first().siblingAtColumn(0).data().toString();
     }
 
     QDialog dlg(this);
@@ -236,6 +312,7 @@ void MainWindow::onCreate()
     auto *nameEdit = new QLineEdit(&dlg);
     auto *templateBox = new QComboBox(&dlg);
     templateBox->addItems(templates);
+    if (!preselected.isEmpty()) templateBox->setCurrentText(preselected);
 
     form->addRow(tr("Name:"),nameEdit);
     form->addRow(tr("Template:"),templateBox);
