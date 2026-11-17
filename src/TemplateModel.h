@@ -1,5 +1,6 @@
 #pragma once
 #include <QAbstractTableModel>
+#include <QString>
 #include "TemplateInfo.h"
 
 class ContainerBackend;
@@ -13,6 +14,7 @@ public:
     int columnCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role) const override;
 
+    void setFilter(const QString &text);
     void refresh();
     TemplateInfo templateAt(int row) const;
     QList<TemplateInfo> allTemplates() const { return m_templates; }
@@ -20,4 +22,5 @@ public:
 private:
     ContainerBackend *m_backend;
     QList<TemplateInfo> m_templates;
+    QString m_filter;
 };
