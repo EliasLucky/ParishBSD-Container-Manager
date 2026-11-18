@@ -31,4 +31,5 @@ private:
     // 0 = Compartments, 1 = Shipped Templates, 2 = Custom Templates
     int groupRowCount(int group) const;
     QString groupName(int group) const;
+    int getUseCount(const QString &templateName) const;
 };
