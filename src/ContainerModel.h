@@ -3,6 +3,7 @@
 #include <QAbstractTableModel>
 #include <QList>
 #include <QIcon>
+#include <QString>
 
 #include "ContainerInfo.h"
 
@@ -29,8 +30,8 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
 
+    void setFilter(const QString &text);
     void refresh();
-    QString lastError() const { return m_lastError; }
 
     QList<ContainerInfo> allContainers() const { return m_rows; }
     ContainerInfo containerAt(int row) const;
@@ -42,5 +43,5 @@ private:
 
     ContainerBackend *m_backend;
     QList<ContainerInfo> m_rows;
-    QString m_lastError;
+    QString m_filter;
 };
