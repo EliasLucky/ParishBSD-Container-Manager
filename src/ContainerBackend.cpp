@@ -150,8 +150,8 @@ QString ContainerBackend::runSync(const QString &program, const QStringList &arg
 
 void ContainerBackend::runAsync(const QString &description, const QString &program, const QStringList &args)
 {
-    if (m_userActionBusy.fetchAndAddOrdered(1) != 0) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+    if (m_userActionBusy.fetch_add(1) != 0) {
+        m_userActionBusy.fetch_sub(1);
         emit operationFinished(description, false, tr("Another operation is in progress; try again in a moment."));
         return;
     }
@@ -165,7 +165,7 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
     connect(proc, &QProcess::finished, this, [this, proc, description, completed] (int exitCode, QProcess::ExitStatus status) {
         if (*completed) return;
         *completed = true;
-        m_userActionBusy.fetchAndSubOrdered(1);
+        m_userActionBusy.fetch_sub(1);
         const bool ok = (status == QProcess::NormalExit && exitCode == 0);
         QString err;
         if (!ok) {
@@ -179,7 +179,7 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
     connect(proc, &QProcess::errorOccurred, this, [this, proc, description, completed] (QProcess::ProcessError) {
         if (*completed) return;
         *completed = true;
-        m_userActionBusy.fetchAndSubOrdered(1);
+        m_userActionBusy.fetch_sub(1);
         emit operationFinished(description, false, tr("Failed to run %1: %2").arg(proc->program(), proc->errorString()));
         proc->deleteLater();
     });
@@ -189,8 +189,8 @@ void ContainerBackend::runAsync(const QString &description, const QString &progr
 
 void ContainerBackend::runCommandAsync(const QString &title, const QStringList &args)
 {
-    if (m_userActionBusy.fetchAndAddOrdered(1) != 0) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+    if (m_userActionBusy.fetch_add(1) != 0) {
+        m_userActionBusy.fetch_sub(1);
         emit installFinished(false, tr("Another operation is in progress; try again in a moment."));
         emit operationFinished(title, false, tr("Another operation is in progress."));
         return;
@@ -206,7 +206,7 @@ void ContainerBackend::runCommandAsync(const QString &title, const QStringList &
     connect(m_installProcess, &QProcess::readyReadStandardError, this, [this]() { emit installOutputReady(QString::fromUtf8(m_installProcess->readAllStandardError())); });
     
     connect(m_installProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, title](int exitCode, QProcess::ExitStatus status) {
-            m_userActionBusy.fetchAndSubOrdered(1);
+            m_userActionBusy.fetch_sub(1);
             const bool ok = (status == QProcess::NormalExit && exitCode == 0);
             QString err;
             if (!ok) {
@@ -220,7 +220,7 @@ void ContainerBackend::runCommandAsync(const QString &title, const QStringList &
     });
     
     connect(m_installProcess, &QProcess::errorOccurred, this, [this, title](QProcess::ProcessError) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+        m_userActionBusy.fetch_sub(1);
         emit installFinished(false, m_installProcess->errorString());
         emit operationFinished(title, false, tr("Failed to start %1: %2")
             .arg(m_installProcess->program(), m_installProcess->errorString()));
@@ -241,8 +241,8 @@ void ContainerBackend::runParishctl(const QString &description, const QStringLis
 
 void ContainerBackend::runInTerminal(const QString &title, const QString &shellCommand)
 {
-    if (m_userActionBusy.fetchAndAddOrdered(1) != 0) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+    if (m_userActionBusy.fetch_add(1) != 0) {
+        m_userActionBusy.fetch_sub(1);
         emit terminalLaunched(title);
         emit operationFinished(title, false, tr("Another operation is in progress."));
         return;
@@ -253,7 +253,7 @@ void ContainerBackend::runInTerminal(const QString &title, const QString &shellC
     QString err;
     
     if (!TerminalLauncher::findTerminal(title, shellCommand, termPath, termArgs, &err)) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+        m_userActionBusy.fetch_sub(1);
         emit terminalLaunched(title);
         emit operationFinished(title, false, err);
         emit terminalClosed(title);
@@ -268,7 +268,7 @@ void ContainerBackend::runInTerminal(const QString &title, const QString &shellC
     proc->setArguments(termArgs);
     
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, proc, title](int code, QProcess::ExitStatus status) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+        m_userActionBusy.fetch_sub(1);
         const bool ok = (status == QProcess::NormalExit && code == 0);
         QString err; if (!ok) { err = QString::fromUtf8(proc->readAllStandardError()).trimmed(); if (err.isEmpty()) err = tr("Command failed (exit %1)").arg(code); }
         emit operationFinished(title, ok, err);
@@ -277,7 +277,7 @@ void ContainerBackend::runInTerminal(const QString &title, const QString &shellC
     });
     
     connect(proc, &QProcess::errorOccurred, this, [this, proc, title](QProcess::ProcessError) {
-        m_userActionBusy.fetchAndSubOrdered(1);
+        m_userActionBusy.fetch_sub(1);
         emit operationFinished(title, false, proc->errorString());
         emit terminalClosed(title);
         proc->deleteLater();
