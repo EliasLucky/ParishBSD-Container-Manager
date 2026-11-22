@@ -4,6 +4,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QAtomicInt>
 
 #include "ContainerInfo.h"
 #include "PackageInfo.h"
@@ -16,9 +17,10 @@ class ContainerBackend : public QObject {
 public:
     explicit ContainerBackend(QObject *parent = nullptr);
 
-    QList<ContainerInfo> listContainers(QString *errorOut = nullptr) const;
-    QList<TemplateInfo> listTemplates(QString *errorOut = nullptr) const;
+    void requestContainers();
+    void requestTemplates();
     QStringList listTemplatesNames() const;
+    bool isBusy() const { return m_userActionBusy.load() > 0; }
 
     void startContainer(const QString &name);
     void stopContainer(const QString &name);
@@ -45,6 +47,10 @@ signals:
     void operationFinished(const QString &description, bool success, const QString &errorMessage);
     void terminalLaunched(const QString &description);
     void terminalClosed(const QString &description);
+    
+    void containersReady(QList<ContainerInfo> list, QString error);
+    void templatesReady(QList<TemplateInfo> list, QString error);
+
     void installOutputReady(const QString &text);
     void installFinished(bool success, const QString &errorMessage);
 
@@ -55,6 +61,9 @@ private:
     QString runSync(const QString &program, const QStringList &args, int *exitCode = nullptr) const;
 
     QString m_pkexecPath;
-    QString m_terminalPath;
     QProcess *m_installProcess = nullptr;
+    
+    bool m_isFetchingContainers = false;
+    bool m_isFetchingTemplates = false;
+    mutable QAtomicInt m_userActionBusy;
 };
