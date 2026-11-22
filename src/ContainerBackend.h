@@ -4,7 +4,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
-#include <QAtomicInt>
+#include <atomic> // Use standard atomic instead of Qt
 
 #include "ContainerInfo.h"
 #include "PackageInfo.h"
@@ -62,8 +62,9 @@ private:
 
     QString m_pkexecPath;
     QProcess *m_installProcess = nullptr;
-    
     bool m_isFetchingContainers = false;
     bool m_isFetchingTemplates = false;
-    mutable QAtomicInt m_userActionBusy;
+    
+    // Standard C++20 atomic
+    mutable std::atomic<int> m_userActionBusy;
 };
