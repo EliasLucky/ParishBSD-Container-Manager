@@ -1,12 +1,32 @@
 #!/bin/sh
-# parish-usb  attach/detach/list removable media.
+# parish-usb  attach/detach/list removable media for compartments.
+#
+# Security Philosophy:
+#   - Default mount mode is READ-ONLY (-o ro,nosuid,noexec,nodev) to prevent
+#     malware inside an untrusted compartment from modifying, wiping, or
+#     infecting a physical USB drive used across other computers.
+#   - Read-Write (--rw / --read-write) is supported so legitimate workflows
+#     (e.g. exporting parish PDFs to a printer USB stick) are not blocked,
+#     but REQUIRES explicit user permission (--confirm-rw or interactive
+#     confirmation) and is strictly refused if already mounted elsewhere or
+#     for read-only optical media.
+#   - Host system/boot/zroot disks are unconditionally excluded.
+#
+# Usage:
+#   parish-usb list [--json]
+#   parish-usb devices [--json]
+#   parish-usb attach <jail> <dev> [fstype] [--ro|--rw] [--confirm-rw]
+#   parish-usb detach <jail> <dev>
+
 set -eu
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/state.sh"
-JAIL_ROOT_APP="/usr/local/jails/app"
-JAIL_ROOT_VAULT="/usr/local/jails/vault"
+. "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/policy.sh"
+
 HOST_MNT_ROOT="/var/parishbsd/media"
 JAIL_MNT_SUBDIR="media"
 ALLOWED_FS="msdosfs ufs cd9660 exfat ntfs"
@@ -18,9 +38,41 @@ require_root() { [ "$(id -u)" -eq 0 ] || err "must be run as root"; }
 
 validate_dev() {
     case "$1" in
-        da[0-9]*|cd[0-9]*) return 0 ;;
+        */*|*..*) err "invalid device name: '$1'" ;;
+        da[0-9]*|cd[0-9]*)
+            case "$1" in
+                *[!A-Za-z0-9]*) err "invalid characters in device name: '$1'" ;;
+            esac
+            return 0
+            ;;
         *) err "invalid device name: '$1' (expected da[0-9]* or cd[0-9]*)" ;;
     esac
+}
+
+base_disk_of() {
+    printf '%s' "$1" | sed -E 's/^((da|cd)[0-9]+).*/\1/'
+}
+
+is_host_system_disk() {
+    local dev="$1"
+    local bdisk
+    bdisk="$(base_disk_of "$dev")"
+    [ -n "$bdisk" ] || return 0
+
+    # Check if backing any host system mountpoints
+    if mount -p 2>/dev/null | awk '$2 == "/" || $2 == "/usr" || $2 == "/var" || $2 == "/boot" { print $1 }' \
+        | grep -Eq "(^|/)${bdisk}([ps][0-9]+)?([a-z])?\$"; then
+        return 0
+    fi
+
+    # Check if backing any active ZFS pool (e.g. zroot)
+    if command -v zpool >/dev/null 2>&1; then
+        if zpool status 2>/dev/null | grep -Eq "\\b${bdisk}([ps][0-9]+)?([a-z])?\\b"; then
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 validate_fs() {
@@ -30,7 +82,6 @@ validate_fs() {
     err "unsupported filesystem: '$1' (allowed: $ALLOWED_FS)"
 }
 
-# canonical directory, no symlinks, inside expected parent
 ensure_dir() {
     local path="$1" parent="$2"
     local parent_real
@@ -73,28 +124,164 @@ is_mounted() {
     mount -p | cut -f2 | grep -qxF "$1"
 }
 
+_mount_opts_for() {
+    mount -p | awk -F'\t' -v m="$1" '$2 == m { print $4; exit }'
+}
+
+_attached_jails_for_dev() {
+    local dev="$1" out="" tier jr jm
+    for jr in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/containers/*; do
+        [ -d "$jr" ] || continue
+        jm="$jr/$JAIL_MNT_SUBDIR/$dev"
+        if is_mounted "$jm"; then
+            out="${out:+$out,}$(basename "$jr")"
+        fi
+    done
+    printf '%s' "$out"
+}
+
 cmd_list() {
+    local json_mode=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json_mode=1 ;;
+            *) err "unknown flag: $1" ;;
+        esac
+        shift
+    done
+
+    if [ "$json_mode" -eq 1 ]; then
+        printf '[\n'
+        first=1
+        for dir in "$HOST_MNT_ROOT"/*; do
+            [ -d "$dir" ] || continue
+            [ ! -L "$dir" ] || continue
+            dev=$(basename "$dir")
+            if is_mounted "$dir"; then
+                src=$(mount -p | awk -F'\t' -v m="$dir" '$2 == m { print $1; exit }')
+                fstype=$(mount -p | awk -F'\t' -v m="$dir" '$2 == m { print $3; exit }')
+                mopts=$(_mount_opts_for "$dir")
+                mode="ro"
+                case ",$mopts," in *,rw,*) mode="rw" ;; esac
+                jails="$(_attached_jails_for_dev "$dev")"
+                [ "$first" -eq 1 ] || printf ',\n'
+                first=0
+                printf '  {"device": "%s", "source": "%s", "fstype": "%s", "mode": "%s", "attached_jails": "%s"}' \
+                    "$dev" "$src" "$fstype" "$mode" "$jails"
+            fi
+        done
+        printf '\n]\n'
+        return 0
+    fi
+
     echo "Attached devices:"
     for dir in "$HOST_MNT_ROOT"/*; do
         [ -d "$dir" ] || continue
         [ -L "$dir" ] && continue
         dev=$(basename "$dir")
         if is_mounted "$dir"; then
-            jail=$(mount -p | awk -F'\t' -v m="$dir" '$2 == m { print $1; exit }')
-            printf "  %-10s  %s\n" "$dev" "$jail"
+            mopts=$(_mount_opts_for "$dir")
+            mode="ro"
+            case ",$mopts," in *,rw,*) mode="rw" ;; esac
+            jails="$(_attached_jails_for_dev "$dev")"
+            printf "  %-10s  %-4s  %s\n" "$dev" "$mode" "${jails:-<host-only>}"
         else
-            printf "  %-10s  %s\n" "$dev" "<not mounted>"
+            printf "  %-10s  %-4s  %s\n" "$dev" "-" "<not mounted>"
         fi
     done
 }
 
+cmd_devices() {
+    local json_mode=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json_mode=1 ;;
+            *) err "unknown flag: $1" ;;
+        esac
+        shift
+    done
+
+    if [ "$json_mode" -eq 1 ]; then
+        printf '[\n'
+    else
+        printf "%-10s %-10s %-8s %-10s %s\n" "DEVICE" "FSTYPE" "MODE" "SIZE" "ATTACHED TO"
+    fi
+
+    first=1
+    for devpath in /dev/da[0-9]* /dev/cd[0-9]*; do
+        [ -e "$devpath" ] || continue
+        dev="$(basename "$devpath")"
+        case "$dev" in *[!A-Za-z0-9]*) continue ;; esac
+        # Skip raw whole-disk da0 if partition slices like da0p1 or da0s1 exist
+        case "$dev" in
+            da[0-9]|da[0-9][0-9])
+                has_parts=0
+                for _p in "/dev/${dev}p"* "/dev/${dev}s"*; do
+                    [ -e "$_p" ] && { has_parts=1; break; }
+                done
+                [ "$has_parts" -eq 1 ] && continue
+                ;;
+        esac
+        if is_host_system_disk "$dev"; then
+            continue
+        fi
+
+        fstype="$(fstyp "$devpath" 2>/dev/null || echo "")"
+        bytes="$(diskinfo "$devpath" 2>/dev/null | awk '{print $3; exit}' || echo 0)"
+        [ -n "$bytes" ] || bytes=0
+        hmnt="$HOST_MNT_ROOT/$dev"
+        attached_jails="$(_attached_jails_for_dev "$dev")"
+        mode="unmounted"
+        if is_mounted "$hmnt"; then
+            mopts=$(_mount_opts_for "$hmnt")
+            mode="ro"
+            case ",$mopts," in *,rw,*) mode="rw" ;; esac
+        fi
+
+        if [ "$json_mode" -eq 1 ]; then
+            [ "$first" -eq 1 ] || printf ',\n'
+            first=0
+            printf '  {"device": "%s", "fstype": "%s", "size": %s, "mode": "%s", "attached_jails": "%s"}' \
+                "$dev" "$fstype" "$bytes" "$mode" "$attached_jails"
+        else
+            printf "%-10s %-10s %-8s %-10s %s\n" "$dev" "${fstype:-unknown}" "$mode" "$bytes" "${attached_jails:--}"
+        fi
+    done
+
+    if [ "$json_mode" -eq 1 ]; then
+        printf '\n]\n'
+    fi
+}
+
 cmd_attach() {
-    [ $# -ge 2 ] || err "usage: parish-usb attach <jail> <dev> [fstype]"
-    local jail="$1" dev="$2" fstype="${3:-}"
+    [ $# -ge 2 ] || err "usage: parish-usb attach <jail> <dev> [fstype] [--ro|--rw] [--confirm-rw]"
+    local jail="$1" dev="$2"
+    shift 2
+
+    local fstype="" req_mode="ro" confirm_rw=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --ro|--read-only)   req_mode="ro" ;;
+            --rw|--read-write)  req_mode="rw" ;;
+            --confirm-rw)       confirm_rw=1 ;;
+            -*)                 err "unknown flag: $1" ;;
+            *)
+                if [ -z "$fstype" ]; then fstype="$1"
+                else err "unexpected argument: $1"
+                fi
+                ;;
+        esac
+        shift
+    done
+
     require_root
     validate_dev "$dev"
 
-    # containment state check.
+    if is_host_system_disk "$dev"; then
+        err "refusing to attach host system/ZFS pool disk: /dev/$dev"
+    fi
+
+    # Containment state check.
     state="$(parish_jail_state "$jail")"
     case "$state" in
         running|running-other-contained|stopped)
@@ -107,7 +294,26 @@ cmd_attach() {
     esac
 
     local dev_path="/dev/$dev"
-    [ -b "$dev_path" ] || err "not a block device: $dev_path"
+    [ -c "$dev_path" ] || [ -b "$dev_path" ] || err "not a storage device: $dev_path"
+
+    if [ "$req_mode" = "rw" ]; then
+        case "$dev" in
+            cd[0-9]*) err "optical device $dev cannot be mounted read-write" ;;
+        esac
+        if [ "$confirm_rw" -ne 1 ]; then
+            if [ -t 0 ]; then
+                printf 'WARNING: Attaching /dev/%s READ-WRITE to "%s" lets the compartment modify or erase the drive.\n' "$dev" "$jail" >&2
+                printf 'Confirm read-write mount? [y/N]: ' >&2
+                read -r _ans
+                case "$_ans" in
+                    y|Y|yes|YES) : ;;
+                    *) err "read-write mount cancelled by user" ;;
+                esac
+            else
+                err "read-write USB attach requires explicit permission (--confirm-rw). Default mount is read-only."
+            fi
+        fi
+    fi
 
     local jail_root
     jail_root=$(resolve_jail_root "$jail")
@@ -119,9 +325,10 @@ cmd_attach() {
     fi
     validate_fs "$fstype"
 
-    # verify the mount helper for fusefs types is installed.
-    # RUN_DEPENDS installs them, but a user who removed the package
-    # gets an honest message instead of "unknown filesystem type".
+    if [ "$fstype" = "cd9660" ] && [ "$req_mode" = "rw" ]; then
+        err "cd9660 filesystem is read-only"
+    fi
+
     case "$fstype" in
         exfat)
             command -v mount.exfat >/dev/null 2>&1 \
@@ -133,7 +340,6 @@ cmd_attach() {
             ;;
     esac
 
-    # build mount points with canonical + no-symlink checks
     ensure_dir "$HOST_MNT_ROOT" "/var/parishbsd"
     ensure_dir "$HOST_MNT_ROOT/$dev" "$HOST_MNT_ROOT"
     ensure_dir "$jail_root/$JAIL_MNT_SUBDIR" "$jail_root"
@@ -141,36 +347,39 @@ cmd_attach() {
 
     local host_mnt="$HOST_MNT_ROOT/$dev"
     local jail_mnt="$jail_root/$JAIL_MNT_SUBDIR/$dev"
+    local mount_opts="${req_mode},nosuid,noexec,nodev"
 
-    # mount host side with all security options
     _host_mount_created=0
     if is_mounted "$host_mnt"; then
-        log "host side already mounted: $dev -> $host_mnt (leaving in place)"
+        local existing_opts existing_mode
+        existing_opts="$(_mount_opts_for "$host_mnt")"
+        existing_mode="ro"
+        case ",$existing_opts," in *,rw,*) existing_mode="rw" ;; esac
+        if [ "$req_mode" = "rw" ] || [ "$existing_mode" = "rw" ]; then
+            err "$dev is already mounted ($existing_mode); detach before remounting read-write or sharing"
+        fi
+        log "host side already mounted read-only: $dev -> $host_mnt"
     else
-        mount -t "$fstype" -o ro,nosuid,noexec,nodev "$dev_path" "$host_mnt" \
-            || err "cannot mount $dev_path on $host_mnt"
+        mount -t "$fstype" -o "$mount_opts" "$dev_path" "$host_mnt" \
+            || err "cannot mount $dev_path on $host_mnt ($mount_opts)"
         _host_mount_created=1
-        log "mounted $dev_path -> $host_mnt ($fstype, ro,nosuid,noexec,nodev)"
+        log "mounted $dev_path -> $host_mnt ($fstype, $mount_opts)"
     fi
 
-    # expose to jail; roll back host mount on failure (only if this
-    # invocation created it)
     if is_mounted "$jail_mnt"; then
         log "jail side already exposed: $host_mnt -> $jail_mnt"
     else
-        if ! mount_nullfs -o ro,nosuid,noexec,nodev "$host_mnt" "$jail_mnt"; then
+        if ! mount_nullfs -o "$mount_opts" "$host_mnt" "$jail_mnt"; then
             if [ "$_host_mount_created" -eq 1 ]; then
                 umount "$host_mnt" 2>/dev/null || true
                 log "rolled back host mount after jail-mount failure: $host_mnt"
-            else
-                log "jail mount failed; host mount was pre-existing and is left in place: $host_mnt"
             fi
             err "cannot expose $host_mnt inside jail $jail"
         fi
-        log "exposed $host_mnt -> $jail_mnt (jail: $jail, ro,nosuid,noexec,nodev)"
+        log "exposed $host_mnt -> $jail_mnt (jail: $jail, $mount_opts)"
     fi
 
-    echo "Attached: $dev ($fstype, read-only) -> $jail:/$JAIL_MNT_SUBDIR/$dev"
+    echo "Attached: $dev ($fstype, $req_mode) -> $jail:/$JAIL_MNT_SUBDIR/$dev"
 }
 
 cmd_detach() {
@@ -179,7 +388,6 @@ cmd_detach() {
     require_root
     validate_dev "$dev"
 
-    # ontainment state check.
     state="$(parish_jail_state "$jail")"
     case "$state" in
         running|running-other-contained|stopped)
@@ -190,7 +398,7 @@ cmd_detach() {
             exit 1
             ;;
     esac
- 
+
     local jail_root
     jail_root=$(resolve_jail_root "$jail")
     validate_jail_root "$jail_root"
@@ -198,7 +406,6 @@ cmd_detach() {
     local jail_mnt="$jail_root/$JAIL_MNT_SUBDIR/$dev"
     local host_mnt="$HOST_MNT_ROOT/$dev"
 
-    # unmount jail side first
     if is_mounted "$jail_mnt"; then
         umount "$jail_mnt" \
             || err "cannot unmount $jail_mnt (device busy?)"
@@ -207,30 +414,34 @@ cmd_detach() {
         log "not mounted (jail): $jail_mnt"
     fi
 
-    # then host side
-    if is_mounted "$host_mnt"; then
+    # Unmount host side only if no other jail still references this device
+    local remaining
+    remaining="$(_attached_jails_for_dev "$dev")"
+    if [ -z "$remaining" ] && is_mounted "$host_mnt"; then
         umount "$host_mnt" \
             || err "cannot unmount $host_mnt (device busy?)"
         log "unmounted $host_mnt"
-    else
-        log "not mounted (host): $host_mnt"
+    elif [ -n "$remaining" ]; then
+        log "keeping host mount $host_mnt (still attached to: $remaining)"
     fi
 
-    # only rmdir if the mount point is a real directory (not symlink)
     [ -d "$jail_mnt" ] && [ ! -L "$jail_mnt" ] && rmdir "$jail_mnt" 2>/dev/null || true
-    [ -d "$host_mnt" ] && [ ! -L "$host_mnt" ] && rmdir "$host_mnt" 2>/dev/null || true
+    if [ -z "$remaining" ]; then
+        [ -d "$host_mnt" ] && [ ! -L "$host_mnt" ] && rmdir "$host_mnt" 2>/dev/null || true
+    fi
 
     echo "Detached: $dev from $jail"
 }
 
 main() {
-    [ $# -ge 1 ] || err "usage: parish-usb {list|attach|detach} ..."
+    [ $# -ge 1 ] || err "usage: parish-usb {list|devices|attach|detach} ..."
     cmd="$1"; shift
     case "$cmd" in
-        list)   cmd_list "$@" ;;
-        attach) cmd_attach "$@" ;;
-        detach) cmd_detach "$@" ;;
-        *)      err "unknown subcommand: $cmd" ;;
+        list)    cmd_list "$@" ;;
+        devices) cmd_devices "$@" ;;
+        attach)  cmd_attach "$@" ;;
+        detach)  cmd_detach "$@" ;;
+        *)       err "unknown subcommand: $cmd" ;;
     esac
 }
 
