@@ -79,6 +79,8 @@ void ContainerBackend::pumpQueue()
     case PendingTask::Kind::PollContainers:
     case PendingTask::Kind::PollTemplates:
     case PendingTask::Kind::PollPackages:
+    case PendingTask::Kind::PollExchangeFiles:
+    case PendingTask::Kind::PollUsbDevices:
         startPollTask(m_currentTask);
         break;
     case PendingTask::Kind::UserAction:
@@ -117,6 +119,7 @@ void ContainerBackend::startPollTask(const PendingTask &task)
         *completed = true;
 
         const QByteArray rawOut = proc->readAllStandardOutput();
+        const QByteArray rawErr = proc->readAllStandardError();
         const bool ok = (status == QProcess::NormalExit && exitCode == 0);
 
         if (task.kind == PendingTask::Kind::PollContainers) {
@@ -145,6 +148,8 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                         info.diskUsage = static_cast<quint64>(obj[QStringLiteral("disk_usage")].toDouble());
                         info.isVault = obj[QStringLiteral("is_vault")].toBool();
                         info.isCompatibility = obj[QStringLiteral("is_compatibility")].toBool();
+                        info.audioOutput = !info.isVault && obj[QStringLiteral("audio_output")].toBool(false);
+                        info.audioInput = !info.isVault && obj[QStringLiteral("audio_input")].toBool(false);
                         info.internalIp = obj[QStringLiteral("internal_ip")].toString();
                         info.path = QStringLiteral("/usr/local/jails/containers/%1").arg(info.name);
 
@@ -153,9 +158,8 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                             const QString c = cv.toString().trimmed();
                             if (!c.isEmpty()) info.capabilities.append(c);
                         }
-                        // Backwards-compatible capability inference when CLI omits capabilities[]
                         if (info.capabilities.isEmpty()) {
-                            if (!info.isVault) info.capabilities << QStringLiteral("gui");
+                            if (!info.isVault) info.capabilities << QStringLiteral("gui") << QStringLiteral("audio");
                             if (info.isCompatibility) {
                                 info.capabilities << QStringLiteral("compat-windows")
                                                   << QStringLiteral("compat-linux");
@@ -225,7 +229,6 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                         if (!p.name.isEmpty()) result.append(p);
                     }
                 } else {
-                    // Fallback: legacy tab-separated output from parishctl-apps-list
                     const QString text = QString::fromUtf8(rawOut);
                     for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
                         if (line.startsWith(QStringLiteral("Compartment "))) continue;
@@ -251,6 +254,54 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                 }
             }
             emit packagesReady(task.targetJail, result, err);
+        } else if (task.kind == PendingTask::Kind::PollExchangeFiles) {
+            QList<ExchangeFileEntry> result;
+            QString err;
+            if (!ok) {
+                err = QString::fromUtf8(rawErr).trimmed();
+                if (err.isEmpty()) err = tr("Failed to list exchange files");
+            } else {
+                const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
+                if (!doc.isArray()) {
+                    err = tr("JSON parse error from parishctl-exchange files");
+                } else {
+                    for (const QJsonValue &val : doc.array()) {
+                        if (!val.isObject()) continue;
+                        const QJsonObject obj = val.toObject();
+                        ExchangeFileEntry e;
+                        e.name = obj[QStringLiteral("name")].toString();
+                        e.type = obj[QStringLiteral("type")].toString();
+                        e.size = static_cast<quint64>(obj[QStringLiteral("size")].toDouble());
+                        if (!e.name.isEmpty()) result.append(e);
+                    }
+                }
+            }
+            emit exchangeFilesReady(task.targetJail, result, err);
+        } else if (task.kind == PendingTask::Kind::PollUsbDevices) {
+            QList<UsbDeviceInfo> result;
+            QString err;
+            if (!ok) {
+                err = QString::fromUtf8(rawErr).trimmed();
+                if (err.isEmpty()) err = tr("Failed to list removable USB devices");
+            } else {
+                const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
+                if (!doc.isArray()) {
+                    err = tr("JSON parse error from parish-usb devices");
+                } else {
+                    for (const QJsonValue &val : doc.array()) {
+                        if (!val.isObject()) continue;
+                        const QJsonObject obj = val.toObject();
+                        UsbDeviceInfo d;
+                        d.device = obj[QStringLiteral("device")].toString();
+                        d.fstype = obj[QStringLiteral("fstype")].toString();
+                        d.sizeBytes = static_cast<quint64>(obj[QStringLiteral("size")].toDouble());
+                        d.mode = obj[QStringLiteral("mode")].toString();
+                        d.attachedJails = obj[QStringLiteral("attached_jails")].toString();
+                        if (!d.device.isEmpty()) result.append(d);
+                    }
+                }
+            }
+            emit usbDevicesReady(result, err);
         }
 
         proc->deleteLater();
@@ -260,12 +311,17 @@ void ContainerBackend::startPollTask(const PendingTask &task)
     connect(proc, &QProcess::errorOccurred, this, [this, proc, task, completed](QProcess::ProcessError) {
         if (*completed) return;
         *completed = true;
+        const QString errMsg = tr("Failed to run process: %1").arg(proc->errorString());
         if (task.kind == PendingTask::Kind::PollContainers) {
-            emit containersReady({}, tr("Failed to run process: %1").arg(proc->errorString()));
+            emit containersReady({}, errMsg);
         } else if (task.kind == PendingTask::Kind::PollTemplates) {
-            emit templatesReady({}, tr("Failed to run process: %1").arg(proc->errorString()));
+            emit templatesReady({}, errMsg);
         } else if (task.kind == PendingTask::Kind::PollPackages) {
-            emit packagesReady(task.targetJail, {}, tr("Failed to run process: %1").arg(proc->errorString()));
+            emit packagesReady(task.targetJail, {}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollExchangeFiles) {
+            emit exchangeFilesReady(task.targetJail, {}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollUsbDevices) {
+            emit usbDevicesReady({}, errMsg);
         }
         proc->deleteLater();
         finishActiveTask();
@@ -293,6 +349,9 @@ void ContainerBackend::startUserActionTask(const PendingTask &task)
         if (!ok) {
             err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
             if (err.isEmpty()) err = tr("Command failed (exit %1)").arg(exitCode);
+        } else if (!task.attachAfterJail.isEmpty()) {
+            QProcess::startDetached(QStringLiteral("/usr/local/bin/parish-xpra"),
+                                    { QStringLiteral("attach"), task.attachAfterJail });
         }
         emit operationFinished(task.description, ok, err);
         proc->deleteLater();
@@ -447,6 +506,32 @@ void ContainerBackend::requestPackages(const QString &jail)
     enqueueTask(t);
 }
 
+void ContainerBackend::requestExchangeFiles(const QString &jail)
+{
+    if (!isValidCompartmentName(jail)) {
+        emit exchangeFilesReady(jail, {}, tr("Invalid compartment name."));
+        return;
+    }
+    PendingTask t;
+    t.kind = PendingTask::Kind::PollExchangeFiles;
+    t.description = tr("Listing exchange files in %1").arg(jail);
+    t.program = m_pkexecPath;
+    t.args = { QStringLiteral("/usr/local/sbin/parishctl-exchange"),
+               QStringLiteral("files"), jail, QStringLiteral("--json") };
+    t.targetJail = jail;
+    enqueueTask(t);
+}
+
+void ContainerBackend::requestUsbDevices()
+{
+    PendingTask t;
+    t.kind = PendingTask::Kind::PollUsbDevices;
+    t.description = QStringLiteral("List removable USB devices");
+    t.program = QStringLiteral("/usr/local/bin/parish-usb");
+    t.args = { QStringLiteral("devices"), QStringLiteral("--json") };
+    enqueueTask(t);
+}
+
 void ContainerBackend::enqueueParishctl(const QString &description, const QStringList &args)
 {
     PendingTask t;
@@ -455,6 +540,16 @@ void ContainerBackend::enqueueParishctl(const QString &description, const QStrin
     t.program = m_pkexecPath;
     t.args << QStringLiteral("/usr/local/sbin/") + args.first();
     for (int i = 1; i < args.size(); ++i) t.args << args[i];
+    enqueueTask(t);
+}
+
+void ContainerBackend::enqueueDirectAction(const QString &description, const QString &program, const QStringList &args)
+{
+    PendingTask t;
+    t.kind = PendingTask::Kind::UserAction;
+    t.description = description;
+    t.program = program;
+    t.args = args;
     enqueueTask(t);
 }
 
@@ -509,6 +604,92 @@ void ContainerBackend::setRiskLevel(const QString &name, const QString &riskLeve
     if (!isValidCompartmentName(name) || !isValidRiskLevel(riskLevel)) return;
     enqueueParishctl(tr("Setting risk level for '%1' to %2").arg(name, riskLevel),
                      { QStringLiteral("parishctl-set-risk"), name, riskLevel });
+}
+
+void ContainerBackend::setAudioConfig(const QString &name, bool outputEnabled, bool inputEnabled)
+{
+    if (!isValidCompartmentName(name)) return;
+    const QString outFlag = outputEnabled ? QStringLiteral("--output=on") : QStringLiteral("--output=off");
+    const QString inFlag = inputEnabled ? QStringLiteral("--input=on") : QStringLiteral("--input=off");
+    enqueueParishctl(tr("Updating audio policy for '%1'").arg(name),
+                     { QStringLiteral("parishctl-audio"), QStringLiteral("set"), name, outFlag, inFlag });
+}
+
+void ContainerBackend::attachXpra(const QString &name)
+{
+    if (!isValidCompartmentName(name)) return;
+    PendingTask t;
+    t.kind = PendingTask::Kind::UserAction;
+    t.description = tr("Attaching display for '%1'").arg(name);
+    t.program = m_pkexecPath;
+    t.args = { QStringLiteral("/usr/local/sbin/parishctl-xpra-start"), name };
+    t.attachAfterJail = name;
+    enqueueTask(t);
+}
+
+void ContainerBackend::detachXpra(const QString &name)
+{
+    if (!isValidCompartmentName(name)) return;
+    enqueueDirectAction(tr("Detaching display for '%1'").arg(name),
+                        QStringLiteral("/usr/local/bin/parish-xpra"),
+                        { QStringLiteral("detach"), name });
+}
+
+void ContainerBackend::exchangeTransfer(const QString &op,
+                                        const QString &srcJail,
+                                        const QString &srcPath,
+                                        const QString &dstJail,
+                                        const QString &dstPath,
+                                        bool confirmVaultExport,
+                                        bool confirmHostImport,
+                                        bool sanitize)
+{
+    QStringList args{ QStringLiteral("parishctl-exchange"), op };
+
+    if (op == QLatin1String("copy") || op == QLatin1String("move")) {
+        if (!isValidCompartmentName(srcJail) || !isValidCompartmentName(dstJail)) return;
+        args << srcJail << srcPath << dstJail << dstPath;
+        if (confirmVaultExport) args << QStringLiteral("--confirm-vault-export");
+    } else if (op == QLatin1String("put")) {
+        if (!isValidCompartmentName(dstJail) || srcPath.trimmed().isEmpty()) return;
+        args << srcPath << dstJail << dstPath;
+    } else if (op == QLatin1String("get")) {
+        if (!isValidCompartmentName(srcJail) || srcPath.trimmed().isEmpty()) return;
+        args << srcJail << srcPath;
+        if (!dstPath.trimmed().isEmpty()) args << dstPath;
+        if (confirmVaultExport) args << QStringLiteral("--confirm-vault-export");
+        if (confirmHostImport) args << QStringLiteral("--confirm-host-import");
+        if (sanitize) args << QStringLiteral("--sanitize");
+    } else {
+        return;
+    }
+
+    enqueueParishctl(tr("File Exchange (%1)").arg(op), args);
+}
+
+void ContainerBackend::attachUsb(const QString &jail,
+                                 const QString &device,
+                                 const QString &fstype,
+                                 bool readWrite,
+                                 bool confirmRw)
+{
+    if (!isValidCompartmentName(jail) || device.trimmed().isEmpty()) return;
+    QStringList args{ QStringLiteral("parishctl-usb-attach"), jail, device };
+    if (!fstype.trimmed().isEmpty()) args << fstype.trimmed();
+    if (readWrite) {
+        args << QStringLiteral("--rw");
+        if (confirmRw) args << QStringLiteral("--confirm-rw");
+    } else {
+        args << QStringLiteral("--ro");
+    }
+    enqueueParishctl(tr("Attaching USB %1 to '%2'").arg(device, jail), args);
+}
+
+void ContainerBackend::detachUsb(const QString &jail, const QString &device)
+{
+    if (!isValidCompartmentName(jail) || device.trimmed().isEmpty()) return;
+    enqueueParishctl(tr("Detaching USB %1 from '%2'").arg(device, jail),
+                     { QStringLiteral("parishctl-usb-detach"), jail, device });
 }
 
 void ContainerBackend::destroyContainer(const QString &name, const QString &confirmationToken)
@@ -592,10 +773,11 @@ void ContainerBackend::removePackages(const QString &jail,
 
 void ContainerBackend::launchApplication(const QString &jail, const QString &appName, bool isCustom)
 {
+    Q_UNUSED(isCustom);
     if (!isValidCompartmentName(jail) || appName.trimmed().isEmpty()) return;
-    QStringList args{ QStringLiteral("parishctl-app-launch"), jail, appName };
-    if (isCustom) args << QStringLiteral("--custom");
-    enqueueParishctl(tr("Launching '%1' in %2").arg(appName, jail), args);
+    enqueueDirectAction(tr("Launching '%1' in %2").arg(appName, jail),
+                        QStringLiteral("/usr/local/bin/parish-app-launch"),
+                        { jail, appName });
 }
 
 void ContainerBackend::cancelInstall()

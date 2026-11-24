@@ -1,25 +1,34 @@
 #include "ActionsDialog.h"
 #include "ApplicationsDialog.h"
 #include "ContainerBackend.h"
+#include "ExchangeDialog.h"
 #include "ProcessLogDialog.h"
+#include "UsbDialog.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGroupBox>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
-ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent)
-    : QDialog(parent), m_backend(backend), m_info(info)
+ActionsDialog::ActionsDialog(ContainerBackend *backend,
+                             const ContainerInfo &info,
+                             const QList<ContainerInfo> &allContainers,
+                             QWidget *parent)
+    : QDialog(parent), m_backend(backend), m_info(info), m_allContainers(allContainers)
 {
     setWindowTitle(tr("Actions: %1").arg(info.name));
-    setMinimumWidth(440);
+    setMinimumWidth(460);
 
     auto *root = new QVBoxLayout(this);
 
@@ -65,7 +74,42 @@ ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &inf
     connect(m_riskCombo, QOverload<int>::of(&QComboBox::activated),
             this, &ActionsDialog::onRiskLevelChanged);
 
-    root->addSpacing(8);
+    // Audio Policy Group (host-brokered PulseAudio/PipeWire socket; excluded for Vaults)
+    auto *audioBox = new QGroupBox(tr("Audio Isolation Policy"), this);
+    auto *audioLay = new QVBoxLayout(audioBox);
+    if (info.isVault) {
+        m_vaultAudioNote = new QLabel(
+            tr("Vaults exclude audio output and microphone devices by security policy."),
+            audioBox);
+        m_vaultAudioNote->setWordWrap(true);
+        m_vaultAudioNote->setAccessibleName(tr("Vault audio policy notice"));
+        audioLay->addWidget(m_vaultAudioNote);
+    } else {
+        m_audioOutCheck = new QCheckBox(tr("Enable Audio &Output (Playback)"), audioBox);
+        m_audioOutCheck->setChecked(info.audioOutput);
+        m_audioOutCheck->setEnabled(!info.isContained());
+        m_audioOutCheck->setAccessibleName(tr("Enable compartment audio output"));
+
+        m_audioInCheck = new QCheckBox(tr("Enable Audio &Input (Microphone)"), audioBox);
+        m_audioInCheck->setChecked(info.audioInput);
+        m_audioInCheck->setEnabled(!info.isContained());
+        m_audioInCheck->setAccessibleName(tr("Enable compartment audio input"));
+
+        auto *audioHint = new QLabel(
+            tr("Uses an isolated host PulseAudio/PipeWire socket per compartment; no raw /dev/dsp access."),
+            audioBox);
+        audioHint->setWordWrap(true);
+
+        audioLay->addWidget(m_audioOutCheck);
+        audioLay->addWidget(m_audioInCheck);
+        audioLay->addWidget(audioHint);
+
+        connect(m_audioOutCheck, &QCheckBox::clicked, this, &ActionsDialog::onAudioPolicyChanged);
+        connect(m_audioInCheck, &QCheckBox::clicked, this, &ActionsDialog::onAudioPolicyChanged);
+    }
+    root->addWidget(audioBox);
+
+    root->addSpacing(6);
 
     m_buttonLayout = new QVBoxLayout();
     root->addLayout(m_buttonLayout);
@@ -128,6 +172,18 @@ void ActionsDialog::rebuildButtons()
     } else {
         if (m_info.isRunning()) {
             addButton(tr("Open Console"), QStringLiteral("utilities-terminal"), &ActionsDialog::onConsole);
+            if (m_info.supportsGui()) {
+                auto *xpraRow = new QHBoxLayout();
+                auto *attachBtn = new QPushButton(tr("Attach Display (Xpra)"), this);
+                attachBtn->setIcon(QIcon::fromTheme(QStringLiteral("video-display")));
+                auto *detachBtn = new QPushButton(tr("Detach Display"), this);
+                detachBtn->setIcon(QIcon::fromTheme(QStringLiteral("window-close")));
+                connect(attachBtn, &QPushButton::clicked, this, &ActionsDialog::onAttachXpra);
+                connect(detachBtn, &QPushButton::clicked, this, &ActionsDialog::onDetachXpra);
+                xpraRow->addWidget(attachBtn);
+                xpraRow->addWidget(detachBtn);
+                m_buttonLayout->addLayout(xpraRow);
+            }
         } else {
             addButton(tr("Start"), QStringLiteral("media-playback-start"), &ActionsDialog::onStart);
         }
@@ -136,6 +192,8 @@ void ActionsDialog::rebuildButtons()
     addSeparator();
 
     addButton(tr("Applications && Packages..."), QStringLiteral("system-software-install"), &ActionsDialog::onApplications);
+    addButton(tr("File Exchange..."), QStringLiteral("folder-sync"), &ActionsDialog::onExchange);
+    addButton(tr("USB && Removable Media..."), QStringLiteral("drive-removable-media"), &ActionsDialog::onUsb);
 
     if (!m_info.isVault && m_info.isRunning()) {
         addButton(tr("Stop Container"), QStringLiteral("media-playback-stop"), &ActionsDialog::onStop);
@@ -169,9 +227,33 @@ void ActionsDialog::onLock()
 
 void ActionsDialog::onConsole() { m_backend->openConsole(m_info.name); }
 
+void ActionsDialog::onAttachXpra() { m_backend->attachXpra(m_info.name); }
+
+void ActionsDialog::onDetachXpra() { m_backend->detachXpra(m_info.name); }
+
 void ActionsDialog::onApplications()
 {
     ApplicationsDialog dlg(m_backend, m_info, this);
+    dlg.exec();
+}
+
+void ActionsDialog::onExchange()
+{
+    const QList<ContainerInfo> list = m_allContainers.isEmpty()
+        ? QList<ContainerInfo>{ m_info }
+        : m_allContainers;
+    ExchangeDialog dlg(m_backend, list, m_info.name, this);
+    connect(&dlg, &ExchangeDialog::exchangeCompleted, this, &ActionsDialog::containerChanged);
+    dlg.exec();
+}
+
+void ActionsDialog::onUsb()
+{
+    const QList<ContainerInfo> list = m_allContainers.isEmpty()
+        ? QList<ContainerInfo>{ m_info }
+        : m_allContainers;
+    UsbDialog dlg(m_backend, list, m_info.name, this);
+    connect(&dlg, &UsbDialog::usbChanged, this, &ActionsDialog::containerChanged);
     dlg.exec();
 }
 
@@ -182,6 +264,12 @@ void ActionsDialog::onRiskLevelChanged(int index)
     if (!level.isEmpty() && level != m_info.normalizedRiskLevel()) {
         m_backend->setRiskLevel(m_info.name, level);
     }
+}
+
+void ActionsDialog::onAudioPolicyChanged()
+{
+    if (m_info.isVault || m_info.isContained() || !m_audioOutCheck || !m_audioInCheck) return;
+    m_backend->setAudioConfig(m_info.name, m_audioOutCheck->isChecked(), m_audioInCheck->isChecked());
 }
 
 void ActionsDialog::onRefresh()
@@ -213,6 +301,15 @@ void ActionsDialog::onDestroy()
 void ActionsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)
 {
     Q_UNUSED(err);
+    if (ok && desc.startsWith(QStringLiteral("Updating audio policy")) && m_audioOutCheck && m_audioInCheck) {
+        m_info.audioOutput = m_audioOutCheck->isChecked();
+        m_info.audioInput = m_audioInCheck->isChecked();
+    } else if (!ok && desc.startsWith(QStringLiteral("Updating audio policy")) && m_audioOutCheck && m_audioInCheck) {
+        const QSignalBlocker b1(m_audioOutCheck);
+        const QSignalBlocker b2(m_audioInCheck);
+        m_audioOutCheck->setChecked(m_info.audioOutput);
+        m_audioInCheck->setChecked(m_info.audioInput);
+    }
     emit containerChanged();
     if (ok && (desc.startsWith(QStringLiteral("Destroy:")) || desc.startsWith(QStringLiteral("Create:")))) {
         accept();

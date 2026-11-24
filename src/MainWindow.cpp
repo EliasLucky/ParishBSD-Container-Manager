@@ -1,17 +1,19 @@
-
 #include "MainWindow.h"
 #include "ActionsDialog.h"
 #include "ApplicationsDialog.h"
 #include "ContainerBackend.h"
 #include "ContainerInfo.h"
 #include "ContainerModel.h"
+#include "ExchangeDialog.h"
 #include "ProcessLogDialog.h"
 #include "TemplateInfo.h"
 #include "TemplateModel.h"
 #include "TreeAssemblyModel.h"
+#include "UsbDialog.h"
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -29,6 +31,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -129,6 +132,10 @@ void MainWindow::buildMenus()
     m_actStart->setIcon(QIcon::fromTheme(QStringLiteral("media-playback-start")));
     m_actStop = runMenu->addAction(tr("Sto&p"));
     m_actStop->setIcon(QIcon::fromTheme(QStringLiteral("media-playback-stop")));
+    m_actAttachXpra = runMenu->addAction(tr("Attach &Display (Xpra)"));
+    m_actAttachXpra->setIcon(QIcon::fromTheme(QStringLiteral("video-display")));
+    m_actDetachXpra = runMenu->addAction(tr("Detach Dis&play"));
+    m_actDetachXpra->setIcon(QIcon::fromTheme(QStringLiteral("window-close")));
     runMenu->addSeparator();
     m_actUnlock = runMenu->addAction(tr("&Unlock Vault"));
     m_actUnlock->setIcon(QIcon::fromTheme(QStringLiteral("security-medium")));
@@ -139,6 +146,13 @@ void MainWindow::buildMenus()
     m_actActions->setIcon(QIcon::fromTheme(QStringLiteral("configure")));
 
     QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
+    m_actExchange = toolsMenu->addAction(tr("File &Exchange..."));
+    m_actExchange->setIcon(QIcon::fromTheme(QStringLiteral("folder-sync")));
+    m_actExchange->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    m_actUsb = toolsMenu->addAction(tr("&USB && Removable Media..."));
+    m_actUsb->setIcon(QIcon::fromTheme(QStringLiteral("drive-removable-media")));
+    m_actUsb->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_U));
+    toolsMenu->addSeparator();
     m_actSettings = toolsMenu->addAction(tr("&Settings..."));
     m_actSettings->setIcon(QIcon::fromTheme(QStringLiteral("preferences-system")));
 
@@ -158,7 +172,11 @@ void MainWindow::buildMenus()
     connect(m_actUnlock, &QAction::triggered, this, &MainWindow::onUnlock);
     connect(m_actLock, &QAction::triggered, this, &MainWindow::onLock);
     connect(m_actConsole, &QAction::triggered, this, &MainWindow::onConsole);
+    connect(m_actAttachXpra, &QAction::triggered, this, &MainWindow::onAttachXpra);
+    connect(m_actDetachXpra, &QAction::triggered, this, &MainWindow::onDetachXpra);
     connect(m_actApps, &QAction::triggered, this, &MainWindow::onApplications);
+    connect(m_actExchange, &QAction::triggered, this, &MainWindow::onExchange);
+    connect(m_actUsb, &QAction::triggered, this, &MainWindow::onUsb);
     connect(m_actActions, &QAction::triggered, this, &MainWindow::onActions);
 }
 
@@ -186,12 +204,15 @@ void MainWindow::buildToolBar()
     tb->addSeparator();
     add(m_actStart, QStringLiteral("media-playback-start"));
     add(m_actStop, QStringLiteral("media-playback-stop"));
+    add(m_actAttachXpra, QStringLiteral("video-display"));
     tb->addSeparator();
     add(m_actUnlock, QStringLiteral("security-medium"));
     add(m_actLock, QStringLiteral("security-high"));
     tb->addSeparator();
     add(m_actApps, QStringLiteral("system-software-install"));
     add(m_actConsole, QStringLiteral("utilities-terminal"));
+    add(m_actExchange, QStringLiteral("folder-sync"));
+    add(m_actUsb, QStringLiteral("drive-removable-media"));
     add(m_actActions, QStringLiteral("configure"));
     tb->addSeparator();
     add(m_actRefresh, QStringLiteral("view-refresh"));
@@ -325,19 +346,53 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     connect(m_inspRiskCombo, QOverload<int>::of(&QComboBox::activated),
             this, &MainWindow::onRiskChanged);
 
+    m_inspAudioBox = new QGroupBox(tr("Audio"), compBox);
+    auto *audioBoxLay = new QVBoxLayout(m_inspAudioBox);
+    audioBoxLay->setContentsMargins(8, 6, 8, 6);
+    m_inspAudioOutCheck = new QCheckBox(tr("Audio &Output (Playback)"), m_inspAudioBox);
+    m_inspAudioOutCheck->setAccessibleName(tr("Enable compartment audio output"));
+    m_inspAudioInCheck = new QCheckBox(tr("Audio &Input (Microphone)"), m_inspAudioBox);
+    m_inspAudioInCheck->setAccessibleName(tr("Enable compartment audio input"));
+    m_inspVaultAudioNote = new QLabel(tr("Vaults exclude audio devices for security."), m_inspAudioBox);
+    m_inspVaultAudioNote->setWordWrap(true);
+    m_inspVaultAudioNote->setVisible(false);
+    audioBoxLay->addWidget(m_inspAudioOutCheck);
+    audioBoxLay->addWidget(m_inspAudioInCheck);
+    audioBoxLay->addWidget(m_inspVaultAudioNote);
+    compBoxLay->addWidget(m_inspAudioBox);
+
+    connect(m_inspAudioOutCheck, &QCheckBox::clicked, this, &MainWindow::onAudioChanged);
+    connect(m_inspAudioInCheck, &QCheckBox::clicked, this, &MainWindow::onAudioChanged);
+
     m_inspStartStopBtn = new QPushButton(tr("Start"), compBox);
     m_inspUnlockLockBtn = new QPushButton(tr("Unlock Vault"), compBox);
     m_inspConsoleBtn = new QPushButton(tr("Open Console"), compBox);
+
+    auto *xpraRow = new QHBoxLayout();
+    m_inspAttachXpraBtn = new QPushButton(tr("Attach Display"), compBox);
+    m_inspDetachXpraBtn = new QPushButton(tr("Detach Display"), compBox);
+    xpraRow->addWidget(m_inspAttachXpraBtn);
+    xpraRow->addWidget(m_inspDetachXpraBtn);
+
     m_inspAppsBtn = new QPushButton(tr("Applications && Packages..."), compBox);
+
+    auto *ioRow = new QHBoxLayout();
+    m_inspExchangeBtn = new QPushButton(tr("File Exchange..."), compBox);
+    m_inspUsbBtn = new QPushButton(tr("USB && Media..."), compBox);
+    ioRow->addWidget(m_inspExchangeBtn);
+    ioRow->addWidget(m_inspUsbBtn);
+
     m_inspActionsBtn = new QPushButton(tr("More Actions..."), compBox);
     m_inspDestroyBtn = new QPushButton(tr("Destroy..."), compBox);
 
     compBoxLay->addWidget(m_inspStartStopBtn);
     compBoxLay->addWidget(m_inspUnlockLockBtn);
     compBoxLay->addWidget(m_inspConsoleBtn);
+    compBoxLay->addLayout(xpraRow);
     compBoxLay->addWidget(m_inspAppsBtn);
+    compBoxLay->addLayout(ioRow);
     compBoxLay->addWidget(m_inspActionsBtn);
-    compBoxLay->addSpacing(8);
+    compBoxLay->addSpacing(6);
     compBoxLay->addWidget(m_inspDestroyBtn);
     compBoxLay->addStretch();
 
@@ -354,7 +409,11 @@ void MainWindow::buildInspectorPane(QWidget *parent)
         else onLock();
     });
     connect(m_inspConsoleBtn, &QPushButton::clicked, this, &MainWindow::onConsole);
+    connect(m_inspAttachXpraBtn, &QPushButton::clicked, this, &MainWindow::onAttachXpra);
+    connect(m_inspDetachXpraBtn, &QPushButton::clicked, this, &MainWindow::onDetachXpra);
     connect(m_inspAppsBtn, &QPushButton::clicked, this, &MainWindow::onApplications);
+    connect(m_inspExchangeBtn, &QPushButton::clicked, this, &MainWindow::onExchange);
+    connect(m_inspUsbBtn, &QPushButton::clicked, this, &MainWindow::onUsb);
     connect(m_inspActionsBtn, &QPushButton::clicked, this, &MainWindow::onActions);
     connect(m_inspDestroyBtn, &QPushButton::clicked, this, &MainWindow::onDestroy);
 
@@ -428,9 +487,12 @@ void MainWindow::updateActionStates()
 
     const bool isApp = haveContainer && !c.isVault;
     const bool isVault = haveContainer && c.isVault;
+    const bool hasGui = isApp && c.supportsGui();
 
     m_actStart->setVisible(isApp);
     m_actStop->setVisible(isApp);
+    m_actAttachXpra->setVisible(hasGui);
+    m_actDetachXpra->setVisible(hasGui);
     m_actConsole->setVisible(haveContainer);
     m_actUnlock->setVisible(isVault);
     m_actLock->setVisible(isVault);
@@ -442,10 +504,14 @@ void MainWindow::updateActionStates()
 
     m_actStart->setEnabled(haveContainer && !running && !contained);
     m_actStop->setEnabled(haveContainer && running && !contained);
+    m_actAttachXpra->setEnabled(hasGui && running && !contained);
+    m_actDetachXpra->setEnabled(hasGui && running && !contained);
     m_actUnlock->setEnabled(haveContainer && locked && !contained);
     m_actLock->setEnabled(haveContainer && !locked && !contained);
     m_actConsole->setEnabled(haveContainer && running && !contained);
     m_actApps->setEnabled(haveContainer);
+    m_actExchange->setEnabled(!contained);
+    m_actUsb->setEnabled(!contained);
     m_actDestroy->setEnabled(haveContainer && !contained);
     m_actActions->setEnabled(haveContainer);
 }
@@ -465,12 +531,28 @@ void MainWindow::updateInspector()
             tr("Kind: %1\nState: %2\nTemplate: %3\nCapabilities: %4\nDisk usage: %5")
                 .arg(c.kind, c.humanState(), c.sourceTemplate, caps, formatDiskUsage(c.diskUsage)));
 
-        const int rIdx = m_inspRiskCombo->findData(c.normalizedRiskLevel());
-        if (rIdx >= 0) m_inspRiskCombo->setCurrentIndex(rIdx);
+        {
+            const QSignalBlocker b(m_inspRiskCombo);
+            const int rIdx = m_inspRiskCombo->findData(c.normalizedRiskLevel());
+            if (rIdx >= 0) m_inspRiskCombo->setCurrentIndex(rIdx);
+        }
         m_inspRiskCombo->setEnabled(!c.isContained());
 
         const bool running = c.isRunning();
         const bool contained = c.isContained();
+        const bool showGui = !c.isVault && c.supportsGui();
+
+        m_inspAudioOutCheck->setVisible(!c.isVault);
+        m_inspAudioInCheck->setVisible(!c.isVault);
+        m_inspVaultAudioNote->setVisible(c.isVault);
+        if (!c.isVault) {
+            const QSignalBlocker bOut(m_inspAudioOutCheck);
+            const QSignalBlocker bIn(m_inspAudioInCheck);
+            m_inspAudioOutCheck->setChecked(c.audioOutput);
+            m_inspAudioInCheck->setChecked(c.audioInput);
+            m_inspAudioOutCheck->setEnabled(!contained);
+            m_inspAudioInCheck->setEnabled(!contained);
+        }
 
         m_inspStartStopBtn->setVisible(!c.isVault);
         m_inspStartStopBtn->setText(running ? tr("Stop Compartment") : tr("Start Compartment"));
@@ -481,7 +563,13 @@ void MainWindow::updateInspector()
         m_inspUnlockLockBtn->setEnabled(!contained);
 
         m_inspConsoleBtn->setEnabled(running && !contained);
+        m_inspAttachXpraBtn->setVisible(showGui);
+        m_inspDetachXpraBtn->setVisible(showGui);
+        m_inspAttachXpraBtn->setEnabled(showGui && running && !contained);
+        m_inspDetachXpraBtn->setEnabled(showGui && running && !contained);
         m_inspAppsBtn->setEnabled(true);
+        m_inspExchangeBtn->setEnabled(!contained);
+        m_inspUsbBtn->setEnabled(!contained);
         m_inspActionsBtn->setEnabled(true);
         m_inspDestroyBtn->setEnabled(!contained);
         return;
@@ -675,6 +763,22 @@ void MainWindow::onConsole()
     if (c.isValid()) m_backend->openConsole(c.name);
 }
 
+void MainWindow::onAttachXpra()
+{
+    const ContainerInfo c = selectedContainer();
+    if (c.isValid() && !c.isVault && !c.isContained()) {
+        m_backend->attachXpra(c.name);
+    }
+}
+
+void MainWindow::onDetachXpra()
+{
+    const ContainerInfo c = selectedContainer();
+    if (c.isValid() && !c.isVault && !c.isContained()) {
+        m_backend->detachXpra(c.name);
+    }
+}
+
 void MainWindow::onApplications()
 {
     const ContainerInfo c = selectedContainer();
@@ -685,12 +789,28 @@ void MainWindow::onApplications()
     dlg.exec();
 }
 
+void MainWindow::onExchange()
+{
+    const ContainerInfo c = selectedContainer();
+    ExchangeDialog dlg(m_backend, m_model->allContainers(), c.isValid() ? c.name : QString(), this);
+    connect(&dlg, &ExchangeDialog::exchangeCompleted, this, &MainWindow::onRefresh);
+    dlg.exec();
+}
+
+void MainWindow::onUsb()
+{
+    const ContainerInfo c = selectedContainer();
+    UsbDialog dlg(m_backend, m_model->allContainers(), c.isValid() ? c.name : QString(), this);
+    connect(&dlg, &UsbDialog::usbChanged, this, &MainWindow::onRefresh);
+    dlg.exec();
+}
+
 void MainWindow::onActions()
 {
     const ContainerInfo c = selectedContainer();
     if (!c.isValid()) return;
 
-    ActionsDialog dlg(m_backend, c, this);
+    ActionsDialog dlg(m_backend, c, m_model->allContainers(), this);
     connect(&dlg, &ActionsDialog::containerChanged, this, &MainWindow::onRefresh);
     dlg.exec();
 }
@@ -704,6 +824,13 @@ void MainWindow::onRiskChanged(int index)
     if (!level.isEmpty() && level != c.normalizedRiskLevel()) {
         m_backend->setRiskLevel(c.name, level);
     }
+}
+
+void MainWindow::onAudioChanged()
+{
+    const ContainerInfo c = selectedContainer();
+    if (!c.isValid() || c.isVault || c.isContained()) return;
+    m_backend->setAudioConfig(c.name, m_inspAudioOutCheck->isChecked(), m_inspAudioInCheck->isChecked());
 }
 
 void MainWindow::onSettings()
@@ -777,4 +904,3 @@ void MainWindow::onTerminalClosed(const QString &desc)
     onRefresh();
     if (m_statusLabel) m_statusLabel->setText(tr("%1: done.").arg(desc));
 }
-

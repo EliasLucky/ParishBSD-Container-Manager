@@ -13,6 +13,20 @@
 
 class QProcess;
 
+struct ExchangeFileEntry {
+    QString name;
+    QString type; // file | dir
+    quint64 size = 0;
+};
+
+struct UsbDeviceInfo {
+    QString device;        // da0p1, cd0, ...
+    QString fstype;        // msdosfs, exfat, ufs, ntfs, cd9660
+    quint64 sizeBytes = 0;
+    QString mode;          // unmounted | ro | rw
+    QString attachedJails; // comma-separated
+};
+
 class ContainerBackend : public QObject {
     Q_OBJECT
 public:
@@ -22,6 +36,8 @@ public:
     void requestContainers();
     void requestTemplates();
     void requestPackages(const QString &jail);
+    void requestExchangeFiles(const QString &jail);
+    void requestUsbDevices();
     bool isBusy() const;
 
     // Lifecycle & vault operations
@@ -30,6 +46,31 @@ public:
     void unlockVault(const QString &name);
     void lockVault(const QString &name);
     void setRiskLevel(const QString &name, const QString &riskLevel);
+
+    // Audio policy (output & input independent; excluded for vaults)
+    void setAudioConfig(const QString &name, bool outputEnabled, bool inputEnabled);
+
+    // Xpra display session client attach / detach
+    void attachXpra(const QString &name);
+    void detachXpra(const QString &name);
+
+    // File Exchange (op: copy | move | put | get)
+    void exchangeTransfer(const QString &op,
+                          const QString &srcJail,
+                          const QString &srcPath,
+                          const QString &dstJail,
+                          const QString &dstPath,
+                          bool confirmVaultExport,
+                          bool confirmHostImport,
+                          bool sanitize);
+
+    // USB / Removable media
+    void attachUsb(const QString &jail,
+                   const QString &device,
+                   const QString &fstype,
+                   bool readWrite,
+                   bool confirmRw);
+    void detachUsb(const QString &jail, const QString &device);
 
     void destroyContainer(const QString &name, const QString &confirmationToken);
     void createContainer(const QString &name, const QString &templateName);
@@ -58,6 +99,8 @@ signals:
     void containersReady(QList<ContainerInfo> list, QString error);
     void templatesReady(QList<TemplateInfo> list, QString error);
     void packagesReady(QString jail, QList<PackageInfo> list, QString error);
+    void exchangeFilesReady(QString jail, QList<ExchangeFileEntry> files, QString error);
+    void usbDevicesReady(QList<UsbDeviceInfo> devices, QString error);
 
     void installOutputReady(const QString &text);
     void installFinished(bool success, const QString &errorMessage);
@@ -68,6 +111,8 @@ private:
             PollContainers,
             PollTemplates,
             PollPackages,
+            PollExchangeFiles,
+            PollUsbDevices,
             UserAction,
             StreamingAction,
             TerminalAction
@@ -78,12 +123,15 @@ private:
         QString program;
         QStringList args;
         QString targetJail;
+        QString attachAfterJail;
         bool pauseTerminalOnExit = true;
 
         bool isPoll() const {
             return kind == Kind::PollContainers ||
                    kind == Kind::PollTemplates ||
-                   kind == Kind::PollPackages;
+                   kind == Kind::PollPackages ||
+                   kind == Kind::PollExchangeFiles ||
+                   kind == Kind::PollUsbDevices;
         }
     };
 
@@ -97,6 +145,7 @@ private:
     void startTerminalTask(const PendingTask &task);
 
     void enqueueParishctl(const QString &description, const QStringList &args);
+    void enqueueDirectAction(const QString &description, const QString &program, const QStringList &args);
     void enqueueStreamingPkexec(const QString &title, const QStringList &sbinArgs);
     void enqueueTerminal(const QString &title, const QStringList &execArgv, bool pauseOnExit = true);
 

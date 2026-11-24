@@ -1,0 +1,360 @@
+#!/bin/sh
+# parish-audio  host-brokered per-compartment audio policy & socket lifecycle.
+#
+# Architecture:
+#   - Uses host PulseAudio / PipeWire-Pulse Unix domain sockets rather than
+#     sndiod or raw /dev/dsp access inside jails, ensuring compatibility with
+#     modern desktop applications (Firefox, Chromium, Electron, Wine) AND
+#     Linuxulator games (e.g. Steam / Team Fortress 2 via PULSE_SERVER and ALSA
+#     pulse plugin).
+#   - Host policy is stored at /var/db/parishbsd/audio/<jail> (0644 root:wheel),
+#     strictly invisible inside jails.
+#   - Defaults to AUDIO_OUTPUT=0 and AUDIO_INPUT=0 (both disabled).
+#   - Vault compartments (tier=vault) are ALWAYS excluded and refused.
+#   - Output and Input (microphone) are independently toggleable.
+#   - Isolation: runs an unprivileged host-side per-jail PulseAudio proxy
+#     instance (no hardware module-oss!) bridging ONLY:
+#       * module-tunnel-sink   (if AUDIO_OUTPUT=1)
+#       * module-tunnel-source (if AUDIO_INPUT=1)
+#     and exposing /var/run/parishbsd/audio/<jail>/pulse.sock into the jail
+#     via nullfs at /var/run/parish-audio. When AUDIO_INPUT=0, NO capture
+#     source exists in that jail's audio server at all.
+#
+# Usage:
+#   parish-audio status <jail>
+#   parish-audio set <jail> [--output=on|off] [--input=on|off]
+#   parish-audio apply <jail>
+#   parish-audio stop <jail>
+
+set -eu
+umask 022
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/policy.sh"
+
+AUDIO_DB_DIR="/var/db/parishbsd/audio"
+AUDIO_RUN_ROOT="/var/run/parishbsd/audio"
+
+log() { logger -t parish-audio -p user.info -- "$*" 2>/dev/null || true; }
+err() { printf 'parish-audio: %s\n' "$*" >&2; exit 1; }
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || err "must be run as root (use parishctl audio)"
+}
+
+_resolve_desktop_uid() {
+    if [ -n "${PKEXEC_UID:-}" ] && [ "$PKEXEC_UID" != "0" ]; then
+        printf '%s' "$PKEXEC_UID"
+        return 0
+    fi
+    if [ -n "${SUDO_UID:-}" ] && [ "$SUDO_UID" != "0" ]; then
+        printf '%s' "$SUDO_UID"
+        return 0
+    fi
+    # Fallback: find owner of host pulse/pipewire runtime socket
+    for _d in /var/run/user/* /run/user/*; do
+        [ -d "$_d" ] || continue
+        if [ -S "$_d/pulse/native" ]; then
+            stat -f '%u' "$_d" 2>/dev/null && return 0
+        fi
+    done
+    # Fallback: first active graphical user in `who`
+    _u="$(who 2>/dev/null | awk 'NR==1{print $1}')"
+    if [ -n "$_u" ] && [ "$_u" != "root" ]; then
+        id -u "$_u" 2>/dev/null && return 0
+    fi
+    printf '0'
+}
+
+_find_host_pulse_socket() {
+    _uid="$1"
+    for _cand in \
+        "/var/run/user/$_uid/pulse/native" \
+        "/run/user/$_uid/pulse/native" \
+        "/tmp/pulse-$_uid/native"; do
+        if [ -S "$_cand" ] && [ ! -L "$_cand" ]; then
+            printf '%s' "$_cand"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_is_mounted_dir() {
+    mount -p | awk -F'\t' -v m="$1" '$2 == m { found=1; exit } END { exit !found }'
+}
+
+_ensure_linux_alsa_pulse() {
+    _jailroot="$1"
+    # If compat/linux exists and writable custom config exists inside jail, ensure ALSA->Pulse config
+    # Note: /compat/linux is mounted ro from host /compat/linux in standard templates, so host
+    # /compat/linux/etc/asound.conf serves all Linuxulator compartments automatically when present.
+    _asound="/compat/linux/etc/asound.conf"
+    if [ -d /compat/linux/etc ] && [ ! -e "$_asound" ]; then
+        cat > "${_asound}.tmp.$$" <<'EOF'
+# ParishBSD: route Linuxulator ALSA audio (e.g. Steam / TF2) via per-jail PULSE_SERVER
+pcm.!default {
+    type pulse
+    fallback "sysdefault"
+}
+ctl.!default {
+    type pulse
+    fallback "sysdefault"
+}
+EOF
+        chmod 0644 "${_asound}.tmp.$$"
+        mv -f "${_asound}.tmp.$$" "$_asound" 2>/dev/null || rm -f "${_asound}.tmp.$$"
+    fi
+    : "$_jailroot"
+}
+
+_stop_audio_runtime() {
+    _jail="$1"
+    _jailroot="$(container_path "$_jail" 2>/dev/null || true)"
+    _run_dir="$AUDIO_RUN_ROOT/$_jail"
+    _pidfile="$_run_dir/proxy.pid"
+
+    if [ -f "$_pidfile" ] && [ ! -L "$_pidfile" ]; then
+        _pid="$(head -n 1 "$_pidfile" 2>/dev/null | tr -d '[:space:]')"
+        case "$_pid" in
+            ''|*[!0-9]*) : ;;
+            *)
+                kill -TERM "$_pid" 2>/dev/null || true
+                sleep 0.2
+                kill -KILL "$_pid" 2>/dev/null || true
+                ;;
+        esac
+        rm -f "$_pidfile"
+    fi
+
+    if [ -n "$_jailroot" ]; then
+        _jmnt="$_jailroot/var/run/parish-audio"
+        if _is_mounted_dir "$_jmnt"; then
+            umount -f "$_jmnt" 2>/dev/null || true
+        fi
+    fi
+
+    if [ -d "$_run_dir" ] && [ ! -L "$_run_dir" ]; then
+        rm -f "$_run_dir/pulse.sock" "$_run_dir/proxy.conf" "$_run_dir/proxy.log" 2>/dev/null || true
+        rm -rf "$_run_dir/runtime" 2>/dev/null || true
+    fi
+}
+
+_start_audio_runtime() {
+    _jail="$1"
+    _out="$2"
+    _in="$3"
+
+    _stop_audio_runtime "$_jail"
+
+    if [ "$_out" -eq 0 ] && [ "$_in" -eq 0 ]; then
+        return 0
+    fi
+
+    _jailroot="$(container_path "$_jail")" || err "no compartment named '$_jail'"
+    _state="$(parish_jail_state "$_jail")"
+    case "$_state" in
+        running|running-other-contained) : ;;
+        *) return 0 ;; # stopped jails apply policy at next start
+    esac
+
+    _uid="$(_resolve_desktop_uid)"
+    if [ "$_uid" = "0" ]; then
+        printf 'parish-audio: no active unprivileged desktop audio session detected; policy saved for next launch.\n' >&2
+        return 0
+    fi
+    _user="$(pw usershow -u "$_uid" 2>/dev/null | cut -d: -f1 || true)"
+    [ -n "$_user" ] || {
+        printf 'parish-audio: cannot resolve desktop user for uid %s\n' "$_uid" >&2
+        return 0
+    }
+
+    _host_sock="$(_find_host_pulse_socket "$_uid" || true)"
+    if [ -z "$_host_sock" ]; then
+        printf 'parish-audio: host PulseAudio/PipeWire socket not active for %s; policy saved.\n' "$_user" >&2
+        return 0
+    fi
+
+    install -d -m 0755 -o root -g wheel /var/run/parishbsd
+    install -d -m 0711 -o root -g wheel "$AUDIO_RUN_ROOT"
+    install -d -m 0755 -o "$_uid" -g wheel "$AUDIO_RUN_ROOT/$_jail"
+    install -d -m 0700 -o "$_uid" -g wheel "$AUDIO_RUN_ROOT/$_jail/runtime"
+    install -d -m 0755 -o root -g wheel "$_jailroot/var/run/parish-audio"
+
+    _run_dir="$AUDIO_RUN_ROOT/$_jail"
+    _jail_mnt="$_jailroot/var/run/parish-audio"
+    _sock="$_run_dir/pulse.sock"
+    _conf="$_run_dir/proxy.conf"
+    _pidfile="$_run_dir/proxy.pid"
+
+    # Build isolated per-jail PulseAudio bridge config (no hardware /dev/dsp modules!).
+    # If output=1: loads module-tunnel-sink to host socket.
+    # If input=1:  loads module-tunnel-source to host socket.
+    # If input=0:  microphone does NOT exist in this instance.
+    {
+        printf '# Generated by parish-audio for compartment %s\n' "$_jail"
+        printf 'load-module module-native-protocol-unix socket=%s auth-anonymous=1\n' "$_sock"
+        if [ "$_out" -eq 1 ]; then
+            printf 'load-module module-tunnel-sink server=unix:%s sink_name=parish_out sink_properties=device.description="ParishBSD_Output(%s)"\n' \
+                "$_host_sock" "$_jail"
+            printf 'set-default-sink parish_out\n'
+        else
+            printf 'load-module module-null-sink sink_name=parish_muted\n'
+            printf 'set-default-sink parish_muted\n'
+        fi
+        if [ "$_in" -eq 1 ]; then
+            printf 'load-module module-tunnel-source server=unix:%s source_name=parish_in source_properties=device.description="ParishBSD_Mic(%s)"\n' \
+                "$_host_sock" "$_jail"
+            printf 'set-default-source parish_in\n'
+        fi
+    } > "$_conf"
+    chown "$_uid:wheel" "$_conf"
+    chmod 0600 "$_conf"
+
+    if command -v pulseaudio >/dev/null 2>&1; then
+        su -m "$_user" -c "
+            env -i HOME=\"/tmp\" \
+                PULSE_RUNTIME_PATH=\"$_run_dir/runtime\" \
+                XDG_RUNTIME_DIR=\"$_run_dir/runtime\" \
+                /usr/local/bin/pulseaudio \
+                    --daemonize=yes \
+                    --exit-idle-time=-1 \
+                    --disallow-module-loading=yes \
+                    --disable-shm=yes \
+                    -n -F \"$_conf\" \
+                    --log-target=file:\"$_run_dir/proxy.log\"
+        " 2>/dev/null || true
+
+        _retries=0
+        while [ "$_retries" -lt 20 ]; do
+            [ -S "$_sock" ] && break
+            sleep 0.1
+            _retries=$((_retries + 1))
+        done
+    fi
+
+    if [ -S "$_sock" ]; then
+        chmod 0666 "$_sock" 2>/dev/null || true
+        if ! _is_mounted_dir "$_jail_mnt"; then
+            mount_nullfs -o rw,nosuid,noexec,nodev "$_run_dir" "$_jail_mnt" \
+                || log "WARN: cannot mount $_run_dir -> $_jail_mnt"
+        fi
+        # Record proxy PID for clean teardown
+        pgrep -u "$_uid" -f "pulseaudio.*$_conf" | head -n 1 > "$_pidfile" 2>/dev/null || true
+        _ensure_linux_alsa_pulse "$_jailroot"
+        log "audio active for $_jail (output=$_out input=$_in)"
+    else
+        log "WARN: audio socket was not created for $_jail (output=$_out input=$_in)"
+    fi
+}
+
+cmd_status() {
+    [ "$#" -eq 1 ] || err "usage: parish-audio status <jail>"
+    _jail="$1"
+    validate_jail_name_existing "$_jail" || exit 2
+    _jailroot="$(container_path "$_jail")" || err "no compartment named '$_jail'"
+    _tier="$(container_tier "$_jailroot")"
+    if [ "$_tier" = "vault" ]; then
+        printf 'Compartment: %s (vault — audio permanently disabled)\n' "$_jail"
+        printf 'output=0\ninput=0\n'
+        return 0
+    fi
+    set -- $(parish_audio_policy_get "$_jail" "$_tier")
+    printf 'Compartment: %s\n' "$_jail"
+    printf 'output=%s\n' "$1"
+    printf 'input=%s\n' "$2"
+    if [ -S "$AUDIO_RUN_ROOT/$_jail/pulse.sock" ]; then
+        printf 'socket=active\n'
+    else
+        printf 'socket=inactive\n'
+    fi
+}
+
+# Re-implement cmd_set cleanly without clobbering "$@"
+_do_set() {
+    [ "$#" -ge 2 ] || err "usage: parish-audio set <jail> [--output=on|off] [--input=on|off]"
+    require_root
+    _jail="$1"; shift
+    validate_jail_name_existing "$_jail" || exit 2
+
+    _jailroot="$(container_path "$_jail")" || err "no compartment named '$_jail'"
+    _tier="$(container_tier "$_jailroot")"
+    [ "$_tier" != "vault" ] || err "vaults do not expose audio devices (compartment '$_jail' is a vault)"
+    [ "$_tier" != "legacy" ] || err "legacy compartment '$_jail' cannot change audio policy"
+
+    _cur="$(parish_audio_policy_get "$_jail" "$_tier")"
+    _out="${_cur%% *}"
+    _in="${_cur##* }"
+    _enabling=0
+
+    for _arg in "$@"; do
+        case "$_arg" in
+            --output=on|--output=1|--output=true)   _out=1; _enabling=1 ;;
+            --output=off|--output=0|--output=false) _out=0 ;;
+            --input=on|--input=1|--input=true)      _in=1; _enabling=1 ;;
+            --input=off|--input=0|--input=false)    _in=0 ;;
+            *) err "unknown flag: $_arg (use --output=on|off or --input=on|off)" ;;
+        esac
+    done
+
+    if [ "$_enabling" -eq 1 ]; then
+        parish_require_not_contained "$_jail" || exit 1
+    fi
+
+    install -d -m 0755 -o root -g wheel "$AUDIO_DB_DIR"
+    _file="$AUDIO_DB_DIR/$_jail"
+    [ ! -L "$_file" ] || err "policy file is a symlink: $_file"
+    _tmp="${_file}.tmp.$$"
+    {
+        printf 'AUDIO_OUTPUT=%s\n' "$_out"
+        printf 'AUDIO_INPUT=%s\n' "$_in"
+    } > "$_tmp"
+    chmod 0644 "$_tmp"
+    chown root:wheel "$_tmp"
+    mv -f "$_tmp" "$_file"
+
+    _start_audio_runtime "$_jail" "$_out" "$_in"
+    printf 'Audio updated for "%s": output=%s input=%s\n' "$_jail" "$_out" "$_in"
+}
+
+cmd_apply() {
+    [ "$#" -eq 1 ] || err "usage: parish-audio apply <jail>"
+    require_root
+    _jail="$1"
+    validate_jail_name_existing "$_jail" || exit 2
+    _jailroot="$(container_path "$_jail")" || err "no compartment named '$_jail'"
+    _tier="$(container_tier "$_jailroot")"
+    [ "$_tier" != "vault" ] || { _stop_audio_runtime "$_jail"; return 0; }
+
+    parish_require_not_contained "$_jail" || { _stop_audio_runtime "$_jail"; exit 1; }
+    _cur="$(parish_audio_policy_get "$_jail" "$_tier")"
+    _out="${_cur%% *}"
+    _in="${_cur##* }"
+    _start_audio_runtime "$_jail" "$_out" "$_in"
+}
+
+cmd_stop() {
+    [ "$#" -eq 1 ] || err "usage: parish-audio stop <jail>"
+    require_root
+    _jail="$1"
+    validate_jail_name_existing "$_jail" || exit 2
+    _stop_audio_runtime "$_jail"
+}
+
+main() {
+    [ "$#" -ge 1 ] || err "usage: parish-audio {status|set|apply|stop} <jail> [options]"
+    _cmd="$1"; shift
+    case "$_cmd" in
+        status) cmd_status "$@" ;;
+        set)    _do_set "$@" ;;
+        apply)  cmd_apply "$@" ;;
+        stop)   cmd_stop "$@" ;;
+        *)      err "unknown subcommand: $_cmd" ;;
+    esac
+}
+
+main "$@"

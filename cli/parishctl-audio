@@ -1,0 +1,20 @@
+#!/bin/sh
+# parishctl-audio  configure compartment audio output & input policy.
+# Runs via pkexec. Vaults are excluded.
+
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+
+if [ "$#" -lt 2 ]; then
+    printf 'usage: parishctl audio {status|set} <jail> [--output=on|off] [--input=on|off]\n' >&2
+    exit 2
+fi
+
+sub="$1"; shift
+jail="$1"; shift
+validate_jail_name_existing "$jail" || exit 2
+
+exec /usr/local/bin/parish-audio "$sub" "$jail" "$@"
