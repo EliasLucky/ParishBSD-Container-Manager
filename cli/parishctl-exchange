@@ -1,0 +1,7 @@
+#!/bin/sh
+# parishctl-exchange  privileged wrapper for parish-exchange.
+# Runs via pkexec.
+
+set -eu
+
+exec /usr/local/bin/parish-exchange "$@"

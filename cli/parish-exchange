@@ -1,19 +1,43 @@
 #!/bin/sh
-# parish-exchange  manage file transfer between jails via the exchange.
+# parish-exchange  brokered file transfer between compartments, vaults, and host.
+#
+# Security Philosophy:
+#   1. Compartments NEVER mount each other's filesystems. Host root brokers copies
+#      after canonicalizing paths and rejecting symlinks, '..' traversals, FIFOs,
+#      device nodes, and sockets, stripping setuid/setgid bits on every copy.
+#   2. Guardian containment check (parish_require_not_contained) applies to BOTH
+#      source and destination compartments on copy, move, put, and get.
+#   3. Vault Exports (Vault -> Compartment or Host): Exporting plaintext files
+#      out of an encrypted vault removes ZFS encryption protection. Allowed so
+#      users are not blocked from printing/sending files, but REQUIRES explicit
+#      confirmation (--confirm-vault-export).
+#   4. Host Imports (Compartment -> Host): Compromised compartments can weaponize
+#      malicious PNG/PDF/archive files against host thumbnailers or viewers.
+#      Transfers into the Host require --confirm-host-import, run magic-byte
+#      inspection (parish-file-inspect), strip execute bits (0444), place files
+#      in a non-thumbnailed ~/ParishBSD-Quarantine/<jail>/ staging area by
+#      default, and optionally re-encode raster images (--sanitize) when
+#      ImageMagick is available.
 #
 # Usage:
-#   parish-exchange list <jail>                    List files in a jail's exchange
-#   parish-exchange copy <src-jail> <file> <dst-jail>   Copy a file between jails
-#   parish-exchange move <src-jail> <file> <dst-jail>   Move (copy + delete) a file
-#   parish-exchange put <host-file> <dst-jail>     Copy a host file into a jail's exchange
-#   parish-exchange get <src-jail> <file> <dest>   Copy a jail file out to the host
+#   parish-exchange list
+#   parish-exchange files <jail> [--json]
+#   parish-exchange copy <srcjail> <srcpath> <dstjail> <dstpath> [--confirm-vault-export] [--confirm-downgrade]
+#   parish-exchange move <srcjail> <srcpath> <dstjail> <dstpath> [--confirm-vault-export] [--confirm-downgrade]
+#   parish-exchange put <hostfile> <dstjail> <dstpath>
+#   parish-exchange get <srcjail> <srcpath> [<hostdest>] [--confirm-host-import] [--confirm-vault-export] [--sanitize]
+
 set -eu
- 
+
 LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/policy.sh"
 
 EXCHANGE_ROOT="/var/parishbsd/exchange"
+FILE_INSPECT="/usr/local/libexec/parishbsd/parish-file-inspect"
 
 _sanitize_for_log() {
     printf '%s' "$1" | tr -d '\000-\037\177'
@@ -34,7 +58,7 @@ ensure_exchange_root() {
 
 jail_exchange_dir() {
     local jail="$1"
-    validate_jail_name_existing "$jail"
+    validate_jail_name_existing "$jail" || exit 2
     ensure_exchange_root
     local dir="$EXCHANGE_ROOT/$jail"
     [ -d "$dir" ] || err "exchange dir not found for jail: $jail"
@@ -48,12 +72,10 @@ jail_exchange_dir() {
 resolve_rel_path() {
     local base="$1" rel="$2" full parent parent_real
 
-    # reject absolute paths
     case "$rel" in
         /*) err "absolute path not allowed: $rel" ;;
     esac
 
-    # reject ".." as a path component (not as a substring of a filename)
     case "/$rel/" in
         */../*) err "path traversal not allowed: $rel" ;;
     esac
@@ -86,22 +108,23 @@ resolve_rel_path() {
 require_regular_files() {
     local path="$1"
     if [ -d "$path" ]; then
-        if find "$path" ! -type f ! -type d ! -type l -print -quit | grep -q .; then
+        if find "$path" -type l -print -quit | grep -q .; then
+            err "source contains symlinks (refused for security): $path"
+        fi
+        if find "$path" ! -type f ! -type d -print -quit | grep -q .; then
             err "source contains non-regular files (device/FIFO/socket): $path"
         fi
-    elif [ ! -f "$path" ] && [ ! -L "$path" ]; then
-        err "source is not a regular file or directory: $path"
+    elif [ ! -f "$path" ] || [ -L "$path" ]; then
+        err "source must be a regular non-symlink file or directory: $path"
     fi
 }
 
-# strip setuid/setgid recursively
 strip_special_bits() {
     local path="$1"
     if [ -d "$path" ]; then
-        find "$path" -type f -perm -4000 -exec chmod u-s {} \; 2>/dev/null || true
-        find "$path" -type f -perm -2000 -exec chmod g-s {} \; 2>/dev/null || true
+        find "$path" -type f -exec chmod ugo-s {} \; 2>/dev/null || true
     elif [ -f "$path" ]; then
-        chmod ug-s "$path" 2>/dev/null || true
+        chmod ugo-s "$path" 2>/dev/null || true
     fi
 }
 
@@ -117,6 +140,39 @@ do_copy() {
     return 0
 }
 
+_jail_tier() {
+    local jr
+    jr="$(container_path "$1" 2>/dev/null || true)"
+    [ -n "$jr" ] && container_tier "$jr" || printf 'app'
+}
+
+_enforce_vault_export_consent() {
+    local srcjail="$1" dstdesc="$2" confirmed="$3"
+    local srctier
+    srctier="$(_jail_tier "$srcjail")"
+    if [ "$srctier" = "vault" ] && [ "$confirmed" -ne 1 ]; then
+        err "Vault export confirmation required: moving files out of encrypted vault '$srcjail' to '$dstdesc' removes ZFS encryption protection. Pass --confirm-vault-export to proceed."
+    fi
+}
+
+_resolve_host_quarantine_dir() {
+    local jail="$1" uid target_home qdir
+    uid="${PKEXEC_UID:-${SUDO_UID:-$(id -u)}}"
+    target_home="$(pw usershow -u "$uid" 2>/dev/null | cut -d: -f9 || true)"
+    [ -n "$target_home" ] && [ -d "$target_home" ] || target_home="/tmp"
+    qdir="$target_home/ParishBSD-Quarantine/$jail"
+    mkdir -p "$target_home/ParishBSD-Quarantine" "$qdir"
+    # Disable KDE Dolphin thumbnail previews inside quarantine to protect host from malicious image parsers
+    if [ ! -e "$qdir/.directory" ]; then
+        printf '[Desktop Entry]\nPreviews=false\n' > "$qdir/.directory"
+        chmod 0644 "$qdir/.directory"
+    fi
+    if [ "$uid" != "0" ]; then
+        chown "$uid" "$target_home/ParishBSD-Quarantine" "$qdir" "$qdir/.directory" 2>/dev/null || true
+    fi
+    printf '%s' "$qdir"
+}
+
 cmd_list() {
     ensure_exchange_root
     echo "Jails with exchange directories:"
@@ -124,87 +180,229 @@ cmd_list() {
         [ -d "$dir" ] || continue
         [ -L "$dir" ] && continue
         jail=$(basename "$dir")
-        # display-only filter;
         if validate_jail_name_existing "$jail" 2>/dev/null; then
             echo "  $jail"
         fi
     done
 }
 
-cmd_copy() {
-    [ $# -eq 4 ] || err "usage: parish-exchange copy <srcjail> <srcpath> <dstjail> <dstpath>"
-    local srcjail="$1" srcpath="$2" dstjail="$3" dstpath="$4"
-    require_root
-    parish_require_not_contained "$dstjail" || exit 1
-    local srcbase dstbase src dst
-    srcbase=$(jail_exchange_dir "$srcjail")
-    dstbase=$(jail_exchange_dir "$dstjail")
-    src=$(resolve_rel_path "$srcbase" "$srcpath")
-    dst=$(resolve_rel_path "$dstbase" "$dstpath")
-    [ -e "$src" ] || err "source not found: $srcpath"
-    do_copy "$src" "$dst" || err "copy failed: $srcpath -> $dstpath"
-    log "copied $srcjail:$srcpath -> $dstjail:$dstpath"
-    echo "Copied: $srcjail:$srcpath -> $dstjail:$dstpath"
+cmd_files() {
+    [ $# -ge 1 ] || err "usage: parish-exchange files <jail> [--json]"
+    local jail="$1" json_mode=0
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json_mode=1 ;;
+            *) err "unknown flag: $1" ;;
+        esac
+        shift
+    done
+    validate_jail_name_existing "$jail" || exit 2
+    parish_require_not_contained "$jail" || exit 1
+    local base
+    base=$(jail_exchange_dir "$jail")
+
+    if [ "$json_mode" -eq 1 ]; then
+        printf '[\n'
+        first=1
+        for entry in "$base"/*; do
+            [ -e "$entry" ] || continue
+            [ ! -L "$entry" ] || continue
+            bname=$(basename "$entry")
+            bname_esc=$(printf '%s' "$bname" | sed 's/["\\]/\\&/g')
+            if [ -d "$entry" ]; then
+                ftype="dir"
+                sz=0
+            else
+                ftype="file"
+                sz=$(stat -f '%z' "$entry" 2>/dev/null || echo 0)
+            fi
+            [ "$first" -eq 1 ] || printf ',\n'
+            first=0
+            printf '  {"name": "%s", "type": "%s", "size": %s}' "$bname_esc" "$ftype" "$sz"
+        done
+        printf '\n]\n'
+    else
+        for entry in "$base"/*; do
+            [ -e "$entry" ] || continue
+            [ ! -L "$entry" ] || continue
+            basename "$entry"
+        done
+    fi
 }
 
-cmd_move() {
-    [ $# -eq 4 ] || err "usage: parish-exchange move <srcjail> <srcpath> <dstjail> <dstpath>"
+cmd_copy_or_move() {
+    local do_move="$1"; shift
+    [ $# -ge 4 ] || err "usage: parish-exchange $([ "$do_move" -eq 1 ] && echo move || echo copy) <srcjail> <srcpath> <dstjail> <dstpath> [--confirm-vault-export] [--confirm-downgrade]"
     local srcjail="$1" srcpath="$2" dstjail="$3" dstpath="$4"
+    shift 4
+
+    local confirm_vault=0 confirm_downgrade=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --confirm-vault-export) confirm_vault=1 ;;
+            --confirm-downgrade)    confirm_downgrade=1 ;;
+            *) err "unknown flag: $1" ;;
+        esac
+        shift
+    done
+
     require_root
+    # Enforce containment refusal on BOTH source and destination compartments
     parish_require_not_contained "$srcjail" || exit 1
     parish_require_not_contained "$dstjail" || exit 1
+
+    _enforce_vault_export_consent "$srcjail" "$dstjail" "$confirm_vault"
+
+    local src_risk dst_risk
+    src_risk="$(parish_container_risk "$srcjail" "$(_jail_tier "$srcjail")")"
+    dst_risk="$(parish_container_risk "$dstjail" "$(_jail_tier "$dstjail")")"
+    if [ "$src_risk" = "high" ] && [ "$dst_risk" = "low" ] && [ "$confirm_downgrade" -ne 1 ]; then
+        log "WARN: transferring untrusted ($srcjail) payload to trusted compartment ($dstjail)"
+    fi
+
     local srcbase dstbase src dst
     srcbase=$(jail_exchange_dir "$srcjail")
     dstbase=$(jail_exchange_dir "$dstjail")
     src=$(resolve_rel_path "$srcbase" "$srcpath")
     dst=$(resolve_rel_path "$dstbase" "$dstpath")
     [ -e "$src" ] || err "source not found: $srcpath"
-    # H5: copy first; only unlink source on copy success
-    do_copy "$src" "$dst" || err "copy failed, source preserved: $srcpath"
-    rm -rf "$src" || err "copy succeeded but source removal failed: $src"
-    log "moved $srcjail:$srcpath -> $dstjail:$dstpath"
-    echo "Moved: $srcjail:$srcpath -> $dstjail:$dstpath"
+
+    do_copy "$src" "$dst" || err "copy failed: $srcpath -> $dstpath"
+
+    if [ "$do_move" -eq 1 ]; then
+        rm -rf "$src" || err "copy succeeded but source removal failed: $src"
+        log "moved $srcjail:$srcpath -> $dstjail:$dstpath"
+        echo "Moved: $srcjail:$srcpath -> $dstjail:$dstpath"
+    else
+        log "copied $srcjail:$srcpath -> $dstjail:$dstpath"
+        echo "Copied: $srcjail:$srcpath -> $dstjail:$dstpath"
+    fi
 }
 
 cmd_put() {
-    [ $# -eq 3 ] || err "usage: parish-exchange put <srcfile> <jail> <dstpath>"
+    [ $# -ge 3 ] || err "usage: parish-exchange put <srcfile> <jail> <dstpath>"
     local srcfile="$1" jail="$2" dstpath="$3"
     require_root
     parish_require_not_contained "$jail" || exit 1
     [ -e "$srcfile" ] || err "source not found: $srcfile"
     [ ! -L "$srcfile" ] || err "source is a symlink: $srcfile"
+    local src_real
+    src_real="$(realpath "$srcfile")" || err "cannot resolve source: $srcfile"
+    case "$src_real" in
+        /etc/*|/var/db/parishbsd/*|/boot/*)
+            err "refusing to export host system configuration path: $src_real"
+            ;;
+    esac
     local dstbase dst
     dstbase=$(jail_exchange_dir "$jail")
     dst=$(resolve_rel_path "$dstbase" "$dstpath")
-    do_copy "$srcfile" "$dst" || err "copy failed: $srcfile -> $dstpath"
-    log "put $srcfile -> $jail:$dstpath"
-    echo "Put: $srcfile -> $jail:$dstpath"
+    do_copy "$src_real" "$dst" || err "copy failed: $srcfile -> $dstpath"
+    chmod 0644 "$dst" 2>/dev/null || true
+    log "put $src_real -> $jail:$dstpath"
+    echo "Put: $src_real -> $jail:$dstpath"
 }
 
 cmd_get() {
-    [ $# -eq 3 ] || err "usage: parish-exchange get <jail> <srcpath> <dstfile>"
-    local jail="$1" srcpath="$2" dstfile="$3"
+    [ $# -ge 2 ] || err "usage: parish-exchange get <jail> <srcpath> [<dstfile>] [--confirm-host-import] [--confirm-vault-export] [--sanitize]"
+    local jail="$1" srcpath="$2"
+    shift 2
+
+    local dstfile="" confirm_host=0 confirm_vault=0 sanitize=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --confirm-host-import)  confirm_host=1 ;;
+            --confirm-vault-export) confirm_vault=1 ;;
+            --sanitize)             sanitize=1 ;;
+            --quarantine)           dstfile="" ;;
+            -*) err "unknown flag: $1" ;;
+            *)
+                if [ -z "$dstfile" ]; then dstfile="$1"
+                else err "unexpected argument: $1"
+                fi
+                ;;
+        esac
+        shift
+    done
+
     require_root
     parish_require_not_contained "$jail" || exit 1
+
+    _enforce_vault_export_consent "$jail" "host" "$confirm_vault"
+
+    if [ "$confirm_host" -ne 1 ]; then
+        err "Host import safety check: files from a compartment (such as PNGs, PDFs, or archives) can exploit host viewers or desktop thumbnailers. Prefer transferring to another viewer compartment via 'parish-exchange copy', or pass --confirm-host-import to import into host quarantine."
+    fi
+
     local srcbase src
     srcbase=$(jail_exchange_dir "$jail")
     src=$(resolve_rel_path "$srcbase" "$srcpath")
     [ -e "$src" ] || err "source not found: $srcpath"
-    do_copy "$src" "$dstfile" || err "copy failed: $srcpath -> $dstfile"
-    log "got $jail:$srcpath -> $dstfile"
+
+    if [ -z "$dstfile" ]; then
+        local qdir
+        qdir="$(_resolve_host_quarantine_dir "$jail")"
+        dstfile="$qdir/$(basename "$src")"
+    else
+        [ ! -L "$dstfile" ] || err "destination is a symlink: $dstfile"
+    fi
+
+    # Inspect magic bytes to detect extension spoofing (e.g. executable named .png)
+    if [ -f "$src" ] && [ -x "$FILE_INSPECT" ]; then
+        _inspect_json="$("$FILE_INSPECT" "$src" 2>/dev/null || true)"
+        case "$_inspect_json" in
+            *'"kind":"linux-binary"'*|*'"kind":"freebsd-elf"'*|*'"kind":"windows-pe"'*|*'"kind":"windows-msi"'*|*'"kind":"installer-script"'*)
+                log "WARN: host import from $jail:$srcpath inspected as executable: $_inspect_json"
+                printf 'parish-exchange: WARNING: %s inspected by magic bytes as executable/script (%s); placed read-only (0444) in quarantine.\n' \
+                    "$srcpath" "$_inspect_json" >&2
+                ;;
+        esac
+    fi
+
+    local did_sanitize=0
+    if [ "$sanitize" -eq 1 ] && [ -f "$src" ]; then
+        case "$(printf '%s' "$src" | tr '[:upper:]' '[:lower:]')" in
+            *.png|*.jpg|*.jpeg)
+                if command -v magick >/dev/null 2>&1; then
+                    magick "$src" -strip "$dstfile" && did_sanitize=1 || did_sanitize=0
+                elif command -v convert >/dev/null 2>&1; then
+                    convert "$src" -strip "$dstfile" && did_sanitize=1 || did_sanitize=0
+                fi
+                ;;
+        esac
+    fi
+
+    if [ "$did_sanitize" -ne 1 ]; then
+        do_copy "$src" "$dstfile" || err "copy failed: $srcpath -> $dstfile"
+    fi
+
+    # Make imported quarantine files read-only and non-executable on the host
+    if [ -f "$dstfile" ]; then
+        chmod 0444 "$dstfile" 2>/dev/null || true
+    elif [ -d "$dstfile" ]; then
+        find "$dstfile" -type f -exec chmod 0444 {} \; 2>/dev/null || true
+    fi
+
+    local uid="${PKEXEC_UID:-${SUDO_UID:-0}}"
+    if [ "$uid" != "0" ]; then
+        chown -R "$uid" "$dstfile" 2>/dev/null || true
+    fi
+
+    log "got $jail:$srcpath -> $dstfile (sanitized=$did_sanitize)"
     echo "Got: $jail:$srcpath -> $dstfile"
 }
 
 main() {
-    [ $# -ge 1 ] || err "usage: parish-exchange {list|copy|move|put|get} ..."
+    [ $# -ge 1 ] || err "usage: parish-exchange {list|files|copy|move|put|get} ..."
     cmd="$1"; shift
     case "$cmd" in
-        list) cmd_list "$@" ;;
-        copy) cmd_copy "$@" ;;
-        move) cmd_move "$@" ;;
-        put)  cmd_put  "$@" ;;
-        get)  cmd_get  "$@" ;;
-        *)    err "unknown subcommand: $cmd" ;;
+        list)  cmd_list "$@" ;;
+        files) cmd_files "$@" ;;
+        copy)  cmd_copy_or_move 0 "$@" ;;
+        move)  cmd_copy_or_move 1 "$@" ;;
+        put)   cmd_put  "$@" ;;
+        get)   cmd_get  "$@" ;;
+        *)     err "unknown subcommand: $cmd" ;;
     esac
 }
 
