@@ -72,11 +72,19 @@ if [ -f "/etc/fstab.$name" ]; then
     row "fstab" "removed"
 fi
 
-# --- Remove the Xpra socket directory ---
+# --- Tear down host-side audio, xpra, risk, and runtime state ---
+if [ -x /usr/local/bin/parish-audio ]; then
+    /usr/local/bin/parish-audio stop "$name" 2>/dev/null || true
+fi
 if [ -d "/var/run/xpra/$name" ]; then
     rm -rf "/var/run/xpra/$name"
     row "xpra dir" "removed"
 fi
+rm -rf "/var/run/parishbsd/audio/$name" \
+       "/var/run/parishbsd/xpra/$name.state" \
+       "/var/db/parishbsd/audio/$name" \
+       "/var/db/parishbsd/risk/$name" \
+       "/var/db/parishbsd/trust/$name" 2>/dev/null || true
 
 # --- Warn about remaining vault data ---
 vault_ds="zroot/vault-data/$name"
