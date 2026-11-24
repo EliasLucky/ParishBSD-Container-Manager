@@ -1,0 +1,53 @@
+# ParishBSD Curated FreeBSD Application Catalog
+# Format: Category|Display Name|FreeBSD pkg name|Description|requiresCap
+#
+# requiresCap values:
+#   -               Headless / CLI / works in any compartment
+#   gui             Requires graphical session (T-xpra)
+#   compat-linux    Requires Linux binary compatibility (T-compat-linux)
+#   compat-windows  Requires Windows compatibility / Wine (T-compat-windows)
+
+# --- Web & Communication ---
+Web|Firefox ESR|firefox-esr|Privacy-focused web browser (Extended Support Release)|gui
+Web|Firefox|firefox|Modern Mozilla Firefox web browser|gui
+Web|Chromium|chromium|Open-source Chromium web browser|gui
+Web|Luakit|luakit|Lightweight fast WebKit browser for minimal compartments|gui
+Communication|Thunderbird|thunderbird|Email, calendar, and contacts client for parish administration|gui
+Communication|HexChat|hexchat|IRC chat client|gui
+
+# --- Office & Parish Administration ---
+Office|LibreOffice|libreoffice|Full office suite (Writer, Calc, Impress) for parish documents|gui
+Office|AbiWord|abiword|Lightweight word processor|gui
+Office|Gnumeric|gnumeric|Fast lightweight spreadsheet application|gui
+Office|Okular|okular|Universal document & PDF viewer with annotation support|gui
+Office|Evince|evince|Lightweight GNOME PDF and document viewer|gui
+Office|Calibre|calibre|E-book library manager and document converter|gui
+Office|SQLite Browser|sqlitebrowser|Visual editor for SQLite databases|gui
+Office|pgAdmin 4|py311-pgadmin4|Graphical management tool for PostgreSQL vaults|gui
+
+# --- Graphics, Media & Parish Publishing ---
+Graphics|GIMP|gimp|GNU Image Manipulation Program for posters and bulletins|gui
+Graphics|Inkscape|inkscape|Vector graphics editor for parish seals, flyers, and layouts|gui
+Graphics|Scribus|scribus|Desktop publishing layout tool for parish newsletters|gui
+Media|VLC Media Player|vlc|Versatile audio and video player (enable compartment audio output)|gui
+Media|Audacity|audacity|Multi-track audio recorder and editor for sermons/choirs (enable audio)|gui
+Media|OBS Studio|obs-studio|Livestreaming and sermon recording suite (enable audio)|gui
+
+# --- Files, Security & Utilities ---
+Utilities|PCManFM|pcmanfm|Lightweight file manager for browsing compartment & exchange files|gui
+Utilities|Dolphin|dolphin|KDE file manager|gui
+Utilities|Mousepad|mousepad|Simple graphical text editor|gui
+Utilities|KeePassXC|keepassxc|Offline encrypted password manager (best used inside a Vault or Trusted compartment)|gui
+Utilities|GnuPG|gnupg|OpenPGP encryption and digital signing tools|-
+Utilities|Ark|ark|Archive manager for ZIP, TAR, and 7z files|gui
+
+# --- Development & System ---
+Development|Git|git|Distributed version control system|-
+Development|Vim|vim|Advanced modal text editor|-
+Development|tmux|tmux|Terminal multiplexer|-
+Development|Geany|geany|Lightweight IDE and code editor|gui
+
+# --- Compatibility Layers ---
+Compatibility|Wine (Windows Apps)|wine|Run 32/64-bit Windows installers and portable executables|compat-windows
+Compatibility|Winetricks|winetricks|Helper script to install Windows runtime libraries into Wine prefixes|compat-windows
+Compatibility|Linux Compatibility Runtime|linux_base-rl9|Rocky Linux 9 userland base for Linux binaries and games|compat-linux
