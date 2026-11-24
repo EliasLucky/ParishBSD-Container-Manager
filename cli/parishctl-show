@@ -4,8 +4,10 @@ set -eu
 
 LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
+. "$LIBDIR/service.sh"
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
+. "$LIBDIR/policy.sh"
 
 json_mode=0
 name=""
@@ -70,6 +72,17 @@ case "$state" in
         ;;
 esac
 
+risk_level="$(parish_container_risk "$name" "$tier")"
+audio_pol="$(parish_audio_policy_get "$name" "$tier")"
+audio_out="${audio_pol%% *}"
+audio_in="${audio_pol##* }"
+caps_space="$(parish_container_capabilities "$jailroot" "$tier" "$template")"
+caps_json=""
+for _c in $caps_space; do
+    _ce=$(printf '%s' "$_c" | sed 's/["\\]/\\&/g')
+    caps_json="${caps_json:+$caps_json, }\"$_ce\""
+done
+
 if [ "$json_mode" -eq 1 ]; then
     st_esc=$(printf '%s' "$template" | sed 's/["\\]/\\&/g')
     path_esc=$(printf '%s' "$jailroot" | sed 's/["\\]/\\&/g')
@@ -80,6 +93,10 @@ if [ "$json_mode" -eq 1 ]; then
     printf '  "source_template": "%s",\n' "$st_esc"
     printf '  "kind": "%s",\n' "$kind"
     printf '  "tier": "%s",\n' "$tier"
+    printf '  "risk_level": "%s",\n' "$risk_level"
+    printf '  "capabilities": [%s],\n' "$caps_json"
+    printf '  "audio_output": %s,\n' "$([ "$audio_out" = "1" ] && echo true || echo false)"
+    printf '  "audio_input": %s,\n' "$([ "$audio_in" = "1" ] && echo true || echo false)"
     printf '  "disk_usage": %s,\n' "$bytes"
     printf '  "is_vault": %s,\n' "$([ "$is_vault" -eq 1 ] && echo true || echo false)"
     printf '  "path": "%s",\n' "$path_esc"
@@ -93,9 +110,14 @@ if [ "$json_mode" -eq 1 ]; then
 fi
 
 printf 'Compartment: %s\n' "$name"
-printf '  %-18s %s\n' "kind"     "$kind"
-printf '  %-18s %s\n' "template" "${template:-<legacy>}"
-printf '  %-18s %s\n' "path"     "$jailroot"
+printf '  %-18s %s\n' "kind"         "$kind"
+printf '  %-18s %s\n' "template"     "${template:-<legacy>}"
+printf '  %-18s %s\n' "risk level"   "$risk_level"
+printf '  %-18s %s\n' "capabilities" "${caps_space:-none}"
+printf '  %-18s %s\n' "path"         "$jailroot"
+if [ "$is_vault" -eq 0 ]; then
+    printf '  %-18s output=%s input=%s\n' "audio" "$audio_out" "$audio_in"
+fi
 
 case "$state" in
     running)                 printf '  %-18s running\n' "state" ;;

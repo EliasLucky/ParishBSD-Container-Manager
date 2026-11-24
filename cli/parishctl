@@ -42,6 +42,20 @@ RUNNING
   parishctl stop <name>             Stop a compartment
   parishctl restart <name>          Restart a compartment
   parishctl console <name>          Open a shell inside
+  parishctl set-risk <name> <lvl>   Set risk level (low|medium|high|critical)
+
+AUDIO
+  parishctl audio status <name>     Show compartment audio policy
+  parishctl audio set <name> [--output=on|off] [--input=on|off]
+                                    Toggle audio output / microphone (non-vaults)
+
+EXCHANGE
+  parishctl exchange list           List exchange compartments
+  parishctl exchange files <name>   List files in a compartment's exchange
+  parishctl exchange copy <src> <file> <dst> <file>
+  parishctl exchange move <src> <file> <dst> <file>
+  parishctl exchange put <hostfile> <dst> <file>
+  parishctl exchange get <src> <file> [<dest>] --confirm-host-import
 
 VAULTS
   parishctl unlock <name>           Unlock a vault (prompts for passphrase)
@@ -73,12 +87,17 @@ APPLICATIONS
 
 USB
   parishctl usb list                List attached devices
-  parishctl usb attach <jail> <dev> Attach a device (read-only)
+  parishctl usb devices             List removable host drives
+  parishctl usb attach <jail> <dev> [fs] [--ro|--rw --confirm-rw]
+                                    Attach a device (default read-only)
   parishctl usb detach <jail> <dev> Detach a device
 
 DISPLAY
   parishctl xpra start <jail>       Start Xpra for a compartment
   parishctl xpra attach <jail>      Attach a display client
+  parishctl xpra detach <jail>      Detach display client (apps keep running)
+  parishctl xpra stop <jail>        Stop Xpra server for a compartment
+  parishctl xpra status <jail>      Show display session status
 
 REMOVED IN THIS VERSION
 
@@ -198,10 +217,19 @@ case "$verb" in
     usb-list)
         exec "$BINDIR_BIN/parish-usb" list "$@"
         ;;
+    usb-devices)
+        exec "$BINDIR_BIN/parish-usb" devices "$@"
+        ;;
     xpra-attach)
         # Xpra attach is a display client on the user's desktop;
         # runs unprivileged.
         exec "$BINDIR_BIN/parish-xpra" attach "$@"
+        ;;
+    xpra-detach)
+        exec "$BINDIR_BIN/parish-xpra" detach "$@"
+        ;;
+    xpra-status)
+        exec "$BINDIR_BIN/parish-xpra" status "$@"
         ;;
     apps-launch)
         # launch is unprivileged. parish-app-launch internally
