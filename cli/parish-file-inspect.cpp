@@ -1,4 +1,3 @@
-
 // cli/parish-file-inspect.cpp
 //
 // Inspects an installer or archive file by magic bytes / ELF ABI headers
@@ -205,4 +204,3 @@ int main(int argc, char** argv)
     std::printf("{\"kind\":\"%s\",\"requires\":\"%s\"}\n", kind_to_string(kind), req);
     return 0;
 }
-
