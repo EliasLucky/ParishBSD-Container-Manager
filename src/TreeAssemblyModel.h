@@ -41,4 +41,3 @@ private:
     ContainerModel *m_cModel;
     TemplateModel *m_tModel;
 };
-

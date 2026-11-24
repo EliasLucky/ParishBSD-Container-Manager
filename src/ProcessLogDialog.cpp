@@ -1,5 +1,3 @@
-
-#include "ProcessLogDialog.h"
 #include "ProcessLogDialog.h"
 #include "ContainerBackend.h"
 
@@ -98,4 +96,3 @@ void ProcessLogDialog::closeEvent(QCloseEvent *e)
     }
     e->accept();
 }
-

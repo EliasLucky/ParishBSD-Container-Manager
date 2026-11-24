@@ -1,4 +1,3 @@
-
 #include "ContainerModel.h"
 #include "ContainerBackend.h"
 #include <QColor>

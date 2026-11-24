@@ -72,6 +72,10 @@ QString ContainerInfo::accessibleDescription() const {
         desc += QLatin1Char(' ') + (keyState == QLatin1String("locked")
             ? QObject::tr("Vault is locked.")
             : QObject::tr("Vault is unlocked."));
+    } else {
+        desc += QLatin1Char(' ') + QObject::tr("Audio output: %1. Audio input: %2.")
+            .arg(audioOutput ? QObject::tr("enabled") : QObject::tr("disabled"),
+                 audioInput ? QObject::tr("enabled") : QObject::tr("disabled"));
     }
     if (!capabilities.isEmpty()) {
         desc += QLatin1Char(' ') + QObject::tr("Capabilities: %1.").arg(capabilities.join(QStringLiteral(", ")));

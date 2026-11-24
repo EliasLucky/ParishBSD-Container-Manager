@@ -17,6 +17,8 @@ struct ContainerInfo {
     quint64 diskUsage = 0;
     bool isVault = false;
     bool isCompatibility = false;
+    bool audioOutput = false;
+    bool audioInput = false;
     QString path;         // /usr/local/jails/containers/<name>
     QString internalIp;
 

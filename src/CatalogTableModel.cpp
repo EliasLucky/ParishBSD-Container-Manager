@@ -153,4 +153,3 @@ bool CatalogTableModel::isRowCompatible(int row, QString *reasonOut) const
     if (row < 0 || row >= m_filtered.size()) return false;
     return entryCompatible(m_filtered.at(row), reasonOut);
 }
-

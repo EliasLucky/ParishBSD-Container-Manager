@@ -130,4 +130,3 @@ bool TerminalLauncher::findTerminal(const QString &title,
     outArgs = buildTerminalArgs(foundPath, title, execArgv, pauseOnExit);
     return true;
 }
-

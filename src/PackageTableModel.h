@@ -3,19 +3,20 @@
 #include "PackageInfo.h"
 
 class PackageTableModel : public QAbstractTableModel {
-	Q_OBJECT
+    Q_OBJECT
 public:
-	enum Column { NameColumn, VersionColumn, StatusColumn, ColumnCount };
+    enum Column { NameColumn = 0, VersionColumn, StatusColumn, ColumnCount };
 
-	explicit PackageTableModel(QObject *parent = nullptr);
+    explicit PackageTableModel(QObject *parent = nullptr);
 
-	int rowCount(const QModelIndex &parent = QModelIndex()) const override;
-	int columnCount(const QModelIndex &parent = QModelIndex()) const override;
-	QVariant data(const QModelIndex &index, int role) const override;
-	QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override;
+    int columnCount(const QModelIndex &parent = QModelIndex()) const override;
+    QVariant data(const QModelIndex &index, int role) const override;
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
 
-	void setPackages(const QList<PackageInfo> &packages);
-	PackageInfo packageAt(int row) const;
+    void setPackages(const QList<PackageInfo> &packages);
+    PackageInfo packageAt(int row) const;
+
 private:
-	QList<PackageInfo> m_packages;
+    QList<PackageInfo> m_packages;
 };

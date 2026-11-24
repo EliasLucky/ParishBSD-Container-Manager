@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <QList>
@@ -7,7 +6,9 @@
 #include <QTimer>
 
 class QAction;
+class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -37,9 +38,14 @@ private slots:
     void onUnlock();
     void onLock();
     void onConsole();
+    void onAttachXpra();
+    void onDetachXpra();
     void onApplications();
+    void onExchange();
+    void onUsb();
     void onActions();
     void onRiskChanged(int index);
+    void onAudioChanged();
     void onSettings();
     void onAbout();
 
@@ -76,10 +82,18 @@ private:
     QLabel *m_inspDetails = nullptr;
     QLabel *m_inspGuardianBanner = nullptr;
     QComboBox *m_inspRiskCombo = nullptr;
+    QGroupBox *m_inspAudioBox = nullptr;
+    QCheckBox *m_inspAudioOutCheck = nullptr;
+    QCheckBox *m_inspAudioInCheck = nullptr;
+    QLabel *m_inspVaultAudioNote = nullptr;
     QPushButton *m_inspStartStopBtn = nullptr;
     QPushButton *m_inspUnlockLockBtn = nullptr;
     QPushButton *m_inspConsoleBtn = nullptr;
+    QPushButton *m_inspAttachXpraBtn = nullptr;
+    QPushButton *m_inspDetachXpraBtn = nullptr;
     QPushButton *m_inspAppsBtn = nullptr;
+    QPushButton *m_inspExchangeBtn = nullptr;
+    QPushButton *m_inspUsbBtn = nullptr;
     QPushButton *m_inspActionsBtn = nullptr;
     QPushButton *m_inspDestroyBtn = nullptr;
 
@@ -98,7 +112,11 @@ private:
     QAction *m_actUnlock = nullptr;
     QAction *m_actLock = nullptr;
     QAction *m_actConsole = nullptr;
+    QAction *m_actAttachXpra = nullptr;
+    QAction *m_actDetachXpra = nullptr;
     QAction *m_actApps = nullptr;
+    QAction *m_actExchange = nullptr;
+    QAction *m_actUsb = nullptr;
     QAction *m_actActions = nullptr;
     QAction *m_actSettings = nullptr;
     QAction *m_actAbout = nullptr;
@@ -108,4 +126,3 @@ private:
     bool m_selectedIsTemplate = false;
     bool m_initialExpandDone = false;
 };
-
