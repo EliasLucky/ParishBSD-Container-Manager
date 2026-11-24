@@ -20,6 +20,10 @@ set -eu
 umask 077
 
 . /usr/local/libexec/parishbsd/lib/validate.sh
+. /usr/local/libexec/parishbsd/lib/state.sh
+. /usr/local/libexec/parishbsd/lib/service.sh
+. /usr/local/libexec/parishbsd/lib/container.sh
+. /usr/local/libexec/parishbsd/lib/policy.sh
 
 jail="${1:?usage: parish-jail-run <jail> <argv...>}"
 shift
@@ -34,8 +38,29 @@ validate_jail_name_existing "$jail" || {
     exit 2
 }
 
-exec jexec "$jail" env \
-    PATH="/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin" \
-    DISPLAY=":100" \
-    XAUTHORITY="/xpra/100/xauthority" \
-    "$@"
+parish_require_not_contained "$jail" || exit 1
+
+jailroot="$(container_path "$jail" 2>/dev/null || true)"
+tier="app"
+[ -n "$jailroot" ] && tier="$(container_tier "$jailroot")"
+
+audio_pol="$(parish_audio_policy_get "$jail" "$tier")"
+audio_out="${audio_pol%% *}"
+audio_in="${audio_pol##* }"
+
+if [ "$tier" != "vault" ] && { [ "$audio_out" = "1" ] || [ "$audio_in" = "1" ]; } && \
+   [ -n "$jailroot" ] && [ -S "$jailroot/var/run/parish-audio/pulse.sock" ]; then
+    exec jexec "$jail" env \
+        PATH="/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin" \
+        DISPLAY=":100" \
+        XDG_RUNTIME_DIR="/var/run/xdg" \
+        PULSE_SERVER="unix:/var/run/parish-audio/pulse.sock" \
+        SDL_AUDIODRIVER="pulse" \
+        "$@"
+else
+    exec jexec "$jail" env -u PULSE_SERVER \
+        PATH="/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin" \
+        DISPLAY=":100" \
+        XDG_RUNTIME_DIR="/var/run/xdg" \
+        "$@"
+fi
