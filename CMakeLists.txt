@@ -28,8 +28,7 @@ set(CMAKE_AUTOUIC ON)
 # Build options
 # ============================================================
 
-# GUI src/ has compile errors.
-option(BUILD_GUI "Build the Qt6 GUI" OFF)
+option(BUILD_GUI "Build the Qt6 GUI" ON)
 
 # ============================================================
 # Qt GUI executable
@@ -44,11 +43,14 @@ if(BUILD_GUI)
         src/ContainerInfo.cpp
         src/ActionsDialog.cpp
         src/ApplicationsDialog.cpp
+        src/ExchangeDialog.cpp
         src/ProcessLogDialog.cpp
+        src/UsbDialog.cpp
         src/CatalogTableModel.cpp
         src/PackageTableModel.cpp
         src/TemplateModel.cpp
         src/TreeAssemblyModel.cpp
+        src/TerminalLauncher.cpp
     )
 
     set(HEADERS
@@ -58,7 +60,9 @@ if(BUILD_GUI)
         src/ContainerInfo.h
         src/ActionsDialog.h
         src/ApplicationsDialog.h
+        src/ExchangeDialog.h
         src/ProcessLogDialog.h
+        src/UsbDialog.h
         src/CatalogTableModel.h
         src/PackageTableModel.h
         src/CustomApp.h
@@ -66,6 +70,7 @@ if(BUILD_GUI)
         src/TemplateInfo.h
         src/TemplateModel.h
         src/TreeAssemblyModel.h
+        src/TerminalLauncher.h
     )
 
     add_executable(parish-compartments ${SOURCES} ${HEADERS})
@@ -129,6 +134,12 @@ add_executable(parish-compartment-dialog cli/parish-compartment-dialog.cpp)
 target_link_libraries(parish-compartment-dialog PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 
 # ============================================================
+# parish-file-inspect (C++ magic-byte & archive safety helper)
+# ============================================================
+
+add_executable(parish-file-inspect cli/parish-file-inspect.cpp)
+
+# ============================================================
 # xpra-sup
 # ============================================================
 
@@ -152,5 +163,14 @@ install(TARGETS parish-template-wizard
 install(TARGETS parish-compartment-dialog
     RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/parishbsd)
 
+install(TARGETS parish-file-inspect
+    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/parishbsd)
+
 install(TARGETS xpra-sup
     RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/parishbsd)
+
+install(FILES resources/applications.catalog
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/parishbsd)
+
+install(FILES docs/SECURITY-ARCHITECTURE.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR})
