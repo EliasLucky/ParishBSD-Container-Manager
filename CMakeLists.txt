@@ -172,5 +172,3 @@ install(TARGETS xpra-sup
 install(FILES resources/applications.catalog
     DESTINATION ${CMAKE_INSTALL_DATADIR}/parishbsd)
 
-install(FILES docs/SECURITY-ARCHITECTURE.md
-    DESTINATION ${CMAKE_INSTALL_DOCDIR})
