@@ -10,7 +10,14 @@ class TemplateModel;
 class TreeAssemblyModel : public QAbstractItemModel {
     Q_OBJECT
 public:
-    enum Column { NameColumn = 0, SourceColumn, StateColumn, DescriptionColumn, ColumnCount };
+    enum Column {
+        NameColumn = 0,
+        SourceColumn,
+        StateColumn,
+        RiskColumn,
+        DescriptionColumn,
+        ColumnCount
+    };
 
     explicit TreeAssemblyModel(ContainerModel *cModel, TemplateModel *tModel, QObject *parent = nullptr);
 
@@ -23,13 +30,15 @@ public:
 
     void refresh();
     ContainerInfo getContainer(const QModelIndex &index) const;
+    TemplateInfo getTemplate(const QModelIndex &index) const;
 
 private:
-    ContainerModel *m_cModel;
-    TemplateModel *m_tModel;
-    
-    // 0 = Compartments, 1 = Shipped Templates, 2 = Custom Templates
+    QList<TemplateInfo> visibleTemplatesForGroup(int group) const;
     int groupRowCount(int group) const;
     QString groupName(int group) const;
     int getUseCount(const QString &templateName) const;
+
+    ContainerModel *m_cModel;
+    TemplateModel *m_tModel;
 };
+
