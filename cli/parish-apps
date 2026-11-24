@@ -263,14 +263,26 @@ cmd_list() {
 # install (from catalog)
 # --------------------------------------------------------------------
 
+_sync_jail_resolvconf() {
+    _sj_jail="$1"
+    _sj_root="$(container_path "$_sj_jail" 2>/dev/null || true)"
+    [ -n "$_sj_root" ] || return 0
+    [ "$(container_tier "$_sj_root")" != "vault" ] || return 0
+    if [ -r /etc/resolv.conf ] && [ -d "$_sj_root/etc" ] && [ ! -L "$_sj_root/etc/resolv.conf" ]; then
+        cp /etc/resolv.conf "$_sj_root/etc/resolv.conf" 2>/dev/null || true
+        chmod 0644 "$_sj_root/etc/resolv.conf" 2>/dev/null || true
+    fi
+}
+
 cmd_install() {
     jail="${1:?usage: parish-apps install <jail> <package>}"
     package="${2:?usage: parish-apps install <jail> <package>}"
     require_jail "$jail"
     parish_require_not_contained "$jail" || exit 1
     validate_package_name "$package" || err "invalid package: $package"
+    _sync_jail_resolvconf "$jail"
     log "Installing $package in $jail"
-    pkg -j "$jail" install -y "$package" || return $?
+    env ASSUME_ALWAYS_YES=yes pkg -j "$jail" install -y "$package" || return $?
 
     # write host-side metadata immediately after install.
     # Small window (milliseconds) between pkg install and .desktop
@@ -732,14 +744,15 @@ cmd_upgrade() {
     package="${2:-}"
     require_jail "$jail"
     parish_require_not_contained "$jail" || exit 1
+    _sync_jail_resolvconf "$jail"
 
     if [ -n "$package" ]; then
         validate_package_name "$package" || err "invalid package: $package"
         log "Upgrading $package in $jail"
-        pkg -j "$jail" upgrade -y "$package"
+        env ASSUME_ALWAYS_YES=yes pkg -j "$jail" upgrade -y "$package"
     else
         log "Upgrading all packages in $jail"
-        pkg -j "$jail" upgrade -y
+        env ASSUME_ALWAYS_YES=yes pkg -j "$jail" upgrade -y
     fi
 }
 

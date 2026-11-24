@@ -63,6 +63,22 @@ parish_service_start() {
         chmod 0700 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0700 /var/run/xpra/%s\n' "$_ps_jail" >&2; return 1; }
     fi
 
+    # Sync host DNS resolver config into non-vault compartments so applications
+    # and `pkg` inside the compartment do not hit transient resolver failures
+    # when host DHCP/DNS changed after the template was built.
+    _ps_tier=""
+    if [ -f "$_ps_jailroot/usr/local/etc/parishbsd/metadata" ] && [ ! -L "$_ps_jailroot/usr/local/etc/parishbsd/metadata" ]; then
+        _ps_tier=$(awk -F= '$1=="TIER"{sub(/^[^=]*=/,""); print; exit}' "$_ps_jailroot/usr/local/etc/parishbsd/metadata" 2>/dev/null || true)
+    fi
+    case "$_ps_jailroot:$_ps_tier" in
+        */vault/*|*:vault) : ;;
+        *)
+            if [ -r /etc/resolv.conf ] && [ -d "$_ps_jailroot/etc" ] && [ ! -L "$_ps_jailroot/etc/resolv.conf" ]; then
+                cp /etc/resolv.conf "$_ps_jailroot/etc/resolv.conf" 2>/dev/null || true
+                chmod 0644 "$_ps_jailroot/etc/resolv.conf" 2>/dev/null || true
+            fi
+            ;;
+    esac
 
     if ! { exec 9> "/var/run/parishbsd/service.lock"; } 2>/dev/null; then
         printf 'parishctl: cannot open service lock\n' >&2
