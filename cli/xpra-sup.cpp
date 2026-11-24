@@ -197,13 +197,14 @@ bool valid_display(const std::string& s)
 
 int main(int argc, char** argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "usage: xpra-sup <jail> <display_num>\n");
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "usage: xpra-sup <jail> <display_num> [socket_path]\n");
         return 2;
     }
     std::string jail = argv[1];
     std::string disp = argv[2];
     std::string disp_arg = ":" + disp;
+    std::string explicit_socket = (argc == 4) ? argv[3] : "";
 
     // Input validation. Both arguments reach (a) filesystem paths,
     // (b) jexec argv, and (c) pgrep patterns. Validation happens
@@ -224,6 +225,14 @@ int main(int argc, char** argv)
                 "(digits only; do not include ':')", disp.c_str());
         return 2;
     }
+    std::string expected_prefix = "/var/run/xpra/" + jail + "/";
+    if (!explicit_socket.empty()) {
+        if (explicit_socket.rfind(expected_prefix, 0) != 0 ||
+            explicit_socket.find("..") != std::string::npos) {
+            fprintf(stderr, "xpra-sup: invalid socket path: %s\n", explicit_socket.c_str());
+            return 2;
+        }
+    }
 
     struct sigaction sa{};
     sa.sa_handler = on_stop;
@@ -241,28 +250,6 @@ int main(int argc, char** argv)
     if (dpid > 0) _exit(0);
     setsid();
 
-    // Ensure /var/run/parishbsd/xpra exists. /var/run is tmpfs on
-    // FreeBSD directories created by the port at install time do
-    // not survive reboot (tmpfs(5): "data is lost when the file
-    // system is unmounted"). xpra-sup must create the directory
-    // itself at every startup.
-    //
-    // EEXIST is treated as success: the parent directory might have
-    // been created by Guardian's respond_main or by parish-recover
-    // at an earlier point in this boot. Compartments must not depend
-    // on Guardian being installed; the mkdir is the correct
-    // independent behavior either way.
-    //
-    // Mode 0700 root:wheel matches respond_main's mkdir of
-    // /var/run/parishbsd and the pkg-plist @dir entry.
-    //
-    // if mkdir fails in the child, the
-    // parent has already exited 0  the caller proceeds without a
-    // state file. Unreachable in practice (root mkdir on tmpfs
-    // cannot fail except on OOM). If a guarantee is ever
-    // needed, use a fork+pipe handshake where the parent waits for
-    // child OK/FAIL before exiting. Not done here per reviewer's
-    // "parent exits as fast as possible" prescription.
     if (mkdir("/var/run/parishbsd", 0700) != 0 && errno != EEXIST) {
         fprintf(stderr,
                 "xpra-sup: cannot create /var/run/parishbsd: %s\n",
@@ -276,7 +263,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::string socket_path =  "/var/run/xpra/" + jail + "/" + disp + "/socket";
+    std::string socket_path = !explicit_socket.empty()
+        ? explicit_socket
+        : (expected_prefix + disp + "/socket");
     if (!write_state_file(jail, getpid(), socket_path)) {
         fprintf(stderr, "xpra-sup: cannot write state file\n");
         return 1;

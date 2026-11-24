@@ -1,29 +1,23 @@
 #!/bin/sh
-# parish-xpra  start or attach Xpra for a compartment.
+# parish-xpra  start, attach, detach, stop, or inspect Xpra for a compartment.
 #
 # Usage:
-#   parish-xpra start  <jail> [<display>]
+#   parish-xpra start  <jail> [<display>]   (root, via parishctl xpra start)
+#   parish-xpra attach <jail> [<display>]   (unprivileged host display client)
+#   parish-xpra detach <jail> [<display>]   (unprivileged detach, apps keep running)
+#   parish-xpra stop   <jail> [<display>]   (root, stops Xpra server + supervisor)
+#   parish-xpra status <jail> [<display>]   (shows running/attached status)
 #
-#   `parish-xpra start` spawns xpra-sup after Xpra
-#        is running inside the jail. xpra-sup writes
-#        /var/run/parishbsd/xpra/<jail>.state for Guardian's
-#        close_xpra to read during containment.
-#
-#   the personality-based colour selection trust-file-driven. The
-#        personality lookup path (which was hardcoded to the app tier)
-#        goes away with its only consumer.
-#
-#   trust colour from host-side /var/db/parishbsd/trust/<jail>.
-#        Sentinel grey when absent. The trust file is host-side and
-#        not visible from inside the jail, closing the phishing
-#        vector where a jail-writable metadata file could retarget
-#        the colour.
-#
-#   validate_jail_name_existing at entry.
-#
-#   containment state check before attach.
-#
-#   Headless mode: if DISPLAY is unset, pass --xvfb to Xpra start.
+# Security Hardening:
+#   - Strict Unix socket isolation under /var/run/xpra/<jail> (0700 owned by
+#     invoking desktop user, socket 0600, symlink refusal).
+#   - Disables clipboard, webcam, printing, file-transfer, open-files, open-url,
+#     dbus-proxy, mdns, notifications, system-tray, sharing, and Xpra's own
+#     pulseaudio/speaker/microphone bridge (audio is exclusively managed by
+#     parish-audio with independent output/input policy).
+#   - Host-side risk color borders (--border) and text badges (--title) read
+#     strictly from /var/db/parishbsd/risk/<jail> (fallback trust/<jail>),
+#     invisible inside the jail so a compromised compartment cannot spoof it.
 
 set -eu
 umask 077
@@ -36,9 +30,10 @@ XPRA_SUP=/usr/local/libexec/parishbsd/xpra-sup
 
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/state.sh"
+. "$LIBDIR/policy.sh"
 
 usage() {
-    echo "usage: parish-xpra {start|attach} <jail> [<display>]" >&2
+    echo "usage: parish-xpra {start|attach|detach|stop|status} <jail> [<display>]" >&2
     exit 1
 }
 
@@ -47,21 +42,13 @@ jail="${1:-}"; shift || true
 
 [ -n "$cmd" ] && [ -n "$jail" ] || usage
 
-# validate jail name against the permissive validator (mirrors
-# Guardian's containment.cpp::valid_jail_name  every name Guardian
-# can contain must be startable/attachable here).
 validate_jail_name_existing "$jail" || exit 2
 
-# Display argument. CLI form accepts either `:100` or `100`.
-# Internal form (disp_num) is digits-only  required because
-# xpra-sup's valid_display rejects `:100`, and because
-# disp_num is used in pgrep patterns and filesystem paths where
-# a colon would either fail to match or need quoting.
 display=":100"
 if [ $# -gt 0 ]; then
     case "$1" in
-        [0-9]*)   display=":$1"; shift ;;   # bare digits  add colon
-        :[0-9]*)  display="$1";  shift ;;   # colon form
+        [0-9]*)   display=":$1"; shift ;;
+        :[0-9]*)  display="$1";  shift ;;
     esac
 fi
 disp_num="${display#:}"
@@ -73,10 +60,46 @@ case "$disp_num" in
         ;;
 esac
 
+_socket_dir="/var/run/xpra/$jail"
+
+_find_socket() {
+    [ -d "$_socket_dir" ] && [ ! -L "$_socket_dir" ] || return 1
+    for _s in "$_socket_dir"/*-"$disp_num" "$_socket_dir/$disp_num/socket"; do
+        if [ -S "$_s" ] && [ ! -L "$_s" ]; then
+            printf '%s' "$_s"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_determine_tier() {
+    for _td in app vault containers; do
+        _m="/usr/local/jails/$_td/$jail/usr/local/etc/parishbsd/metadata"
+        if [ -f "$_m" ] && [ ! -L "$_m" ]; then
+            _t="$(awk -F= '$1=="TIER"{sub(/^[^=]*=/,""); print; exit}' "$_m" 2>/dev/null || true)"
+            [ -n "$_t" ] && { printf '%s' "$_t"; return 0; }
+        fi
+    done
+    printf 'app'
+}
+
+_resolve_uid() {
+    if [ -n "${PKEXEC_UID:-}" ] && [ "$PKEXEC_UID" != "0" ]; then
+        printf '%s' "$PKEXEC_UID"
+        return 0
+    fi
+    if [ -n "${SUDO_UID:-}" ] && [ "$SUDO_UID" != "0" ]; then
+        printf '%s' "$SUDO_UID"
+        return 0
+    fi
+    id -u
+}
+
 case "$cmd" in
     start)
         [ "$(id -u)" -eq 0 ] || { echo "parish-xpra: start must be invoked via 'parishctl xpra start'" >&2; exit 1; }
-        
+
         state="$(parish_jail_state "$jail")"
         case "$state" in
             running|running-other-contained) : ;;
@@ -88,18 +111,19 @@ case "$cmd" in
             *) parish_jail_state_message "$jail" "$state" >&2; exit 1 ;;
         esac
 
-        _socket_dir="/var/run/xpra/$jail"
-
-        for _s in "$_socket_dir"/*-"$disp_num"; do
-            if [ -S "$_s" ]; then
-                # sockstat truncates paths, nc fails on Xpra sockets.
-                # fstat reads the kernel table.
-                if jexec "$jail" /usr/local/bin/xpra info "$display" >/dev/null 2>&1; then
-                    echo "Xpra already running at $display in '$jail'"
-                    exit 0
-                fi
+        _existing_sock="$(_find_socket || true)"
+        if [ -n "$_existing_sock" ]; then
+            if jexec "$jail" /usr/local/bin/xpra info "$display" >/dev/null 2>&1; then
+                echo "Xpra already running at $display in '$jail'"
+                exit 0
             fi
-        done
+        fi
+
+        install -d -m 0755 -o root -g wheel /var/run/xpra
+        [ ! -L "$_socket_dir" ] || { echo "parish-xpra: $_socket_dir is a symlink; refusing" >&2; exit 1; }
+        install -d -m 0700 -o root -g wheel "$_socket_dir"
+        # Clean only stale entries inside host socket dir without dereferencing symlinks
+        find "$_socket_dir" -mindepth 1 -maxdepth 1 -delete 2>/dev/null || true
 
         _xpra_err=$(mktemp /var/run/parishbsd/xpra-err.XXXXXX 2>/dev/null || mktemp /tmp/xpra-err.XXXXXX) || {
             printf 'parish-xpra: cannot create temp file\n' >&2
@@ -107,100 +131,84 @@ case "$cmd" in
         }
         trap 'rm -f "$_xpra_err"' EXIT INT TERM
 
-        jexec "$jail" rm -rf /var/run/xpra/* 2>>"$_xpra_err" || true
-        jexec "$jail" rm -rf /xpra/* 2>>"$_xpra_err" || true
-        jexec "$jail" rm -rf /root/.xpra/* 2>>"$_xpra_err" || true
-        
         jexec "$jail" mkdir -p /var/run/xdg 2>>"$_xpra_err" || true
         jexec "$jail" chmod 0700 /var/run/xdg 2>>"$_xpra_err" || true
         jexec "$jail" mkdir -p /var/run/xpra 2>>"$_xpra_err" || true
-        jexec "$jail" chmod 0775 /var/run/xpra 2>>"$_xpra_err" || true
+        jexec "$jail" chmod 0700 /var/run/xpra 2>>"$_xpra_err" || true
 
         if ! jexec "$jail" /usr/local/bin/xpra start "$display" \
-                --xvfb=Xvfb --socket-dir=/xpra --socket-permissions=0600 \
-                --attach=no --daemon=yes 2>>"$_xpra_err"; then
+                --xvfb="Xvfb +extension Composite -nolisten tcp" \
+                --socket-dir=/xpra \
+                --socket-permissions=0600 \
+                --attach=no \
+                --daemon=yes \
+                --sharing=no \
+                --clipboard=no \
+                --webcam=no \
+                --printing=no \
+                --file-transfer=no \
+                --open-files=no \
+                --open-url=no \
+                --dbus-proxy=no \
+                --dbus-control=no \
+                --mdns=no \
+                --notifications=no \
+                --system-tray=no \
+                --pulseaudio=no \
+                --speaker=disabled \
+                --microphone=disabled \
+                2>>"$_xpra_err"; then
             printf 'parish-xpra: xpra start returned non-zero:\n' >&2
             sed 's/^/  /' "$_xpra_err" >&2
             rm -f "$_xpra_err"
             exit 1
         fi
 
-        _found=0
+        _found_sock=""
         _retries=0
         while [ "$_retries" -lt 30 ]; do
-            for _s in "$_socket_dir"/*-"$disp_num"; do
-                if [ -S "$_s" ]; then _found=1; break 2; fi
-            done
+            _found_sock="$(_find_socket || true)"
+            [ -n "$_found_sock" ] && break
             sleep 1
             _retries=$((_retries + 1))
         done
 
-        if [ "$_found" -ne 1 ]; then
+        if [ -z "$_found_sock" ]; then
             printf 'parish-xpra: Xpra did not create a socket within 30s in %s\n' "$jail" >&2
-            printf 'parish-xpra: (xpra may still be starting; the next start will report "already running" if it succeeds)\n' >&2
             if [ -s "$_xpra_err" ]; then
                 printf 'parish-xpra: diagnostics from xpra:\n' >&2
                 sed 's/^/  /' "$_xpra_err" >&2
             fi
-            
-            for _log in "server.log" "server.log.new"; do
-                if jexec "$jail" test -f "/var/run/xpra/${disp_num}/${_log}" 2>/dev/null; then
-                    printf 'parish-xpra: xpra daemon log /var/run/xpra/%s/%s (last 20 lines):\n' \
-                        "$disp_num" "$_log" >&2
-                    jexec "$jail" tail -20 "/var/run/xpra/${disp_num}/${_log}" 2>/dev/null | sed 's/^/  /' >&2
-                    break
-                elif jexec "$jail" test -f "/tmp/${disp_num}/${_log}" 2>/dev/null; then
-                    printf 'parish-xpra: xpra daemon log /tmp/%s/%s (last 20 lines):\n' \
-                        "$disp_num" "$_log" >&2
-                    jexec "$jail" tail -20 "/tmp/${disp_num}/${_log}" 2>/dev/null | sed 's/^/  /' >&2
-                    break
-                fi
-            done
             rm -f "$_xpra_err"
             exit 1
         fi
         rm -f "$_xpra_err"
 
-        _uid="${PKEXEC_UID:-$(id -u)}"
+        _uid="$(_resolve_uid)"
         chown "$_uid" "$_socket_dir" 2>/dev/null || true
-        chmod 0755 "$_socket_dir" 2>/dev/null || true
-        chown "$_uid" "$_socket_dir"/*-"$disp_num" 2>/dev/null || true
-        chmod 0600 "$_socket_dir"/*-"$disp_num" 2>/dev/null || true
+        chmod 0700 "$_socket_dir" 2>/dev/null || true
+        chown "$_uid" "$_found_sock" 2>/dev/null || true
+        chmod 0600 "$_found_sock" 2>/dev/null || true
 
         [ -x "$XPRA_SUP" ] || { echo "parish-xpra: xpra-sup not found at $XPRA_SUP" >&2; exit 1; }
-        "$XPRA_SUP" "$jail" "$disp_num"
+        "$XPRA_SUP" "$jail" "$disp_num" "$_found_sock"
 
         echo "Xpra started at $display in '$jail'"
         ;;
 
     attach)
-        # containment state check before attach. A contained
-        # jail should not have new display clients attached  the
-        # user is investigating, not extending the surface.
         state="$(parish_jail_state "$jail")"
         case "$state" in
-            running|running-other-contained)
-                : # proceed
-                ;;
+            running|running-other-contained) : ;;
             stopped)
                 echo "parish-xpra: compartment '$jail' is not running. Start it first:" >&2
                 echo "  parishctl start $jail" >&2
                 exit 1
                 ;;
-            *)
-                parish_jail_state_message "$jail" "$state" >&2
-                exit 1
-                ;;
+            *) parish_jail_state_message "$jail" "$state" >&2; exit 1 ;;
         esac
 
-        _socket_dir="/var/run/xpra/$jail"
-        socket=""
-        for _s in "$_socket_dir"/*-"$disp_num"; do
-            if [ -S "$_s" ]; then
-                socket="$_s"
-                break
-            fi
-        done
+        socket="$(_find_socket || true)"
         if [ -z "$socket" ]; then
             echo "parish-xpra: no socket for display $display in '$_socket_dir'" >&2
             echo "The Xpra session may not be running. Check:" >&2
@@ -208,30 +216,101 @@ case "$cmd" in
             exit 1
         fi
 
-        # Trust file: /var/db/parishbsd/trust/<jail>, root:wheel 0644,
-        # one word: high | medium | low.
-        #
-        # The trust file is host-side and not visible from inside the
-        # jail, so this read is not phishing-vulnerable. The
-        # ownership/mode check is defense in depth (same discipline
-        # as containment.cpp::lock_vault for its provider file).
-        _trust="unknown"
-        _trust_file="/var/db/parishbsd/trust/$jail"
-        if [ -f "$_trust_file" ] && [ ! -L "$_trust_file" ]; then
-            _val="$(head -n1 "$_trust_file" 2>/dev/null | tr -d '[:space:]')"
-            case "$_val" in high|medium|low) _trust="$_val" ;; esac
+        # Refuse if client already attached to avoid duplicate window sessions
+        if pgrep -u "$(id -u)" -f "xpra attach socket://$socket" >/dev/null 2>&1; then
+            echo "Display client already attached to '$jail' ($display)."
+            exit 0
         fi
 
-        case "$_trust" in
-            high)    _trust_label="🟢 TRUSTED" ;;
-            medium)  _trust_label="🔵 MEDIUM" ;;
-            low)     _trust_label="🔴 UNTRUSTED" ;;
-            *)       _trust_label="⚪ UNKNOWN" ;;
+        _tier="$(_determine_tier)"
+        _risk="$(parish_container_risk "$jail" "$_tier")"
+
+        case "$_risk" in
+            low)
+                _risk_label="[LOW RISK · ${jail}]"
+                _border_arg="--border=green,4"
+                ;;
+            medium)
+                _risk_label="[WORK · ${jail}]"
+                _border_arg="--border=blue,4"
+                ;;
+            high)
+                _risk_label="[UNTRUSTED · ${jail}]"
+                _border_arg="--border=red,5"
+                ;;
+            critical)
+                _risk_label="[VAULT · ${jail}]"
+                _border_arg="--border=purple,5"
+                ;;
+            *)
+                _risk_label="[UNKNOWN · ${jail}]"
+                _border_arg="--border=gray,4"
+                ;;
         esac
 
         exec xpra attach "socket://$socket" \
-            --title="${_trust_label} | ${jail}" "$@"
+            --title="${_risk_label} @title@" \
+            "$_border_arg" \
+            --clipboard=no \
+            --webcam=no \
+            --printing=no \
+            --file-transfer=no \
+            --open-files=no \
+            --open-url=no \
+            --notifications=no \
+            --tray=no \
+            --speaker=off \
+            --microphone=off \
+            --opengl=no \
+            "$@"
         ;;
+
+    detach)
+        socket="$(_find_socket || true)"
+        if [ -z "$socket" ]; then
+            echo "No active Xpra socket for '$jail' ($display)."
+            exit 0
+        fi
+        # Tell xpra server to drop client cleanly, then ensure local attach exits
+        xpra detach "socket://$socket" >/dev/null 2>&1 || true
+        pkill -TERM -u "$(id -u)" -f "xpra attach socket://$socket" 2>/dev/null || true
+        echo "Detached display client for '$jail' ($display); applications continue running."
+        ;;
+
+    stop)
+        [ "$(id -u)" -eq 0 ] || { echo "parish-xpra: stop must be invoked via 'parishctl xpra stop'" >&2; exit 1; }
+        socket="$(_find_socket || true)"
+        if [ -n "$socket" ]; then
+            pkill -TERM -f "xpra attach socket://$socket" 2>/dev/null || true
+        fi
+        _state_file="/var/run/parishbsd/xpra/$jail.state"
+        if [ -f "$_state_file" ] && [ ! -L "$_state_file" ]; then
+            _sup_pid="$(awk -F= '$1=="pid"{print $2; exit}' "$_state_file" 2>/dev/null || true)"
+            case "${_sup_pid:-}" in
+                ''|*[!0-9]*) : ;;
+                *) kill -TERM "$_sup_pid" 2>/dev/null || true ;;
+            esac
+        fi
+        jexec "$jail" /usr/local/bin/xpra stop "$display" >/dev/null 2>&1 || true
+        if [ -d "$_socket_dir" ] && [ ! -L "$_socket_dir" ]; then
+            find "$_socket_dir" -mindepth 1 -maxdepth 1 -delete 2>/dev/null || true
+        fi
+        echo "Stopped Xpra for '$jail' ($display)."
+        ;;
+
+    status)
+        socket="$(_find_socket || true)"
+        _attached="false"
+        if [ -n "$socket" ] && pgrep -f "xpra attach socket://$socket" >/dev/null 2>&1; then
+            _attached="true"
+        fi
+        printf 'jail=%s display=%s running=%s attached=%s socket=%s\n' \
+            "$jail" "$display" \
+            "$([ -n "$socket" ] && echo true || echo false)" \
+            "$_attached" \
+            "${socket:-none}"
+        ;;
+
     *)
         usage
         ;;
