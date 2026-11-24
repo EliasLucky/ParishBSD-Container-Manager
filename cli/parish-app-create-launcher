@@ -176,7 +176,7 @@ esc_slug="$(escape_desktop "$name")"
 
 entry="[Desktop Entry]
 Type=Application
-Name=$esc_display
+Name=$esc_display ($esc_jail)
 Comment=ParishBSD application in compartment $esc_jail
 Exec=/usr/local/bin/parish-app-launch \"$esc_jail\" \"$esc_slug\"
 TryExec=/usr/local/bin/parish-app-launch
