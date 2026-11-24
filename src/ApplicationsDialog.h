@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QString>
+#include "ContainerInfo.h"
 #include "PackageInfo.h"
 
 class QTabWidget;
@@ -17,14 +18,18 @@ class CatalogTableModel;
 class ApplicationsDialog : public QDialog {
     Q_OBJECT
 public:
-    ApplicationsDialog(ContainerBackend *backend, const QString &jailName, QWidget *parent = nullptr);
+    ApplicationsDialog(ContainerBackend *backend,
+                       const ContainerInfo &container,
+                       QWidget *parent = nullptr);
 
 signals:
     void applicationsChanged();
 
 private slots:
     void refresh();
+    void onPackagesReady(const QString &jail, const QList<PackageInfo> &pkgs, const QString &err);
     void onSelectionChanged();
+    void onCatalogSelectionChanged();
     void onUpdateSelected();
     void onRemoveSelected();
     void onInstallCatalog();
@@ -36,14 +41,14 @@ private:
     void buildUi();
     void buildInstalledTab(QWidget *parent);
     void buildInstallNewTab(QWidget *parent);
-    void populateInstalled();
     void populateCatalog();
     void updateActionStates();
+    bool checkFileCompatibility(const QString &filePath, QString *errorOut) const;
 
     PackageInfo selectedPackage() const;
 
     ContainerBackend *m_backend;
-    QString m_jail;
+    ContainerInfo m_container;
 
     QTabWidget *m_tabs = nullptr;
 
@@ -57,5 +62,6 @@ private:
     QLineEdit *m_catalogSearch = nullptr;
     QTableView *m_catalogView = nullptr;
     CatalogTableModel *m_catalogModel = nullptr;
+    QPushButton *m_installCatalogBtn = nullptr;
     QPushButton *m_installFromFileBtn = nullptr;
 };

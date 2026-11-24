@@ -1,70 +1,133 @@
 #include "TerminalLauncher.h"
-#include <QStandardPaths>
-#include <QProcessEnvironment>
+#include <QFileInfo>
 #include <QObject>
+#include <QProcessEnvironment>
+#include <QSettings>
+#include <QStandardPaths>
 
-bool TerminalLauncher::findTerminal(const QString &title, const QString &command, 
-                                    QString &outPath, QStringList &outArgs, QString *errorOut)
+namespace {
+
+// Builds arguments for a specific terminal binary so that:
+// 1. Single-instance / factory daemons do not immediately exit 0.
+// 2. Program & arguments are passed via positional parameters ("$@" inside sh)
+//    so untrusted strings are never re-parsed by sh.
+QStringList buildTerminalArgs(const QString &exePath,
+                              const QString &title,
+                              const QStringList &execArgv,
+                              bool pauseOnExit)
 {
-    QString termPath;
+    const QString base = QFileInfo(exePath).fileName().toLower();
     QStringList args;
-    
-    // Wrap the command to pause at the end, preserving exit code
-    QString wrappedCmd = QStringLiteral("%1; _rc=$?; echo; echo '[press Enter to close]'; read _; exit $_rc").arg(command);
 
-    // 1. Check $TERMINAL environment variable (User preference)
-    QString envTerm = QProcessEnvironment::systemEnvironment().value("TERMINAL");
+    if (base == QLatin1String("konsole")) {
+        // --nofork keeps konsole attached so QProcess tracks session lifetime.
+        args << QStringLiteral("--nofork")
+             << QStringLiteral("-p") << QStringLiteral("tabtitle=%1").arg(title)
+             << QStringLiteral("-e");
+    } else if (base == QLatin1String("gnome-terminal")) {
+        // --wait blocks until the tab/window closes.
+        args << QStringLiteral("--wait")
+             << QStringLiteral("--title=%1").arg(title)
+             << QStringLiteral("--");
+    } else if (base == QLatin1String("mate-terminal")) {
+        // --disable-factory prevents delegating to an existing factory process.
+        args << QStringLiteral("--disable-factory")
+             << QStringLiteral("--title=%1").arg(title)
+             << QStringLiteral("--");
+    } else if (base == QLatin1String("xfce4-terminal")) {
+        // --disable-server keeps the launched process alive for QProcess.
+        args << QStringLiteral("--disable-server")
+             << QStringLiteral("--title=%1").arg(title)
+             << QStringLiteral("-x");
+    } else if (base == QLatin1String("alacritty")) {
+        args << QStringLiteral("--title") << title
+             << QStringLiteral("-e");
+    } else if (base == QLatin1String("kitty")) {
+        args << QStringLiteral("--title") << title
+             << QStringLiteral("--");
+    } else if (base == QLatin1String("foot")) {
+        args << QStringLiteral("--title") << title;
+    } else if (base == QLatin1String("xterm") || base == QLatin1String("uxterm")) {
+        args << QStringLiteral("-T") << title
+             << QStringLiteral("-e");
+    } else {
+        // Generic POSIX/xterm-compatible fallback
+        args << QStringLiteral("-e");
+    }
+
+    if (pauseOnExit) {
+        // "$@" expands each argument verbatim with zero shell splitting/injection.
+        args << QStringLiteral("sh")
+             << QStringLiteral("-c")
+             << QStringLiteral("\"$@\"; _rc=$?; printf '\\n[press Enter to close]\\n'; read _dummy; exit $_rc")
+             << QStringLiteral("parish-term-wrap")
+             << execArgv;
+    } else {
+        args << execArgv;
+    }
+
+    return args;
+}
+
+} // namespace
+
+bool TerminalLauncher::findTerminal(const QString &title,
+                                    const QStringList &execArgv,
+                                    QString &outPath,
+                                    QStringList &outArgs,
+                                    QString *errorOut,
+                                    const QString &preferredTerminal,
+                                    bool pauseOnExit)
+{
+    if (execArgv.isEmpty()) {
+        if (errorOut) *errorOut = QObject::tr("No command specified for terminal.");
+        return false;
+    }
+
+    QStringList candidates;
+    if (!preferredTerminal.trimmed().isEmpty()) {
+        candidates << preferredTerminal.trimmed();
+    }
+
+    QSettings settings;
+    const QString savedTerm = settings.value(QStringLiteral("terminal/executable")).toString().trimmed();
+    if (!savedTerm.isEmpty()) {
+        candidates << savedTerm;
+    }
+
+    const QString envTerm = QProcessEnvironment::systemEnvironment().value(QStringLiteral("TERMINAL")).trimmed();
     if (!envTerm.isEmpty()) {
-        termPath = QStandardPaths::findExecutable(envTerm);
-        if (!termPath.isEmpty()) {
-            args << "-e" << "sh" << "-c" << wrappedCmd;
+        candidates << envTerm;
+    }
+
+    // Standard FreeBSD desktop environment fallback chain
+    candidates << QStringLiteral("konsole")
+               << QStringLiteral("mate-terminal")
+               << QStringLiteral("gnome-terminal")
+               << QStringLiteral("xfce4-terminal")
+               << QStringLiteral("alacritty")
+               << QStringLiteral("kitty")
+               << QStringLiteral("foot")
+               << QStringLiteral("xterm");
+
+    QString foundPath;
+    for (const QString &candidate : candidates) {
+        const QString resolved = QStandardPaths::findExecutable(candidate);
+        if (!resolved.isEmpty()) {
+            foundPath = resolved;
+            break;
         }
     }
 
-    // 2. Fallback chain (DE-specific standard terminals)
-    if (termPath.isEmpty()) {
-        struct TermInfo {
-            const char* exe;
-            bool useTitleEq; // true: --title=T, false: --title T
-            const char* execFlag;
-        };
-        
-        // Order matters: KDE, MATE, GNOME, XFCE, generic
-        TermInfo terminals[] = {
-            {"konsole", false, "-e"},
-            {"mate-terminal", true, "--"},
-            {"gnome-terminal", true, "--"},
-            {"xfce4-terminal", false, "-x"},
-            {"alacritty", false, "-e"},
-            {"xterm", false, "-e"}
-        };
-
-        for (const auto& t : terminals) {
-            QString path = QStandardPaths::findExecutable(t.exe);
-            if (!path.isEmpty()) {
-                termPath = path;
-                if (t.useTitleEq) {
-                    args << QString("--title=%1").arg(title) << t.execFlag << "sh" << "-c" << wrappedCmd;
-                } else {
-                    if (QString(t.exe) == "xterm") {
-                        args << "-T" << title << t.execFlag << "sh" << "-c" << wrappedCmd;
-                    } else {
-                        args << "--title" << title << t.execFlag << "sh" << "-c" << wrappedCmd;
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    if (termPath.isEmpty()) {
+    if (foundPath.isEmpty()) {
         if (errorOut) {
-            *errorOut = QObject::tr("No terminal emulator found. Please install one.");
+            *errorOut = QObject::tr("No terminal emulator found. Install konsole, xfce4-terminal, mate-terminal, or xterm, or set one in Settings.");
         }
         return false;
     }
 
-    outPath = termPath;
-    outArgs = args;
+    outPath = foundPath;
+    outArgs = buildTerminalArgs(foundPath, title, execArgv, pauseOnExit);
     return true;
 }
+

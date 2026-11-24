@@ -1,34 +1,70 @@
 #include "ActionsDialog.h"
+#include "ApplicationsDialog.h"
 #include "ContainerBackend.h"
+#include "ProcessLogDialog.h"
 
+#include <QComboBox>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QFrame>
+#include <QIcon>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QMessageBox>
-#include <QDialogButtonBox>
-#include <QFrame>
-#include <QInputDialog>
-#include <QLineEdit>
-#include <QIcon>
 
-ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent) : QDialog(parent), m_backend(backend), m_info(info)
+ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent)
+    : QDialog(parent), m_backend(backend), m_info(info)
 {
     setWindowTitle(tr("Actions: %1").arg(info.name));
-    setMinimumWidth(420);
+    setMinimumWidth(440);
 
     auto *root = new QVBoxLayout(this);
 
     auto *summary = new QLabel(this);
     summary->setTextFormat(Qt::RichText);
+    summary->setWordWrap(true);
+    const QString caps = info.capabilities.isEmpty()
+        ? tr("None")
+        : info.capabilities.join(QStringLiteral(", "));
     summary->setText(tr(
         "<b>%1</b><br>"
         "Kind: %2<br>"
         "State: %3<br>"
-        "Template: %4<br>"
-        "Disk usage: %5")
-        .arg(info.name.toHtmlEscaped(), info.kind.toHtmlEscaped(), info.humanState().toHtmlEscaped(), info.sourceTemplate.toHtmlEscaped(), formatDiskUsage(info.diskUsage).toHtmlEscaped()));
+        "Risk Level: %4<br>"
+        "Capabilities: %5<br>"
+        "Template: %6<br>"
+        "Disk usage: %7")
+        .arg(info.name.toHtmlEscaped(),
+             info.kind.toHtmlEscaped(),
+             info.humanState().toHtmlEscaped(),
+             info.humanRiskLevel().toHtmlEscaped(),
+             caps.toHtmlEscaped(),
+             info.sourceTemplate.toHtmlEscaped(),
+             formatDiskUsage(info.diskUsage).toHtmlEscaped()));
     root->addWidget(summary);
+
+    auto *riskForm = new QFormLayout();
+    m_riskCombo = new QComboBox(this);
+    m_riskCombo->addItem(tr("Low (Trusted)"), QStringLiteral("low"));
+    m_riskCombo->addItem(tr("Medium (Work)"), QStringLiteral("medium"));
+    m_riskCombo->addItem(tr("High (Untrusted)"), QStringLiteral("high"));
+    m_riskCombo->addItem(tr("Critical (Vault)"), QStringLiteral("critical"));
+    const int riskIdx = m_riskCombo->findData(info.normalizedRiskLevel());
+    if (riskIdx >= 0) m_riskCombo->setCurrentIndex(riskIdx);
+    m_riskCombo->setEnabled(!info.isContained());
+    m_riskCombo->setAccessibleName(tr("Compartment risk level"));
+
+    auto *riskLabel = new QLabel(tr("&Risk Level:"), this);
+    riskLabel->setBuddy(m_riskCombo);
+    riskForm->addRow(riskLabel, m_riskCombo);
+    root->addLayout(riskForm);
+
+    connect(m_riskCombo, QOverload<int>::of(&QComboBox::activated),
+            this, &ActionsDialog::onRiskLevelChanged);
+
     root->addSpacing(8);
 
     m_buttonLayout = new QVBoxLayout();
@@ -40,7 +76,8 @@ ActionsDialog::ActionsDialog(ContainerBackend *backend, const ContainerInfo &inf
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
 
-    connect(m_backend, &ContainerBackend::operationFinished, this, &ActionsDialog::onOperationFinished);
+    connect(m_backend, &ContainerBackend::operationFinished,
+            this, &ActionsDialog::onOperationFinished);
 }
 
 void ActionsDialog::rebuildButtons()
@@ -50,7 +87,7 @@ void ActionsDialog::rebuildButtons()
         delete item;
     }
 
-    auto addButton = [this](const QString &text, const QString &iconName, auto onClick) -> QPushButton* {
+    auto addButton = [this](const QString &text, const QString &iconName, auto onClick) -> QPushButton * {
         auto *b = new QPushButton(text, this);
         if (!iconName.isEmpty()) {
             const QIcon icon = QIcon::fromTheme(iconName);
@@ -69,41 +106,47 @@ void ActionsDialog::rebuildButtons()
     };
 
     if (m_info.isContained()) {
-        auto *banner = new QLabel(tr("<b style='color:white;background-color:red;padding:4px;'>CONTAINED BY GUARDIAN</b>"), this);
+        auto *banner = new QLabel(
+            tr("<b>CONTAINED BY GUARDIAN</b><br>Investigate the incident before taking recovery or destruction actions."),
+            this);
+        banner->setWordWrap(true);
         banner->setAlignment(Qt::AlignCenter);
+        banner->setStyleSheet(QStringLiteral(
+            "QLabel { color: #ffffff; background-color: #b91c1c; padding: 8px; border-radius: 4px; }"));
+        banner->setAccessibleName(tr("Guardian containment warning"));
         m_buttonLayout->addWidget(banner);
-        return; 
+        return;
     }
 
     if (m_info.isVault) {
         if (m_info.isLocked()) {
-            addButton(tr("Unlock vault"), "security-medium", &ActionsDialog::onUnlock);
+            addButton(tr("Unlock Vault"), QStringLiteral("security-medium"), &ActionsDialog::onUnlock);
+        } else {
+            addButton(tr("Open Shell / Files"), QStringLiteral("utilities-terminal"), &ActionsDialog::onConsole);
+            addButton(tr("Lock Vault"), QStringLiteral("security-high"), &ActionsDialog::onLock);
         }
-        else {
-            addButton(tr("Open files"), "system-file-manager", &ActionsDialog::onOpenFiles);
-            addButton(tr("Lock vault"), "security-high", &ActionsDialog::onLock);
-        }
-    }
-    else {
+    } else {
         if (m_info.isRunning()) {
-            addButton(tr("Open console"), "utilities-terminal", &ActionsDialog::onConsole);
-        }   
-        else {
-            addButton(tr("Start"), "media-playback-start", &ActionsDialog::onStart);
+            addButton(tr("Open Console"), QStringLiteral("utilities-terminal"), &ActionsDialog::onConsole);
+        } else {
+            addButton(tr("Start"), QStringLiteral("media-playback-start"), &ActionsDialog::onStart);
         }
     }
 
     addSeparator();
+
+    addButton(tr("Applications && Packages..."), QStringLiteral("system-software-install"), &ActionsDialog::onApplications);
 
     if (!m_info.isVault && m_info.isRunning()) {
-        addButton(tr("Stop Container"), "media-playback-stop", &ActionsDialog::onStop);
+        addButton(tr("Stop Container"), QStringLiteral("media-playback-stop"), &ActionsDialog::onStop);
     }
 
-    addButton(tr("Refresh Status"), "view-refresh", &ActionsDialog::onRefresh);
+    addButton(tr("Refresh Status"), QStringLiteral("view-refresh"), &ActionsDialog::onRefresh);
 
     addSeparator();
 
-    addButton(m_info.isVault ? tr("Destroy Vault...") : tr("Destroy Container..."), "edit-delete", &ActionsDialog::onDestroy);
+    addButton(m_info.isVault ? tr("Destroy Vault...") : tr("Destroy Container..."),
+              QStringLiteral("edit-delete"), &ActionsDialog::onDestroy);
 }
 
 void ActionsDialog::onStart() { m_backend->startContainer(m_info.name); }
@@ -126,9 +169,19 @@ void ActionsDialog::onLock()
 
 void ActionsDialog::onConsole() { m_backend->openConsole(m_info.name); }
 
-void ActionsDialog::onOpenFiles()
+void ActionsDialog::onApplications()
 {
-    m_backend->openConsole(m_info.name);
+    ApplicationsDialog dlg(m_backend, m_info, this);
+    dlg.exec();
+}
+
+void ActionsDialog::onRiskLevelChanged(int index)
+{
+    if (index < 0) return;
+    const QString level = m_riskCombo->itemData(index).toString();
+    if (!level.isEmpty() && level != m_info.normalizedRiskLevel()) {
+        m_backend->setRiskLevel(m_info.name, level);
+    }
 }
 
 void ActionsDialog::onRefresh()
@@ -137,7 +190,8 @@ void ActionsDialog::onRefresh()
     accept();
 }
 
-void ActionsDialog::onDestroy() {
+void ActionsDialog::onDestroy()
+{
     if (m_info.isContained()) return;
 
     bool ok = false;
@@ -149,20 +203,18 @@ void ActionsDialog::onDestroy() {
         if (ok) QMessageBox::warning(this, tr("Aborted"), tr("Confirmation token did not match."));
         return;
     }
-    
+
     m_backend->destroyContainer(m_info.name, token);
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Destroying %1").arg(m_info.name), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
 }
 
 void ActionsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)
 {
-    if (!ok) {
-        QMessageBox::warning(this, tr("Operation failed"), desc + "\n\n" + err);
-    }
-    
-    if (desc.contains("Destroying") || desc.contains("Creating")) {
-        emit containerChanged();
+    Q_UNUSED(err);
+    emit containerChanged();
+    if (ok && (desc.startsWith(QStringLiteral("Destroy:")) || desc.startsWith(QStringLiteral("Create:")))) {
         accept();
-    } else {
-        emit containerChanged();
     }
 }

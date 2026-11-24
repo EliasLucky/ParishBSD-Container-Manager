@@ -1,35 +1,38 @@
 #pragma once
 
 #include <QDialog>
-
 #include "ContainerInfo.h"
 
 class ContainerBackend;
+class QComboBox;
+class QVBoxLayout;
 
 class ActionsDialog : public QDialog
 {
-	Q_OBJECT
+    Q_OBJECT
 public:
-	ActionsDialog(ContainerBackend *backend, const ContainerInfo & info, QWidget *parent = nullptr);
+    ActionsDialog(ContainerBackend *backend, const ContainerInfo &info, QWidget *parent = nullptr);
 
 signals:
-	void containerChanged();
+    void containerChanged();
 
 private slots:
-	void onStart();
-	void onStop();
-	void onUnlock();
-	void onLock();
-	void onConsole();
-    void onOpenFiles();
-	void onRefresh();
-	void onDestroy();
-	void onOperationFinished(const QString &desc, bool ok, const QString &err);
+    void onStart();
+    void onStop();
+    void onUnlock();
+    void onLock();
+    void onConsole();
+    void onApplications();
+    void onRiskLevelChanged(int index);
+    void onRefresh();
+    void onDestroy();
+    void onOperationFinished(const QString &desc, bool ok, const QString &err);
 
 private:
-	void rebuildButtons();
+    void rebuildButtons();
 
-	ContainerBackend *m_backend;
-	ContainerInfo m_info;
-	class QVBoxLayout *m_buttonLayout = nullptr;
+    ContainerBackend *m_backend;
+    ContainerInfo m_info;
+    QVBoxLayout *m_buttonLayout = nullptr;
+    QComboBox *m_riskCombo = nullptr;
 };
