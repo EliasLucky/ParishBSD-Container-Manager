@@ -1,6 +1,5 @@
 #include "PackageTableModel.h"
 #include <QColor>
-#include <QIcon>
 
 PackageTableModel::PackageTableModel(QObject *parent) : QAbstractTableModel(parent) {}
 
@@ -16,8 +15,7 @@ int PackageTableModel::columnCount(const QModelIndex &parent) const
 
 QVariant PackageTableModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || index.row() >= m_packages.size())
-        return QVariant();
+    if (!index.isValid() || index.row() >= m_packages.size()) return QVariant();
     const PackageInfo &p = m_packages.at(index.row());
 
     if (role == Qt::DisplayRole) {
@@ -27,33 +25,40 @@ QVariant PackageTableModel::data(const QModelIndex &index, int role) const
         case VersionColumn:
             return p.version;
         case StatusColumn:
-            if (p.isCustom())
-                return QObject::tr("Custom (%1)").arg(p.installMethod);
-            if (p.hasUpdate())
-                return QObject::tr("Update available -> %1").arg(p.latestVersion);
-            return QObject::tr("Up to date");
+            if (p.isCustom()) {
+                return tr("Custom (%1)").arg(p.installMethod.isEmpty() ? tr("file") : p.installMethod);
+            }
+            if (p.hasUpdate()) {
+                return tr("Update available -> %1").arg(p.latestVersion);
+            }
+            return tr("Up to date");
         }
     }
 
     if (role == Qt::ForegroundRole && index.column() == StatusColumn) {
-        if (p.isCustom()) return QColor(0x8b, 0x5c, 0xf6);
-        if (p.hasUpdate()) return QColor(0xd9, 0x7d, 0x00);
+        if (p.isCustom()) return QColor(0x6d, 0x28, 0xd9);
+        if (p.hasUpdate()) return QColor(0xb4, 0x53, 0x09);
         return QColor(0x2e, 0x7d, 0x32);
     }
+
     if (role == Qt::ToolTipRole && p.isCustom()) {
-        return QObject::tr("Installed from %1 on %2").arg(p.comment, p.installDate);
+        return tr("Installed from %1 on %2").arg(p.comment, p.installDate);
+    }
+
+    if (role == Qt::AccessibleTextRole) {
+        return tr("%1, version %2, %3").arg(p.name, p.version,
+            data(this->index(index.row(), StatusColumn), Qt::DisplayRole).toString());
     }
     return QVariant();
 }
 
 QVariant PackageTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (role != Qt::DisplayRole || orientation != Qt::Horizontal)
-        return QVariant();
+    if (role != Qt::DisplayRole || orientation != Qt::Horizontal) return QVariant();
     switch (section) {
-    case NameColumn: return QObject::tr("Name");
-    case VersionColumn: return QObject::tr("Version");
-    case StatusColumn: return QObject::tr("Status");
+    case NameColumn:    return tr("Name");
+    case VersionColumn: return tr("Version");
+    case StatusColumn:  return tr("Status");
     }
     return QVariant();
 }

@@ -1,7 +1,9 @@
 #pragma once
 
-#include <QString>
+#include <QColor>
 #include <QMetaType>
+#include <QString>
+#include <QStringList>
 
 struct ContainerInfo {
     QString name;
@@ -10,6 +12,8 @@ struct ContainerInfo {
     QString keyState;     // locked, unlocked, "" (empty for non-vaults)
     QString sourceTemplate;
     QString tier;         // app, vault, legacy
+    QString riskLevel;    // low, medium, high, critical (or empty -> default)
+    QStringList capabilities; // gui, audio, compat-linux, compat-windows, vault
     quint64 diskUsage = 0;
     bool isVault = false;
     bool isCompatibility = false;
@@ -17,7 +21,7 @@ struct ContainerInfo {
     QString internalIp;
 
     bool isValid() const { return !name.isEmpty(); }
-    
+
     bool isRunning() const {
         return jailState == QLatin1String("running") ||
                jailState == QLatin1String("contained-but-running") ||
@@ -35,6 +39,16 @@ struct ContainerInfo {
                jailState == QLatin1String("stopped-maybe-contained") ||
                jailState == QLatin1String("containing");
     }
+
+    bool hasCapability(const QString &cap) const;
+    bool supportsGui() const { return hasCapability(QStringLiteral("gui")) || (!isVault && capabilities.isEmpty()); }
+    bool supportsLinuxCompat() const { return hasCapability(QStringLiteral("compat-linux")); }
+    bool supportsWindowsCompat() const { return hasCapability(QStringLiteral("compat-windows")); }
+    bool supportsAudio() const { return hasCapability(QStringLiteral("audio")); }
+
+    QString normalizedRiskLevel() const;
+    QString humanRiskLevel() const;
+    QColor riskColor() const;
 
     QString humanState() const;
     QString accessibleText() const;

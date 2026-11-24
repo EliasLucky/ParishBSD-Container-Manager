@@ -31,4 +31,6 @@ private:
     QProgressBar *m_progress = nullptr;
     QLabel *m_status = nullptr;
     QPushButton *m_cancelBtn = nullptr;
+    bool m_finished = false;
+    bool m_succeeded = false;
 };

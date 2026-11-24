@@ -1,38 +1,44 @@
+
+#include "ProcessLogDialog.h"
 #include "ProcessLogDialog.h"
 #include "ContainerBackend.h"
 
-#include <QVBoxLayout>
+#include <QCloseEvent>
+#include <QFont>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QPlainTextEdit>
 #include <QProgressBar>
-#include <QLabel>
 #include <QPushButton>
-#include <QCloseEvent>
 #include <QTimer>
+#include <QVBoxLayout>
 
-ProcessLogDialog::ProcessLogDialog(ContainerBackend *backend, const QString &title, QWidget *parent) 
+ProcessLogDialog::ProcessLogDialog(ContainerBackend *backend, const QString &title, QWidget *parent)
     : QDialog(parent), m_backend(backend)
 {
     setWindowTitle(title);
-    setMinimumSize(640,420);
+    setMinimumSize(640, 420);
 
     auto *root = new QVBoxLayout(this);
     m_status = new QLabel(tr("Working..."), this);
+    m_status->setAccessibleName(tr("Operation status"));
     root->addWidget(m_status);
 
     m_progress = new QProgressBar(this);
-    m_progress->setRange(0,0);
+    m_progress->setRange(0, 0);
+    m_progress->setAccessibleName(tr("Operation progress"));
     root->addWidget(m_progress);
 
     m_log = new QPlainTextEdit(this);
     m_log->setReadOnly(true);
     m_log->setMaximumBlockCount(2000);
-    m_log->setFont(QFont("monospace"));
-    root->addWidget(m_log,1);
+    m_log->setFont(QFont(QStringLiteral("monospace")));
+    m_log->setAccessibleName(tr("Command output log"));
+    root->addWidget(m_log, 1);
 
     auto *buttons = new QHBoxLayout();
     buttons->addStretch();
-    m_cancelBtn = new QPushButton(tr("Cancel"),this);
+    m_cancelBtn = new QPushButton(tr("Cancel"), this);
     buttons->addWidget(m_cancelBtn);
     root->addLayout(buttons);
 
@@ -50,7 +56,11 @@ void ProcessLogDialog::onOutput(const QString &text)
 
 void ProcessLogDialog::onFinished(bool ok, const QString &err)
 {
-    m_progress->setRange(0,1);
+    if (m_finished) return;
+    m_finished = true;
+    m_succeeded = ok;
+
+    m_progress->setRange(0, 1);
     m_progress->setValue(ok ? 1 : 0);
 
     if (ok) {
@@ -58,11 +68,10 @@ void ProcessLogDialog::onFinished(bool ok, const QString &err)
         m_cancelBtn->setText(tr("Close"));
         m_cancelBtn->disconnect();
         connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::accept);
-        QTimer::singleShot(2000, this, &QDialog::accept);
-    }
-    else {
+        QTimer::singleShot(1500, this, &QDialog::accept);
+    } else {
         m_status->setText(tr("Operation failed."));
-        if (!err.isEmpty()) onOutput("\nERROR: " + err + "\n");
+        if (!err.isEmpty()) onOutput(QStringLiteral("\nERROR: ") + err + QLatin1Char('\n'));
         m_cancelBtn->setText(tr("Close"));
         m_cancelBtn->disconnect();
         connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
@@ -73,12 +82,20 @@ void ProcessLogDialog::onFinished(bool ok, const QString &err)
 
 void ProcessLogDialog::onCancel()
 {
+    if (m_finished) {
+        if (m_succeeded) accept();
+        else reject();
+        return;
+    }
     m_backend->cancelInstall();
     reject();
 }
 
 void ProcessLogDialog::closeEvent(QCloseEvent *e)
 {
-    onCancel();
+    if (!m_finished) {
+        m_backend->cancelInstall();
+    }
     e->accept();
 }
+

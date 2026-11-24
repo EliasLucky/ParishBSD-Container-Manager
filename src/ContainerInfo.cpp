@@ -1,4 +1,5 @@
 #include "ContainerInfo.h"
+#include <QObject>
 
 QString formatDiskUsage(quint64 bytes) {
     static const char *units[] = { "B", "KiB", "MiB", "GiB", "TiB" };
@@ -9,34 +10,74 @@ QString formatDiskUsage(quint64 bytes) {
         ++unit;
     }
     if (unit == 0)
-        return QString("%1 B").arg(bytes);
-    return QString("%1 %2").arg(value, 0, 'f', 2).arg(units[unit]);
+        return QStringLiteral("%1 B").arg(bytes);
+    return QStringLiteral("%1 %2").arg(value, 0, 'f', 2).arg(QLatin1String(units[unit]));
+}
+
+bool ContainerInfo::hasCapability(const QString &cap) const {
+    return capabilities.contains(cap, Qt::CaseInsensitive);
+}
+
+QString ContainerInfo::normalizedRiskLevel() const {
+    const QString r = riskLevel.trimmed().toLower();
+    if (r == QLatin1String("low") || r == QLatin1String("trusted"))
+        return QStringLiteral("low");
+    if (r == QLatin1String("medium") || r == QLatin1String("work"))
+        return QStringLiteral("medium");
+    if (r == QLatin1String("high") || r == QLatin1String("untrusted"))
+        return QStringLiteral("high");
+    if (r == QLatin1String("critical") || r == QLatin1String("vault"))
+        return QStringLiteral("critical");
+    return isVault ? QStringLiteral("critical") : QStringLiteral("medium");
+}
+
+QString ContainerInfo::humanRiskLevel() const {
+    const QString r = normalizedRiskLevel();
+    if (r == QLatin1String("low"))      return QObject::tr("Low (Trusted)");
+    if (r == QLatin1String("medium"))   return QObject::tr("Medium (Work)");
+    if (r == QLatin1String("high"))     return QObject::tr("High (Untrusted)");
+    if (r == QLatin1String("critical")) return QObject::tr("Critical (Vault)");
+    return QObject::tr("Medium (Work)");
+}
+
+QColor ContainerInfo::riskColor() const {
+    const QString r = normalizedRiskLevel();
+    if (r == QLatin1String("low"))      return QColor(0x2e, 0x7d, 0x32); // Green
+    if (r == QLatin1String("medium"))   return QColor(0x1d, 0x4e, 0xd8); // Blue
+    if (r == QLatin1String("high"))     return QColor(0xc6, 0x28, 0x28); // Red
+    return QColor(0x6a, 0x1b, 0x9a);                                     // Purple (Vault/Critical)
 }
 
 QString ContainerInfo::humanState() const {
-    if (jailState == "running") return "Running";
-    if (jailState == "stopped") return "Stopped";
-    if (jailState == "contained") return "CONTAINED by Guardian";
-    if (jailState == "containment-failed") return "CONTAINMENT FAILED";
-    if (jailState == "contained-but-running") return "CONTAINED (running)";
-    if (jailState == "stopped-maybe-contained") return "May be contained";
-    if (jailState == "containing") return "Containing...";
-    if (jailState == "running-other-contained") return "Running (another contained)";
-    return "Unknown";
+    if (jailState == QLatin1String("running"))                 return QObject::tr("Running");
+    if (jailState == QLatin1String("stopped"))                 return QObject::tr("Stopped");
+    if (jailState == QLatin1String("contained"))               return QObject::tr("CONTAINED by Guardian");
+    if (jailState == QLatin1String("containment-failed"))      return QObject::tr("CONTAINMENT FAILED");
+    if (jailState == QLatin1String("contained-but-running"))   return QObject::tr("CONTAINED (running)");
+    if (jailState == QLatin1String("stopped-maybe-contained")) return QObject::tr("May be contained");
+    if (jailState == QLatin1String("containing"))              return QObject::tr("Containing...");
+    if (jailState == QLatin1String("running-other-contained")) return QObject::tr("Running (another contained)");
+    return QObject::tr("Unknown");
 }
 
 QString ContainerInfo::accessibleText() const {
-    return QString("%1, %2, %3").arg(name, kind, humanState());
+    return QObject::tr("%1, %2, %3, risk level %4")
+        .arg(name, kind, humanState(), humanRiskLevel());
 }
 
 QString ContainerInfo::accessibleDescription() const {
-    QString desc = QString("%1 is a %2 compartment from template %3. State: %4.")
-        .arg(name, kind, sourceTemplate, humanState());
+    QString desc = QObject::tr("%1 is a %2 compartment from template %3. State: %4. Risk level: %5.")
+        .arg(name, kind, sourceTemplate, humanState(), humanRiskLevel());
     if (isVault) {
-        desc += QString(" Vault is %1.").arg(keyState == "locked" ? "locked" : "unlocked");
+        desc += QLatin1Char(' ') + (keyState == QLatin1String("locked")
+            ? QObject::tr("Vault is locked.")
+            : QObject::tr("Vault is unlocked."));
+    }
+    if (!capabilities.isEmpty()) {
+        desc += QLatin1Char(' ') + QObject::tr("Capabilities: %1.").arg(capabilities.join(QStringLiteral(", ")));
     }
     if (diskUsage > 0) {
-        desc += QString(" Disk usage: %1.").arg(formatDiskUsage(diskUsage));
+        desc += QLatin1Char(' ') + QObject::tr("Disk usage: %1.").arg(formatDiskUsage(diskUsage));
     }
     return desc;
 }
