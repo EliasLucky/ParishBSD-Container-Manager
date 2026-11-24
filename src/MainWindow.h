@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QMainWindow>
+#include <QPoint>
 #include <QString>
 #include <QTimer>
 
@@ -29,6 +30,7 @@ public:
 private slots:
     void onRefresh();
     void onSelectionChanged();
+    void onTreeContextMenu(const QPoint &pos);
     void onCreate();
     void onCreateTemplate();
     void onUpdateTemplate();
@@ -38,12 +40,9 @@ private slots:
     void onUnlock();
     void onLock();
     void onConsole();
-    void onAttachXpra();
-    void onDetachXpra();
     void onApplications();
     void onExchange();
     void onUsb();
-    void onActions();
     void onRiskChanged(int index);
     void onAudioChanged();
     void onSettings();
@@ -89,12 +88,9 @@ private:
     QPushButton *m_inspStartStopBtn = nullptr;
     QPushButton *m_inspUnlockLockBtn = nullptr;
     QPushButton *m_inspConsoleBtn = nullptr;
-    QPushButton *m_inspAttachXpraBtn = nullptr;
-    QPushButton *m_inspDetachXpraBtn = nullptr;
     QPushButton *m_inspAppsBtn = nullptr;
     QPushButton *m_inspExchangeBtn = nullptr;
     QPushButton *m_inspUsbBtn = nullptr;
-    QPushButton *m_inspActionsBtn = nullptr;
     QPushButton *m_inspDestroyBtn = nullptr;
 
     QLabel *m_tmplName = nullptr;
@@ -104,7 +100,6 @@ private:
 
     QAction *m_actRefresh = nullptr;
     QAction *m_actCreate = nullptr;
-    QAction *m_actCreateFromTemplate = nullptr;
     QAction *m_actNewTemplate = nullptr;
     QAction *m_actDestroy = nullptr;
     QAction *m_actStart = nullptr;
@@ -112,17 +107,16 @@ private:
     QAction *m_actUnlock = nullptr;
     QAction *m_actLock = nullptr;
     QAction *m_actConsole = nullptr;
-    QAction *m_actAttachXpra = nullptr;
-    QAction *m_actDetachXpra = nullptr;
     QAction *m_actApps = nullptr;
     QAction *m_actExchange = nullptr;
     QAction *m_actUsb = nullptr;
-    QAction *m_actActions = nullptr;
     QAction *m_actSettings = nullptr;
     QAction *m_actAbout = nullptr;
+    QAction *m_tbSepLifecycle = nullptr;
 
     QTimer *m_pollTimer = nullptr;
     QString m_selectedName;
     bool m_selectedIsTemplate = false;
     bool m_initialExpandDone = false;
+    bool m_groupExpanded[3] = { true, false, false };
 };

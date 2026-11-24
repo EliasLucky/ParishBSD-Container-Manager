@@ -1,5 +1,5 @@
 #include "MainWindow.h"
-#include "ActionsDialog.h"
+#include "AppIcons.h"
 #include "ApplicationsDialog.h"
 #include "ContainerBackend.h"
 #include "ContainerInfo.h"
@@ -26,6 +26,7 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
@@ -44,7 +45,8 @@
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     setWindowTitle(tr("ParishBSD Compartment Manager"));
-    resize(1080, 660);
+    setWindowIcon(AppIcons::appWindowIcon());
+    resize(940, 600);
 
     m_backend = new ContainerBackend(this);
     m_model = new ContainerModel(m_backend, this);
@@ -70,11 +72,52 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_backend, &ContainerBackend::terminalClosed,
             this, &MainWindow::onTerminalClosed);
 
-    // Re-sync tree selection and inspector whenever async model resets complete
+    // Clear "Refreshing..." status when background polls complete or warn
+    connect(m_backend, &ContainerBackend::containersReady,
+            this, [this](const QList<ContainerInfo> &, const QString &err) {
+        if (!m_statusLabel) return;
+        if (!err.isEmpty()) {
+            m_statusLabel->setText(tr("Refresh error: %1").arg(err));
+        } else if (!m_backend->isBusy()) {
+            m_statusLabel->setText(tr("Ready"));
+        }
+    });
+    connect(m_backend, &ContainerBackend::templatesReady,
+            this, [this](const QList<TemplateInfo> &, const QString &err) {
+        if (!m_statusLabel) return;
+        if (!err.isEmpty()) {
+            m_statusLabel->setText(tr("Template refresh error: %1").arg(err));
+        } else if (!m_backend->isBusy()) {
+            m_statusLabel->setText(tr("Ready"));
+        }
+    });
+
+    // Preserve user expansion state of tree groups across periodic model resets
+    connect(m_treeModel, &QAbstractItemModel::modelAboutToBeReset, this, [this]() {
+        if (!m_initialExpandDone) return;
+        for (int g = 0; g < 3; ++g) {
+            const QModelIndex idx = m_treeModel->index(g, 0);
+            if (idx.isValid()) {
+                m_groupExpanded[g] = m_tree->isExpanded(idx);
+            }
+        }
+    });
+
     connect(m_treeModel, &QAbstractItemModel::modelReset, this, [this]() {
         if (!m_initialExpandDone) {
-            m_tree->expand(m_treeModel->index(0, 0));
+            m_groupExpanded[0] = true;
+            m_groupExpanded[1] = false;
+            m_groupExpanded[2] = false;
             m_initialExpandDone = true;
+        }
+        {
+            const QSignalBlocker blocker(m_tree);
+            for (int g = 0; g < 3; ++g) {
+                const QModelIndex groupIdx = m_treeModel->index(g, 0);
+                if (groupIdx.isValid()) {
+                    m_tree->setExpanded(groupIdx, m_groupExpanded[g]);
+                }
+            }
         }
         if (!m_selectedName.isEmpty()) {
             for (int g = 0; g < 3; ++g) {
@@ -102,25 +145,25 @@ void MainWindow::buildMenus()
 {
     QMenu *fileMenu = menuBar()->addMenu(tr("&Compartment"));
     m_actCreate = fileMenu->addAction(tr("&New Compartment..."));
-    m_actCreate->setIcon(QIcon::fromTheme(QStringLiteral("list-add")));
+    m_actCreate->setIcon(AppIcons::themedOrBundled(QStringLiteral("list-add"), QStringLiteral("new-compartment")));
     m_actCreate->setShortcut(QKeySequence::New);
 
-    m_actNewTemplate = fileMenu->addAction(tr("New &Template (Wizard)..."));
-    m_actNewTemplate->setIcon(QIcon::fromTheme(QStringLiteral("document-new")));
+    m_actNewTemplate = fileMenu->addAction(tr("New &Template..."));
+    m_actNewTemplate->setIcon(AppIcons::themedOrBundled(QStringLiteral("document-new"), QStringLiteral("new-template")));
 
     m_actDestroy = fileMenu->addAction(tr("&Destroy..."));
-    m_actDestroy->setIcon(QIcon::fromTheme(QStringLiteral("edit-delete")));
+    m_actDestroy->setIcon(AppIcons::themedOrBundled(QStringLiteral("edit-delete"), QStringLiteral("destroy")));
     fileMenu->addSeparator();
 
     m_actApps = fileMenu->addAction(tr("&Applications && Packages..."));
-    m_actApps->setIcon(QIcon::fromTheme(QStringLiteral("system-software-install")));
+    m_actApps->setIcon(AppIcons::themedOrBundled(QStringLiteral("system-software-install"), QStringLiteral("apps")));
 
     m_actConsole = fileMenu->addAction(tr("Open &Console"));
-    m_actConsole->setIcon(QIcon::fromTheme(QStringLiteral("utilities-terminal")));
+    m_actConsole->setIcon(AppIcons::themedOrBundled(QStringLiteral("utilities-terminal"), QStringLiteral("console")));
     fileMenu->addSeparator();
 
     m_actRefresh = fileMenu->addAction(tr("&Refresh"));
-    m_actRefresh->setIcon(QIcon::fromTheme(QStringLiteral("view-refresh")));
+    m_actRefresh->setIcon(AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")));
     m_actRefresh->setShortcut(QKeySequence::Refresh);
 
     fileMenu->addSeparator();
@@ -129,36 +172,29 @@ void MainWindow::buildMenus()
 
     QMenu *runMenu = menuBar()->addMenu(tr("&Run"));
     m_actStart = runMenu->addAction(tr("&Start"));
-    m_actStart->setIcon(QIcon::fromTheme(QStringLiteral("media-playback-start")));
+    m_actStart->setIcon(AppIcons::themedOrBundled(QStringLiteral("media-playback-start"), QStringLiteral("start")));
     m_actStop = runMenu->addAction(tr("Sto&p"));
-    m_actStop->setIcon(QIcon::fromTheme(QStringLiteral("media-playback-stop")));
-    m_actAttachXpra = runMenu->addAction(tr("Attach &Display (Xpra)"));
-    m_actAttachXpra->setIcon(QIcon::fromTheme(QStringLiteral("video-display")));
-    m_actDetachXpra = runMenu->addAction(tr("Detach Dis&play"));
-    m_actDetachXpra->setIcon(QIcon::fromTheme(QStringLiteral("window-close")));
+    m_actStop->setIcon(AppIcons::themedOrBundled(QStringLiteral("media-playback-stop"), QStringLiteral("stop")));
     runMenu->addSeparator();
     m_actUnlock = runMenu->addAction(tr("&Unlock Vault"));
-    m_actUnlock->setIcon(QIcon::fromTheme(QStringLiteral("security-medium")));
+    m_actUnlock->setIcon(AppIcons::themedOrBundled(QStringLiteral("security-medium"), QStringLiteral("unlock")));
     m_actLock = runMenu->addAction(tr("&Lock Vault"));
-    m_actLock->setIcon(QIcon::fromTheme(QStringLiteral("security-high")));
-    runMenu->addSeparator();
-    m_actActions = runMenu->addAction(tr("&Actions..."));
-    m_actActions->setIcon(QIcon::fromTheme(QStringLiteral("configure")));
+    m_actLock->setIcon(AppIcons::themedOrBundled(QStringLiteral("security-high"), QStringLiteral("lock")));
 
     QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
     m_actExchange = toolsMenu->addAction(tr("File &Exchange..."));
-    m_actExchange->setIcon(QIcon::fromTheme(QStringLiteral("folder-sync")));
+    m_actExchange->setIcon(AppIcons::themedOrBundled(QStringLiteral("folder-sync"), QStringLiteral("exchange")));
     m_actExchange->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     m_actUsb = toolsMenu->addAction(tr("&USB && Removable Media..."));
-    m_actUsb->setIcon(QIcon::fromTheme(QStringLiteral("drive-removable-media")));
+    m_actUsb->setIcon(AppIcons::themedOrBundled(QStringLiteral("drive-removable-media"), QStringLiteral("usb")));
     m_actUsb->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_U));
     toolsMenu->addSeparator();
     m_actSettings = toolsMenu->addAction(tr("&Settings..."));
-    m_actSettings->setIcon(QIcon::fromTheme(QStringLiteral("preferences-system")));
+    m_actSettings->setIcon(AppIcons::themedOrBundled(QStringLiteral("preferences-system"), QStringLiteral("settings")));
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     m_actAbout = helpMenu->addAction(tr("&About ParishBSD"));
-    m_actAbout->setIcon(QIcon::fromTheme(QStringLiteral("help-about")));
+    m_actAbout->setIcon(AppIcons::themedOrBundled(QStringLiteral("help-about"), QStringLiteral("about")));
 
     connect(quit, &QAction::triggered, this, &QWidget::close);
     connect(m_actAbout, &QAction::triggered, this, &MainWindow::onAbout);
@@ -172,12 +208,9 @@ void MainWindow::buildMenus()
     connect(m_actUnlock, &QAction::triggered, this, &MainWindow::onUnlock);
     connect(m_actLock, &QAction::triggered, this, &MainWindow::onLock);
     connect(m_actConsole, &QAction::triggered, this, &MainWindow::onConsole);
-    connect(m_actAttachXpra, &QAction::triggered, this, &MainWindow::onAttachXpra);
-    connect(m_actDetachXpra, &QAction::triggered, this, &MainWindow::onDetachXpra);
     connect(m_actApps, &QAction::triggered, this, &MainWindow::onApplications);
     connect(m_actExchange, &QAction::triggered, this, &MainWindow::onExchange);
     connect(m_actUsb, &QAction::triggered, this, &MainWindow::onUsb);
-    connect(m_actActions, &QAction::triggered, this, &MainWindow::onActions);
 }
 
 void MainWindow::buildToolBar()
@@ -187,35 +220,20 @@ void MainWindow::buildToolBar()
     tb->setMovable(false);
     tb->setIconSize(QSize(20, 20));
 
-    auto add = [tb](QAction *a, const QString &iconName) {
-        const QIcon icon = QIcon::fromTheme(iconName);
-        if (!icon.isNull()) a->setIcon(icon);
-        tb->addAction(a);
-    };
+    // Keep the toolbar short and focused on high-frequency lifecycle actions;
+    // detailed compartment controls live in the Inspector pane and right-click menu.
+    tb->addAction(m_actCreate);
+    tb->addAction(m_actNewTemplate);
 
-    add(m_actCreate, QStringLiteral("list-add"));
+    m_tbSepLifecycle = tb->addSeparator();
+    tb->addAction(m_actStart);
+    tb->addAction(m_actStop);
+    tb->addAction(m_actUnlock);
+    tb->addAction(m_actLock);
+    tb->addAction(m_actDestroy);
 
-    m_actCreateFromTemplate = new QAction(tr("Create From Template"), this);
-    add(m_actCreateFromTemplate, QStringLiteral("document-new"));
-    connect(m_actCreateFromTemplate, &QAction::triggered, this, &MainWindow::onCreate);
-
-    add(m_actNewTemplate, QStringLiteral("list-add"));
-    add(m_actDestroy, QStringLiteral("edit-delete"));
     tb->addSeparator();
-    add(m_actStart, QStringLiteral("media-playback-start"));
-    add(m_actStop, QStringLiteral("media-playback-stop"));
-    add(m_actAttachXpra, QStringLiteral("video-display"));
-    tb->addSeparator();
-    add(m_actUnlock, QStringLiteral("security-medium"));
-    add(m_actLock, QStringLiteral("security-high"));
-    tb->addSeparator();
-    add(m_actApps, QStringLiteral("system-software-install"));
-    add(m_actConsole, QStringLiteral("utilities-terminal"));
-    add(m_actExchange, QStringLiteral("folder-sync"));
-    add(m_actUsb, QStringLiteral("drive-removable-media"));
-    add(m_actActions, QStringLiteral("configure"));
-    tb->addSeparator();
-    add(m_actRefresh, QStringLiteral("view-refresh"));
+    tb->addAction(m_actRefresh);
 }
 
 void MainWindow::buildCentralWidget()
@@ -245,17 +263,18 @@ void MainWindow::buildCentralWidget()
     m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_tree->setAlternatingRowColors(true);
     m_tree->setUniformRowHeights(true);
+    m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setAccessibleName(tr("Compartments and Templates tree"));
 
     QHeaderView *h = m_tree->header();
     h->setStretchLastSection(true);
-    h->resizeSection(TreeAssemblyModel::NameColumn, 210);
-    h->resizeSection(TreeAssemblyModel::SourceColumn, 150);
-    h->resizeSection(TreeAssemblyModel::StateColumn, 130);
-    h->resizeSection(TreeAssemblyModel::RiskColumn, 140);
+    h->resizeSection(TreeAssemblyModel::NameColumn, 190);
+    h->resizeSection(TreeAssemblyModel::SourceColumn, 130);
+    h->resizeSection(TreeAssemblyModel::StateColumn, 115);
+    h->resizeSection(TreeAssemblyModel::RiskColumn, 130);
 
     auto *inspectorContainer = new QWidget(splitter);
-    inspectorContainer->setMinimumWidth(300);
+    inspectorContainer->setMinimumWidth(290);
     buildInspectorPane(inspectorContainer);
 
     splitter->addWidget(m_tree);
@@ -271,11 +290,32 @@ void MainWindow::buildCentralWidget()
         m_templateModel->setFilter(t);
     });
 
+    connect(m_tree, &QTreeView::expanded, this, [this](const QModelIndex &idx) {
+        if (!idx.parent().isValid() && idx.row() >= 0 && idx.row() < 3) {
+            m_groupExpanded[idx.row()] = true;
+        }
+    });
+    connect(m_tree, &QTreeView::collapsed, this, [this](const QModelIndex &idx) {
+        if (!idx.parent().isValid() && idx.row() >= 0 && idx.row() < 3) {
+            m_groupExpanded[idx.row()] = false;
+        }
+    });
+
     connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, &MainWindow::onSelectionChanged);
+    connect(m_tree, &QTreeView::customContextMenuRequested,
+            this, &MainWindow::onTreeContextMenu);
     connect(m_tree, &QTreeView::doubleClicked, this, [this]() {
-        if (selectedContainer().isValid()) onActions();
-        else if (isTemplateSelected()) onCreate();
+        const ContainerInfo c = selectedContainer();
+        if (c.isValid()) {
+            if (c.isVault && c.isLocked()) {
+                onUnlock();
+            } else {
+                onApplications();
+            }
+        } else if (isTemplateSelected()) {
+            onCreate();
+        }
     });
 }
 
@@ -292,10 +332,10 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     auto *welcomeBox = new QGroupBox(tr("Getting Started"), emptyPage);
     auto *welcomeLay = new QVBoxLayout(welcomeBox);
     auto *welcomeLbl = new QLabel(
-        tr("Select a compartment or template on the left to inspect its state, "
-           "manage installed applications, set Qubes-style risk levels, or open a console.\n\n"
-           "Tip: Use 'New Template (Wizard)...' to build custom compartments with "
-           "graphical display (T-xpra), Linux, or Windows (Wine) support."),
+        tr("Select a compartment or template on the left to inspect its status, "
+           "install or launch applications, manage sound and safety levels, or open a console.\n\n"
+           "Tip: Right-click any item for quick actions, or choose 'New Template...' "
+           "to create a custom setup for desktop, Linux, or Windows apps."),
         welcomeBox);
     welcomeLbl->setWordWrap(true);
     welcomeLay->addWidget(welcomeLbl);
@@ -306,7 +346,7 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     // Page 1: Compartment Inspector
     auto *compPage = new QWidget(parent);
     auto *compLay = new QVBoxLayout(compPage);
-    auto *compBox = new QGroupBox(tr("Compartment Inspector"), compPage);
+    auto *compBox = new QGroupBox(tr("Selected Compartment"), compPage);
     auto *compBoxLay = new QVBoxLayout(compBox);
 
     m_inspName = new QLabel(compBox);
@@ -318,7 +358,7 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     compBoxLay->addWidget(m_inspName);
 
     m_inspGuardianBanner = new QLabel(
-        tr("CONTAINED BY GUARDIAN: Investigate the incident before restoring or destroying."),
+        tr("BLOCKED FOR SAFETY (GUARDIAN): Investigate this compartment before restoring or destroying it."),
         compBox);
     m_inspGuardianBanner->setWordWrap(true);
     m_inspGuardianBanner->setStyleSheet(QStringLiteral(
@@ -337,7 +377,7 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     m_inspRiskCombo->addItem(tr("Medium (Work - Blue)"), QStringLiteral("medium"));
     m_inspRiskCombo->addItem(tr("High (Untrusted - Red)"), QStringLiteral("high"));
     m_inspRiskCombo->addItem(tr("Critical (Vault - Purple)"), QStringLiteral("critical"));
-    m_inspRiskCombo->setAccessibleName(tr("Compartment visual risk level"));
+    m_inspRiskCombo->setAccessibleName(tr("Compartment color and risk level"));
     auto *riskLbl = new QLabel(tr("&Risk Level:"), compBox);
     riskLbl->setBuddy(m_inspRiskCombo);
     riskRow->addRow(riskLbl, m_inspRiskCombo);
@@ -346,14 +386,14 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     connect(m_inspRiskCombo, QOverload<int>::of(&QComboBox::activated),
             this, &MainWindow::onRiskChanged);
 
-    m_inspAudioBox = new QGroupBox(tr("Audio"), compBox);
+    m_inspAudioBox = new QGroupBox(tr("Sound & Microphone"), compBox);
     auto *audioBoxLay = new QVBoxLayout(m_inspAudioBox);
     audioBoxLay->setContentsMargins(8, 6, 8, 6);
-    m_inspAudioOutCheck = new QCheckBox(tr("Audio &Output (Playback)"), m_inspAudioBox);
-    m_inspAudioOutCheck->setAccessibleName(tr("Enable compartment audio output"));
-    m_inspAudioInCheck = new QCheckBox(tr("Audio &Input (Microphone)"), m_inspAudioBox);
-    m_inspAudioInCheck->setAccessibleName(tr("Enable compartment audio input"));
-    m_inspVaultAudioNote = new QLabel(tr("Vaults exclude audio devices for security."), m_inspAudioBox);
+    m_inspAudioOutCheck = new QCheckBox(tr("Allow Sound &Output (Speakers / Headphones)"), m_inspAudioBox);
+    m_inspAudioOutCheck->setAccessibleName(tr("Allow sound output for this compartment"));
+    m_inspAudioInCheck = new QCheckBox(tr("Allow &Microphone Input"), m_inspAudioBox);
+    m_inspAudioInCheck->setAccessibleName(tr("Allow microphone access for this compartment"));
+    m_inspVaultAudioNote = new QLabel(tr("Sound and microphone are turned off for Vaults to protect sensitive data."), m_inspAudioBox);
     m_inspVaultAudioNote->setWordWrap(true);
     m_inspVaultAudioNote->setVisible(false);
     audioBoxLay->addWidget(m_inspAudioOutCheck);
@@ -366,32 +406,33 @@ void MainWindow::buildInspectorPane(QWidget *parent)
 
     m_inspStartStopBtn = new QPushButton(tr("Start"), compBox);
     m_inspUnlockLockBtn = new QPushButton(tr("Unlock Vault"), compBox);
-    m_inspConsoleBtn = new QPushButton(tr("Open Console"), compBox);
+    m_inspConsoleBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("utilities-terminal"), QStringLiteral("console")),
+        tr("Open Console"), compBox);
 
-    auto *xpraRow = new QHBoxLayout();
-    m_inspAttachXpraBtn = new QPushButton(tr("Attach Display"), compBox);
-    m_inspDetachXpraBtn = new QPushButton(tr("Detach Display"), compBox);
-    xpraRow->addWidget(m_inspAttachXpraBtn);
-    xpraRow->addWidget(m_inspDetachXpraBtn);
-
-    m_inspAppsBtn = new QPushButton(tr("Applications && Packages..."), compBox);
+    m_inspAppsBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("system-software-install"), QStringLiteral("apps")),
+        tr("Applications && Packages..."), compBox);
 
     auto *ioRow = new QHBoxLayout();
-    m_inspExchangeBtn = new QPushButton(tr("File Exchange..."), compBox);
-    m_inspUsbBtn = new QPushButton(tr("USB && Media..."), compBox);
+    m_inspExchangeBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("folder-sync"), QStringLiteral("exchange")),
+        tr("File Exchange..."), compBox);
+    m_inspUsbBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("drive-removable-media"), QStringLiteral("usb")),
+        tr("USB && Media..."), compBox);
     ioRow->addWidget(m_inspExchangeBtn);
     ioRow->addWidget(m_inspUsbBtn);
 
-    m_inspActionsBtn = new QPushButton(tr("More Actions..."), compBox);
-    m_inspDestroyBtn = new QPushButton(tr("Destroy..."), compBox);
+    m_inspDestroyBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("edit-delete"), QStringLiteral("destroy")),
+        tr("Destroy..."), compBox);
 
     compBoxLay->addWidget(m_inspStartStopBtn);
     compBoxLay->addWidget(m_inspUnlockLockBtn);
-    compBoxLay->addWidget(m_inspConsoleBtn);
-    compBoxLay->addLayout(xpraRow);
     compBoxLay->addWidget(m_inspAppsBtn);
+    compBoxLay->addWidget(m_inspConsoleBtn);
     compBoxLay->addLayout(ioRow);
-    compBoxLay->addWidget(m_inspActionsBtn);
     compBoxLay->addSpacing(6);
     compBoxLay->addWidget(m_inspDestroyBtn);
     compBoxLay->addStretch();
@@ -409,12 +450,9 @@ void MainWindow::buildInspectorPane(QWidget *parent)
         else onLock();
     });
     connect(m_inspConsoleBtn, &QPushButton::clicked, this, &MainWindow::onConsole);
-    connect(m_inspAttachXpraBtn, &QPushButton::clicked, this, &MainWindow::onAttachXpra);
-    connect(m_inspDetachXpraBtn, &QPushButton::clicked, this, &MainWindow::onDetachXpra);
     connect(m_inspAppsBtn, &QPushButton::clicked, this, &MainWindow::onApplications);
     connect(m_inspExchangeBtn, &QPushButton::clicked, this, &MainWindow::onExchange);
     connect(m_inspUsbBtn, &QPushButton::clicked, this, &MainWindow::onUsb);
-    connect(m_inspActionsBtn, &QPushButton::clicked, this, &MainWindow::onActions);
     connect(m_inspDestroyBtn, &QPushButton::clicked, this, &MainWindow::onDestroy);
 
     compLay->addWidget(compBox);
@@ -423,7 +461,7 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     // Page 2: Template Inspector
     auto *tmplPage = new QWidget(parent);
     auto *tmplLay = new QVBoxLayout(tmplPage);
-    auto *tmplBox = new QGroupBox(tr("Template Inspector"), tmplPage);
+    auto *tmplBox = new QGroupBox(tr("Selected Template"), tmplPage);
     auto *tmplBoxLay = new QVBoxLayout(tmplBox);
 
     m_tmplName = new QLabel(tmplBox);
@@ -435,8 +473,12 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     m_tmplDetails->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     tmplBoxLay->addWidget(m_tmplDetails);
 
-    m_tmplCreateBtn = new QPushButton(tr("Create Compartment from Template..."), tmplBox);
-    m_tmplUpdateBtn = new QPushButton(tr("Update Template Packages"), tmplBox);
+    m_tmplCreateBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("list-add"), QStringLiteral("new-compartment")),
+        tr("Create Compartment from Template..."), tmplBox);
+    m_tmplUpdateBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")),
+        tr("Update Template Packages"), tmplBox);
     tmplBoxLay->addWidget(m_tmplCreateBtn);
     tmplBoxLay->addWidget(m_tmplUpdateBtn);
     tmplBoxLay->addStretch();
@@ -478,8 +520,9 @@ bool MainWindow::isTemplateSelected() const
 void MainWindow::updateActionStates()
 {
     const ContainerInfo c = selectedContainer();
+    const TemplateInfo t = selectedTemplate();
     const bool haveContainer = c.isValid();
-    const bool haveTemplate = isTemplateSelected();
+    const bool haveReadyTemplate = t.isValid() && t.isReady();
 
     const bool running = haveContainer && c.isRunning();
     const bool locked = haveContainer && c.isVault && c.isLocked();
@@ -487,25 +530,21 @@ void MainWindow::updateActionStates()
 
     const bool isApp = haveContainer && !c.isVault;
     const bool isVault = haveContainer && c.isVault;
-    const bool hasGui = isApp && c.supportsGui();
 
-    m_actStart->setVisible(isApp);
-    m_actStop->setVisible(isApp);
-    m_actAttachXpra->setVisible(hasGui);
-    m_actDetachXpra->setVisible(hasGui);
-    m_actConsole->setVisible(haveContainer);
-    m_actUnlock->setVisible(isVault);
-    m_actLock->setVisible(isVault);
+    // Single create button adjusts label cleanly when a ready template is selected
+    m_actCreate->setText(haveReadyTemplate ? tr("Create from Template") : tr("New Compartment"));
 
-    m_actApps->setVisible(haveContainer);
+    m_tbSepLifecycle->setVisible(haveContainer);
+    m_actStart->setVisible(isApp && !running);
+    m_actStop->setVisible(isApp && running);
+    m_actUnlock->setVisible(isVault && locked);
+    m_actLock->setVisible(isVault && !locked);
     m_actDestroy->setVisible(haveContainer);
-    m_actActions->setVisible(haveContainer);
-    m_actCreateFromTemplate->setVisible(haveTemplate);
+    m_actConsole->setVisible(haveContainer);
+    m_actApps->setVisible(haveContainer);
 
     m_actStart->setEnabled(haveContainer && !running && !contained);
     m_actStop->setEnabled(haveContainer && running && !contained);
-    m_actAttachXpra->setEnabled(hasGui && running && !contained);
-    m_actDetachXpra->setEnabled(hasGui && running && !contained);
     m_actUnlock->setEnabled(haveContainer && locked && !contained);
     m_actLock->setEnabled(haveContainer && !locked && !contained);
     m_actConsole->setEnabled(haveContainer && running && !contained);
@@ -513,7 +552,6 @@ void MainWindow::updateActionStates()
     m_actExchange->setEnabled(!contained);
     m_actUsb->setEnabled(!contained);
     m_actDestroy->setEnabled(haveContainer && !contained);
-    m_actActions->setEnabled(haveContainer);
 }
 
 void MainWindow::updateInspector()
@@ -524,12 +562,10 @@ void MainWindow::updateInspector()
         m_inspName->setText(c.name);
         m_inspGuardianBanner->setVisible(c.isContained());
 
-        const QString caps = c.capabilities.isEmpty()
-            ? tr("Standard")
-            : c.capabilities.join(QStringLiteral(", "));
         m_inspDetails->setText(
-            tr("Kind: %1\nState: %2\nTemplate: %3\nCapabilities: %4\nDisk usage: %5")
-                .arg(c.kind, c.humanState(), c.sourceTemplate, caps, formatDiskUsage(c.diskUsage)));
+            tr("Type: %1\nStatus: %2\nTemplate: %3\nFeatures: %4\nSpace used: %5")
+                .arg(c.kind, c.humanState(), c.sourceTemplate,
+                     c.humanCapabilities(), formatDiskUsage(c.diskUsage)));
 
         {
             const QSignalBlocker b(m_inspRiskCombo);
@@ -540,7 +576,6 @@ void MainWindow::updateInspector()
 
         const bool running = c.isRunning();
         const bool contained = c.isContained();
-        const bool showGui = !c.isVault && c.supportsGui();
 
         m_inspAudioOutCheck->setVisible(!c.isVault);
         m_inspAudioInCheck->setVisible(!c.isVault);
@@ -556,21 +591,22 @@ void MainWindow::updateInspector()
 
         m_inspStartStopBtn->setVisible(!c.isVault);
         m_inspStartStopBtn->setText(running ? tr("Stop Compartment") : tr("Start Compartment"));
+        m_inspStartStopBtn->setIcon(running
+            ? AppIcons::themedOrBundled(QStringLiteral("media-playback-stop"), QStringLiteral("stop"))
+            : AppIcons::themedOrBundled(QStringLiteral("media-playback-start"), QStringLiteral("start")));
         m_inspStartStopBtn->setEnabled(!contained);
 
         m_inspUnlockLockBtn->setVisible(c.isVault);
         m_inspUnlockLockBtn->setText(c.isLocked() ? tr("Unlock Vault") : tr("Lock Vault"));
+        m_inspUnlockLockBtn->setIcon(c.isLocked()
+            ? AppIcons::themedOrBundled(QStringLiteral("security-medium"), QStringLiteral("unlock"))
+            : AppIcons::themedOrBundled(QStringLiteral("security-high"), QStringLiteral("lock")));
         m_inspUnlockLockBtn->setEnabled(!contained);
 
         m_inspConsoleBtn->setEnabled(running && !contained);
-        m_inspAttachXpraBtn->setVisible(showGui);
-        m_inspDetachXpraBtn->setVisible(showGui);
-        m_inspAttachXpraBtn->setEnabled(showGui && running && !contained);
-        m_inspDetachXpraBtn->setEnabled(showGui && running && !contained);
         m_inspAppsBtn->setEnabled(true);
         m_inspExchangeBtn->setEnabled(!contained);
         m_inspUsbBtn->setEnabled(!contained);
-        m_inspActionsBtn->setEnabled(true);
         m_inspDestroyBtn->setEnabled(!contained);
         return;
     }
@@ -580,7 +616,7 @@ void MainWindow::updateInspector()
         m_inspectorStack->setCurrentIndex(2);
         m_tmplName->setText(t.name);
         m_tmplDetails->setText(
-            tr("Origin: %1\nKind: %2\nState: %3\nBase snapshot: %4\nBuild size: %5 MiB\n\n%6")
+            tr("Origin: %1\nType: %2\nStatus: %3\nBase snapshot: %4\nBuild size: %5 MiB\n\n%6")
                 .arg(t.shipped ? tr("Shipped") : tr("Custom"),
                      t.kind,
                      t.humanState(),
@@ -593,6 +629,62 @@ void MainWindow::updateInspector()
     }
 
     m_inspectorStack->setCurrentIndex(0);
+}
+
+void MainWindow::onTreeContextMenu(const QPoint &pos)
+{
+    const QModelIndex idx = m_tree->indexAt(pos);
+    if (idx.isValid()) {
+        m_tree->setCurrentIndex(idx);
+    }
+
+    QMenu menu(this);
+    const ContainerInfo c = idx.isValid() ? m_treeModel->getContainer(idx) : ContainerInfo();
+    const TemplateInfo t = idx.isValid() ? m_treeModel->getTemplate(idx) : TemplateInfo();
+
+    if (c.isValid()) {
+        if (c.isContained()) {
+            QAction *hdr = menu.addAction(tr("Blocked by Guardian"));
+            hdr->setEnabled(false);
+            menu.addSeparator();
+            menu.addAction(m_actApps);
+        } else {
+            if (c.isVault) {
+                menu.addAction(c.isLocked() ? m_actUnlock : m_actLock);
+            } else {
+                menu.addAction(c.isRunning() ? m_actStop : m_actStart);
+            }
+            menu.addAction(m_actApps);
+            menu.addAction(m_actConsole);
+            menu.addSeparator();
+            menu.addAction(m_actExchange);
+            menu.addAction(m_actUsb);
+            menu.addSeparator();
+            menu.addAction(m_actDestroy);
+        }
+    } else if (t.isValid()) {
+        QAction *createAct = menu.addAction(
+            AppIcons::themedOrBundled(QStringLiteral("list-add"), QStringLiteral("new-compartment")),
+            tr("Create Compartment from Template..."), this, &MainWindow::onCreate);
+        createAct->setEnabled(t.isReady());
+        QAction *updAct = menu.addAction(
+            AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")),
+            tr("Update Template Packages"), this, &MainWindow::onUpdateTemplate);
+        updAct->setEnabled(t.isReady());
+    } else {
+        if (idx.isValid() && !idx.parent().isValid()) {
+            const bool expanded = m_tree->isExpanded(idx);
+            menu.addAction(expanded ? tr("Collapse Group") : tr("Expand Group"), this, [this, idx, expanded]() {
+                m_tree->setExpanded(idx, !expanded);
+            });
+            menu.addSeparator();
+        }
+        menu.addAction(m_actCreate);
+        menu.addAction(m_actNewTemplate);
+        menu.addAction(m_actRefresh);
+    }
+
+    menu.exec(m_tree->viewport()->mapToGlobal(pos));
 }
 
 void MainWindow::onSelectionChanged()
@@ -613,7 +705,9 @@ void MainWindow::onRefresh()
 {
     m_model->refresh();
     m_templateModel->refresh();
-    if (m_statusLabel) m_statusLabel->setText(tr("Refreshing..."));
+    if (m_statusLabel && !m_backend->isBusy()) {
+        m_statusLabel->setText(tr("Refreshing..."));
+    }
 }
 
 void MainWindow::onCreate()
@@ -621,8 +715,8 @@ void MainWindow::onCreate()
     const QStringList templates = m_templateModel->readyTemplateNames();
 
     if (templates.isEmpty()) {
-        QMessageBox::warning(this, tr("No ready templates"),
-            tr("No ready templates found.\nUse 'Compartment -> New Template (Wizard)...' to build one first."));
+        QMessageBox::warning(this, tr("No Ready Templates"),
+            tr("No ready templates found.\nUse 'New Template...' to build a template first."));
         return;
     }
 
@@ -662,14 +756,14 @@ void MainWindow::onCreate()
 
     const QRegularExpression re(QStringLiteral("^[a-z0-9-]{1,31}$"));
     if (!re.match(name).hasMatch()) {
-        QMessageBox::warning(this, tr("Invalid name"),
+        QMessageBox::warning(this, tr("Invalid Name"),
             tr("Name may contain only lowercase letters, digits, and hyphens (max 31 characters)."));
         return;
     }
     if (name.startsWith(QLatin1Char('-')) || name.endsWith(QLatin1Char('-')) ||
         name.contains(QStringLiteral("--"))) {
-        QMessageBox::warning(this, tr("Invalid name"),
-            tr("Name cannot start/end with a hyphen or contain consecutive hyphens."));
+        QMessageBox::warning(this, tr("Invalid Name"),
+            tr("Name cannot start or end with a hyphen or contain consecutive hyphens."));
         return;
     }
 
@@ -690,7 +784,7 @@ void MainWindow::onUpdateTemplate()
     const TemplateInfo t = selectedTemplate();
     if (!t.isValid()) return;
     if (QMessageBox::question(this, tr("Update Template"),
-        tr("Update packages inside template '%1'?\n\nExisting compartments cloned from it remain unchanged.").arg(t.name)) != QMessageBox::Yes) {
+        tr("Update packages inside template '%1'?\n\nExisting compartments created from it remain unchanged.").arg(t.name)) != QMessageBox::Yes) {
         return;
     }
     m_backend->updateTemplateAsync(t.name, t.shipped);
@@ -706,17 +800,17 @@ void MainWindow::onDestroy()
 
     if (c.isContained()) {
         QMessageBox::critical(this, tr("Cannot Destroy"),
-            tr("This compartment is CONTAINED by Guardian. Investigate the incident first."));
+            tr("This compartment is blocked by Guardian. Investigate the incident first."));
         return;
     }
 
     bool ok = false;
     const QString token = QInputDialog::getText(this, tr("Confirm Destruction"),
-        tr("This will destroy compartment '%1'.\nType the name to confirm:").arg(c.name),
+        tr("This will permanently delete compartment '%1' and all files inside it.\nType the compartment name to confirm:").arg(c.name),
         QLineEdit::Normal, QString(), &ok);
 
     if (!ok || token != c.name) {
-        if (ok) QMessageBox::warning(this, tr("Aborted"), tr("Confirmation token did not match."));
+        if (ok) QMessageBox::warning(this, tr("Aborted"), tr("The typed name did not match."));
         return;
     }
 
@@ -737,8 +831,8 @@ void MainWindow::onStop()
 {
     const ContainerInfo c = selectedContainer();
     if (!c.isValid()) return;
-    if (QMessageBox::question(this, tr("Stop container"),
-        tr("Stop '%1'?\n\nAny unsaved work will be lost.").arg(c.name)) != QMessageBox::Yes) return;
+    if (QMessageBox::question(this, tr("Stop Compartment"),
+        tr("Stop '%1'?\n\nAny unsaved work inside open apps will be lost.").arg(c.name)) != QMessageBox::Yes) return;
     m_backend->stopContainer(c.name);
 }
 
@@ -752,7 +846,7 @@ void MainWindow::onLock()
 {
     const ContainerInfo c = selectedContainer();
     if (!c.isValid()) return;
-    if (QMessageBox::question(this, tr("Lock vault"),
+    if (QMessageBox::question(this, tr("Lock Vault"),
         tr("Lock vault '%1'?").arg(c.name)) != QMessageBox::Yes) return;
     m_backend->lockVault(c.name);
 }
@@ -761,22 +855,6 @@ void MainWindow::onConsole()
 {
     const ContainerInfo c = selectedContainer();
     if (c.isValid()) m_backend->openConsole(c.name);
-}
-
-void MainWindow::onAttachXpra()
-{
-    const ContainerInfo c = selectedContainer();
-    if (c.isValid() && !c.isVault && !c.isContained()) {
-        m_backend->attachXpra(c.name);
-    }
-}
-
-void MainWindow::onDetachXpra()
-{
-    const ContainerInfo c = selectedContainer();
-    if (c.isValid() && !c.isVault && !c.isContained()) {
-        m_backend->detachXpra(c.name);
-    }
 }
 
 void MainWindow::onApplications()
@@ -802,16 +880,6 @@ void MainWindow::onUsb()
     const ContainerInfo c = selectedContainer();
     UsbDialog dlg(m_backend, m_model->allContainers(), c.isValid() ? c.name : QString(), this);
     connect(&dlg, &UsbDialog::usbChanged, this, &MainWindow::onRefresh);
-    dlg.exec();
-}
-
-void MainWindow::onActions()
-{
-    const ContainerInfo c = selectedContainer();
-    if (!c.isValid()) return;
-
-    ActionsDialog dlg(m_backend, c, m_model->allContainers(), this);
-    connect(&dlg, &ActionsDialog::containerChanged, this, &MainWindow::onRefresh);
     dlg.exec();
 }
 
@@ -841,7 +909,7 @@ void MainWindow::onSettings()
     auto *form = new QFormLayout(&dlg);
 
     auto *termEdit = new QLineEdit(settings.value(QStringLiteral("terminal/executable")).toString(), &dlg);
-    termEdit->setPlaceholderText(tr("Auto-detect ($TERMINAL, konsole, xfce4-terminal, ...)"));
+    termEdit->setPlaceholderText(tr("Auto-detect (konsole, mate-terminal, xfce4-terminal, ...)"));
     auto *termLabel = new QLabel(tr("Preferred &Terminal:"), &dlg);
     termLabel->setBuddy(termEdit);
 
@@ -871,9 +939,8 @@ void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About ParishBSD Compartment Manager"),
         tr("<b>ParishBSD Compartment Manager</b><br><br>"
-           "A graphical front-end for parishctl(1) managing FreeBSD jail compartments, "
-           "encrypted vaults, applications, and templates.<br><br>"
-           "Part of ParishBSD."));
+           "Manage isolated compartments, encrypted vaults, installed applications, "
+           "and templates on ParishBSD."));
 }
 
 void MainWindow::onOperationStarted(const QString &desc)
@@ -888,7 +955,7 @@ void MainWindow::onOperationFinished(const QString &desc, bool ok, const QString
     }
 
     if (!ok) {
-        QMessageBox::warning(this, tr("Operation failed"), desc + QStringLiteral("\n\n") + err);
+        QMessageBox::warning(this, tr("Operation Failed"), desc + QStringLiteral("\n\n") + err);
     }
 
     onRefresh();
@@ -896,11 +963,11 @@ void MainWindow::onOperationFinished(const QString &desc, bool ok, const QString
 
 void MainWindow::onTerminalLaunched(const QString &desc)
 {
-    if (m_statusLabel) m_statusLabel->setText(tr("%1 - waiting for terminal...").arg(desc));
+    if (m_statusLabel) m_statusLabel->setText(tr("%1 opened in terminal.").arg(desc));
 }
 
 void MainWindow::onTerminalClosed(const QString &desc)
 {
     onRefresh();
-    if (m_statusLabel) m_statusLabel->setText(tr("%1: done.").arg(desc));
+    if (m_statusLabel) m_statusLabel->setText(tr("%1 closed.").arg(desc));
 }
