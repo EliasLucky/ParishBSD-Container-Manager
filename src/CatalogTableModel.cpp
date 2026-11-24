@@ -66,15 +66,15 @@ bool CatalogTableModel::entryCompatible(const CatalogEntry &e, QString *reasonOu
     if (!m_target.isValid()) return true;
 
     if (e.requiresCap == QLatin1String("compat-windows") && !m_target.supportsWindowsCompat()) {
-        if (reasonOut) *reasonOut = tr("Requires Windows compatibility (T-compat-windows)");
+        if (reasonOut) *reasonOut = tr("Needs Windows app support");
         return false;
     }
     if (e.requiresCap == QLatin1String("compat-linux") && !m_target.supportsLinuxCompat()) {
-        if (reasonOut) *reasonOut = tr("Requires Linux compatibility (T-compat-linux)");
+        if (reasonOut) *reasonOut = tr("Needs Linux app support");
         return false;
     }
     if (e.requiresCap == QLatin1String("gui") && !m_target.supportsGui()) {
-        if (reasonOut) *reasonOut = tr("Requires graphical environment (T-xpra)");
+        if (reasonOut) *reasonOut = tr("Needs graphical app support");
         return false;
     }
     return true;
@@ -112,7 +112,11 @@ QVariant CatalogTableModel::data(const QModelIndex &index, int role) const
         case CategoryColumn:    return e.category;
         case RequirementColumn:
             if (!ok) return incompatReason;
-            return (e.requiresCap == QLatin1String("-")) ? tr("Any") : e.requiresCap;
+            if (e.requiresCap == QLatin1String("-")) return tr("Any");
+            if (e.requiresCap == QLatin1String("gui")) return tr("Graphical");
+            if (e.requiresCap == QLatin1String("compat-windows")) return tr("Windows apps");
+            if (e.requiresCap == QLatin1String("compat-linux")) return tr("Linux apps");
+            return e.requiresCap;
         case DescriptionColumn: return e.description;
         }
     }

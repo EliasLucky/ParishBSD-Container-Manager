@@ -60,28 +60,49 @@ QString ContainerInfo::humanState() const {
     return QObject::tr("Unknown");
 }
 
+QString ContainerInfo::humanCapabilities() const {
+    if (capabilities.isEmpty()) {
+        return isVault ? QObject::tr("Encrypted storage") : QObject::tr("Standard apps");
+    }
+    QStringList friendly;
+    for (const QString &cap : capabilities) {
+        if (cap == QLatin1String("gui")) {
+            friendly << QObject::tr("Graphical apps");
+        } else if (cap == QLatin1String("audio")) {
+            friendly << QObject::tr("Sound");
+        } else if (cap == QLatin1String("compat-windows")) {
+            friendly << QObject::tr("Windows apps");
+        } else if (cap == QLatin1String("compat-linux")) {
+            friendly << QObject::tr("Linux apps");
+        } else if (cap == QLatin1String("vault")) {
+            friendly << QObject::tr("Encrypted storage");
+        } else {
+            friendly << cap;
+        }
+    }
+    return friendly.join(QStringLiteral(", "));
+}
+
 QString ContainerInfo::accessibleText() const {
     return QObject::tr("%1, %2, %3, risk level %4")
         .arg(name, kind, humanState(), humanRiskLevel());
 }
 
 QString ContainerInfo::accessibleDescription() const {
-    QString desc = QObject::tr("%1 is a %2 compartment from template %3. State: %4. Risk level: %5.")
+    QString desc = QObject::tr("%1 is a %2 compartment based on template %3. Status: %4. Risk level: %5.")
         .arg(name, kind, sourceTemplate, humanState(), humanRiskLevel());
     if (isVault) {
         desc += QLatin1Char(' ') + (keyState == QLatin1String("locked")
             ? QObject::tr("Vault is locked.")
             : QObject::tr("Vault is unlocked."));
     } else {
-        desc += QLatin1Char(' ') + QObject::tr("Audio output: %1. Audio input: %2.")
+        desc += QLatin1Char(' ') + QObject::tr("Sound output: %1. Microphone: %2.")
             .arg(audioOutput ? QObject::tr("enabled") : QObject::tr("disabled"),
                  audioInput ? QObject::tr("enabled") : QObject::tr("disabled"));
     }
-    if (!capabilities.isEmpty()) {
-        desc += QLatin1Char(' ') + QObject::tr("Capabilities: %1.").arg(capabilities.join(QStringLiteral(", ")));
-    }
+    desc += QLatin1Char(' ') + QObject::tr("Features: %1.").arg(humanCapabilities());
     if (diskUsage > 0) {
-        desc += QLatin1Char(' ') + QObject::tr("Disk usage: %1.").arg(formatDiskUsage(diskUsage));
+        desc += QLatin1Char(' ') + QObject::tr("Space used: %1.").arg(formatDiskUsage(diskUsage));
     }
     return desc;
 }

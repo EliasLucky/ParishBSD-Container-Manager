@@ -31,8 +31,8 @@ UsbDialog::UsbDialog(ContainerBackend *backend,
 
     auto *hdr = new QHBoxLayout();
     auto *descLbl = new QLabel(
-        tr("Attach removable USB drives or optical media into a compartment under /media/<device>. "
-           "Host system and ZFS pool disks are excluded automatically."),
+        tr("Connect removable USB drives or CDs/DVDs to a compartment (under /media/). "
+           "Your main system disks are automatically protected and hidden."),
         this);
     descLbl->setWordWrap(true);
     m_refreshBtn = new QPushButton(tr("Refresh Drives"), this);
@@ -79,7 +79,7 @@ UsbDialog::UsbDialog(ContainerBackend *backend,
     root->addWidget(optsBox);
 
     m_policyNote = new QLabel(
-        tr("All removable media mounts enforce nosuid, noexec, and nodev even when Read-Write is granted."),
+        tr("For safety, programs cannot be run directly from attached removable drives, even when Read-Write access is enabled."),
         this);
     m_policyNote->setWordWrap(true);
     root->addWidget(m_policyNote);

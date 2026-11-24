@@ -53,6 +53,7 @@ struct ContainerInfo {
     QColor riskColor() const;
 
     QString humanState() const;
+    QString humanCapabilities() const;
     QString accessibleText() const;
     QString accessibleDescription() const;
 };

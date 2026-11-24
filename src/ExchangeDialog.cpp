@@ -37,9 +37,9 @@ ExchangeDialog::ExchangeDialog(ContainerBackend *backend,
     root->setSpacing(10);
 
     auto *intro = new QLabel(
-        tr("Transfer files securely through the host-brokered /exchange staging area. "
-           "Direct compartment-to-compartment mounts never occur, symlinks and special device "
-           "files are rejected, and setuid/setgid permissions are stripped automatically."),
+        tr("Transfer files safely between compartments, or between your desktop and a compartment. "
+           "Direct shared folders between compartments are never used, special links are blocked, "
+           "and unsafe file permissions are removed automatically."),
         this);
     intro->setWordWrap(true);
     root->addWidget(intro);
@@ -128,7 +128,7 @@ ExchangeDialog::ExchangeDialog(ContainerBackend *backend,
     root->addWidget(m_consentCheck);
 
     m_sanitizeCheck = new QCheckBox(
-        tr("Strip metadata & re-encode raster images (.png / .jpg) when importing to Host Quarantine"),
+        tr("Clean and re-save images (.png / .jpg) before placing them in Desktop Quarantine"),
         this);
     m_sanitizeCheck->setChecked(true);
     m_sanitizeCheck->setVisible(false);
@@ -317,7 +317,7 @@ void ExchangeDialog::updateRiskBanner()
         needsConsent = true;
         criticalStyle = true;
         warnings << tr("VAULT EXPORT WARNING: \"%1\" is an encrypted Vault. Exporting files "
-                       "removes ZFS encryption protection from this copy.")
+                       "creates an unencrypted copy outside the Vault.")
                         .arg(srcInfo.name);
         if (srcInfo.isLocked()) {
             warnings << tr("Vault \"%1\" is currently locked. Unlock it first.").arg(srcInfo.name);
@@ -327,10 +327,10 @@ void ExchangeDialog::updateRiskBanner()
     if (toHost) {
         needsConsent = true;
         criticalStyle = true;
-        warnings << tr("HOST IMPORT WARNING: Files originating from a compartment (such as PNG images, "
-                       "PDFs, or archives) may contain malicious payloads targeting host viewers or "
-                       "thumbnailers. Prefer transferring to another viewer compartment instead. "
-                       "Host imports are placed read-only (0444) inside ~/ParishBSD-Quarantine/.");
+        warnings << tr("DESKTOP IMPORT WARNING: Files from a compartment (such as images, "
+                       "PDFs, or archives) may contain hidden threats targeting viewers on your "
+                       "main desktop. It is safer to send files to another compartment instead. "
+                       "Imported files are placed read-only inside ~/ParishBSD-Quarantine/.");
     }
 
     if (!fromHost && !toHost &&
