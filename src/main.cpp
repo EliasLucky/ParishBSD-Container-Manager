@@ -2,6 +2,7 @@
 #include <QLocale>
 #include <QTranslator>
 
+#include "AppIcons.h"
 #include "MainWindow.h"
 
 static void setApplicationMetadata()
@@ -11,6 +12,7 @@ static void setApplicationMetadata()
     QApplication::setOrganizationName(QStringLiteral("ParishBSD"));
     QApplication::setOrganizationDomain(QStringLiteral("parishbsd.org"));
     QApplication::setApplicationVersion(QStringLiteral("1.2.0"));
+    QApplication::setWindowIcon(AppIcons::appWindowIcon());
 }
 
 static void loadTranslations(QApplication &app)

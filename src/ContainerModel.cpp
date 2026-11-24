@@ -1,4 +1,5 @@
 #include "ContainerModel.h"
+#include "AppIcons.h"
 #include "ContainerBackend.h"
 #include <QColor>
 #include <QIcon>
@@ -48,12 +49,14 @@ int ContainerModel::columnCount(const QModelIndex &parent) const
 QIcon ContainerModel::iconFor(const ContainerInfo &c) const
 {
     if (c.isVault) {
-        return QIcon::fromTheme(c.isLocked()
-            ? QStringLiteral("parish-container-vault-locked")
-            : QStringLiteral("parish-container-vault-unlocked"));
+        return c.isLocked()
+            ? AppIcons::themedOrBundled(QStringLiteral("parish-container-vault-locked"), QStringLiteral("container-vault-locked"))
+            : AppIcons::themedOrBundled(QStringLiteral("parish-container-vault-unlocked"), QStringLiteral("container-vault-unlocked"));
     }
-    if (c.isCompatibility) return QIcon::fromTheme(QStringLiteral("parish-container-compat"));
-    return QIcon::fromTheme(QStringLiteral("parish-container-app"));
+    if (c.isCompatibility) {
+        return AppIcons::themedOrBundled(QStringLiteral("parish-container-compat"), QStringLiteral("container-compat"));
+    }
+    return AppIcons::themedOrBundled(QStringLiteral("parish-container-app"), QStringLiteral("container-app"));
 }
 
 QVariant ContainerModel::data(const QModelIndex &index, int role) const

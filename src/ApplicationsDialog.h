@@ -35,6 +35,8 @@ private slots:
     void onInstallCatalog();
     void onInstallFromFile();
     void onLaunchSelected();
+    void onAddMenuShortcut();
+    void onAddDesktopShortcut();
     void onOperationFinished(const QString &desc, bool ok, const QString &err);
 
 private:
@@ -57,6 +59,8 @@ private:
     QPushButton *m_updateBtn = nullptr;
     QPushButton *m_removeBtn = nullptr;
     QPushButton *m_launchBtn = nullptr;
+    QPushButton *m_addToMenuBtn = nullptr;
+    QPushButton *m_addToDesktopBtn = nullptr;
     QLabel *m_installedSummary = nullptr;
 
     QLineEdit *m_catalogSearch = nullptr;

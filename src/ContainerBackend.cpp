@@ -4,8 +4,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QProcess>
 #include <QRegularExpression>
+#include <QTimer>
 #include <memory>
 
 ContainerBackend::ContainerBackend(QObject *parent)
@@ -35,6 +35,27 @@ bool ContainerBackend::isValidRiskLevel(const QString &risk)
            risk == QLatin1String("medium") ||
            risk == QLatin1String("high") ||
            risk == QLatin1String("critical");
+}
+
+QString ContainerBackend::formatProcessFailure(int exitCode,
+                                               QProcess::ExitStatus status,
+                                               const QString &stderrText)
+{
+    const QString trimmed = stderrText.trimmed();
+    if (status == QProcess::CrashExit ||
+        trimmed.contains(QStringLiteral("pam_conversation_function")) ||
+        trimmed.contains(QStringLiteral("pkexec.c:"))) {
+        return tr("Desktop authentication service (polkit) stopped unexpectedly.\n\n"
+                  "Ensure a graphical polkit agent (such as KDE Plasma's polkit agent) is "
+                  "running inside an active desktop session.");
+    }
+    if (exitCode == 126 || trimmed.contains(QStringLiteral("Not authorized"), Qt::CaseInsensitive)) {
+        return tr("Authentication was cancelled or denied.");
+    }
+    if (!trimmed.isEmpty()) {
+        return trimmed;
+    }
+    return tr("Command failed (exit code %1).").arg(exitCode);
 }
 
 void ContainerBackend::enqueueTask(const PendingTask &task)
@@ -89,9 +110,6 @@ void ContainerBackend::pumpQueue()
     case PendingTask::Kind::StreamingAction:
         startStreamingTask(m_currentTask);
         break;
-    case PendingTask::Kind::TerminalAction:
-        startTerminalTask(m_currentTask);
-        break;
     }
 }
 
@@ -113,10 +131,41 @@ void ContainerBackend::startPollTask(const PendingTask &task)
     proc->setArguments(task.args);
     auto completed = std::make_shared<bool>(false);
 
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, proc, task, completed](int exitCode, QProcess::ExitStatus status) {
+    auto emitPollError = [this, task](const QString &errMsg) {
+        if (task.kind == PendingTask::Kind::PollContainers) {
+            emit containersReady({}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollTemplates) {
+            emit templatesReady({}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollPackages) {
+            emit packagesReady(task.targetJail, {}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollExchangeFiles) {
+            emit exchangeFilesReady(task.targetJail, {}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollUsbDevices) {
+            emit usbDevicesReady({}, errMsg);
+        }
+    };
+
+    // Watchdog prevents stalled pkexec/polkit polls from leaving the UI stuck on "Refreshing..."
+    auto *watchdog = new QTimer(proc);
+    watchdog->setSingleShot(true);
+    connect(watchdog, &QTimer::timeout, this, [this, proc, completed, emitPollError]() {
         if (*completed) return;
         *completed = true;
+        proc->terminate();
+        if (!proc->waitForFinished(1000)) {
+            proc->kill();
+        }
+        emitPollError(tr("Status refresh timed out."));
+        proc->deleteLater();
+        finishActiveTask();
+    });
+    watchdog->start(20000);
+
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, proc, task, completed, watchdog, emitPollError](int exitCode, QProcess::ExitStatus status) {
+        if (*completed) return;
+        *completed = true;
+        watchdog->stop();
 
         const QByteArray rawOut = proc->readAllStandardOutput();
         const QByteArray rawErr = proc->readAllStandardError();
@@ -126,11 +175,11 @@ void ContainerBackend::startPollTask(const PendingTask &task)
             QList<ContainerInfo> result;
             QString err;
             if (!ok) {
-                err = tr("Failed to run parishctl-list");
+                err = formatProcessFailure(exitCode, status, QString::fromUtf8(rawErr));
             } else {
                 const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
                 if (!doc.isArray()) {
-                    err = tr("JSON parse error from parishctl-list");
+                    err = tr("Could not read compartment list output.");
                 } else {
                     for (const QJsonValue &val : doc.array()) {
                         if (!val.isObject()) continue;
@@ -175,11 +224,11 @@ void ContainerBackend::startPollTask(const PendingTask &task)
             QList<TemplateInfo> result;
             QString err;
             if (!ok) {
-                err = tr("Failed to run parishctl-template-list");
+                err = formatProcessFailure(exitCode, status, QString::fromUtf8(rawErr));
             } else {
                 const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
                 if (!doc.isArray()) {
-                    err = tr("JSON parse error from parishctl-template-list");
+                    err = tr("Could not read template list output.");
                 } else {
                     for (const QJsonValue &val : doc.array()) {
                         if (!val.isObject()) continue;
@@ -207,7 +256,7 @@ void ContainerBackend::startPollTask(const PendingTask &task)
             QList<PackageInfo> result;
             QString err;
             if (!ok) {
-                err = tr("parishctl-apps-list failed");
+                err = formatProcessFailure(exitCode, status, QString::fromUtf8(rawErr));
             } else {
                 const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
                 if (doc.isArray()) {
@@ -258,12 +307,11 @@ void ContainerBackend::startPollTask(const PendingTask &task)
             QList<ExchangeFileEntry> result;
             QString err;
             if (!ok) {
-                err = QString::fromUtf8(rawErr).trimmed();
-                if (err.isEmpty()) err = tr("Failed to list exchange files");
+                err = formatProcessFailure(exitCode, status, QString::fromUtf8(rawErr));
             } else {
                 const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
                 if (!doc.isArray()) {
-                    err = tr("JSON parse error from parishctl-exchange files");
+                    err = tr("Could not read exchange file list.");
                 } else {
                     for (const QJsonValue &val : doc.array()) {
                         if (!val.isObject()) continue;
@@ -281,12 +329,11 @@ void ContainerBackend::startPollTask(const PendingTask &task)
             QList<UsbDeviceInfo> result;
             QString err;
             if (!ok) {
-                err = QString::fromUtf8(rawErr).trimmed();
-                if (err.isEmpty()) err = tr("Failed to list removable USB devices");
+                err = formatProcessFailure(exitCode, status, QString::fromUtf8(rawErr));
             } else {
                 const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
                 if (!doc.isArray()) {
-                    err = tr("JSON parse error from parish-usb devices");
+                    err = tr("Could not read removable drive list.");
                 } else {
                     for (const QJsonValue &val : doc.array()) {
                         if (!val.isObject()) continue;
@@ -308,21 +355,11 @@ void ContainerBackend::startPollTask(const PendingTask &task)
         finishActiveTask();
     });
 
-    connect(proc, &QProcess::errorOccurred, this, [this, proc, task, completed](QProcess::ProcessError) {
+    connect(proc, &QProcess::errorOccurred, this, [this, proc, completed, watchdog, emitPollError](QProcess::ProcessError) {
         if (*completed) return;
         *completed = true;
-        const QString errMsg = tr("Failed to run process: %1").arg(proc->errorString());
-        if (task.kind == PendingTask::Kind::PollContainers) {
-            emit containersReady({}, errMsg);
-        } else if (task.kind == PendingTask::Kind::PollTemplates) {
-            emit templatesReady({}, errMsg);
-        } else if (task.kind == PendingTask::Kind::PollPackages) {
-            emit packagesReady(task.targetJail, {}, errMsg);
-        } else if (task.kind == PendingTask::Kind::PollExchangeFiles) {
-            emit exchangeFilesReady(task.targetJail, {}, errMsg);
-        } else if (task.kind == PendingTask::Kind::PollUsbDevices) {
-            emit usbDevicesReady({}, errMsg);
-        }
+        watchdog->stop();
+        emitPollError(tr("Failed to start background check: %1").arg(proc->errorString()));
         proc->deleteLater();
         finishActiveTask();
     });
@@ -347,11 +384,7 @@ void ContainerBackend::startUserActionTask(const PendingTask &task)
         const bool ok = (status == QProcess::NormalExit && exitCode == 0);
         QString err;
         if (!ok) {
-            err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-            if (err.isEmpty()) err = tr("Command failed (exit %1)").arg(exitCode);
-        } else if (!task.attachAfterJail.isEmpty()) {
-            QProcess::startDetached(QStringLiteral("/usr/local/bin/parish-xpra"),
-                                    { QStringLiteral("attach"), task.attachAfterJail });
+            err = formatProcessFailure(exitCode, status, QString::fromUtf8(proc->readAllStandardError()));
         }
         emit operationFinished(task.description, ok, err);
         proc->deleteLater();
@@ -395,8 +428,7 @@ void ContainerBackend::startStreamingTask(const PendingTask &task)
         const bool ok = (status == QProcess::NormalExit && exitCode == 0);
         QString err;
         if (!ok) {
-            err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-            if (err.isEmpty()) err = tr("Exit code %1").arg(exitCode);
+            err = formatProcessFailure(exitCode, status, QString::fromUtf8(proc->readAllStandardError()));
         }
         emit installFinished(ok, err);
         emit operationFinished(task.description, ok, err);
@@ -418,54 +450,62 @@ void ContainerBackend::startStreamingTask(const PendingTask &task)
     proc->start();
 }
 
-void ContainerBackend::startTerminalTask(const PendingTask &task)
+void ContainerBackend::launchIndependentTerminal(const QString &sessionKey,
+                                                 const QString &title,
+                                                 const QStringList &execArgv,
+                                                 bool pauseOnExit)
 {
+    if (auto *existing = m_activeTerminals.value(sessionKey, nullptr)) {
+        if (existing->state() != QProcess::NotRunning) {
+            emit operationStarted(tr("%1 is already open").arg(title));
+            return;
+        }
+    }
+
     QString termPath;
     QStringList termArgs;
     QString err;
-
-    if (!TerminalLauncher::findTerminal(task.description, task.args, termPath, termArgs, &err,
-                                        QString(), task.pauseTerminalOnExit)) {
-        emit terminalLaunched(task.description);
-        emit operationFinished(task.description, false, err);
-        emit terminalClosed(task.description);
-        finishActiveTask();
+    if (!TerminalLauncher::findTerminal(title, execArgv, termPath, termArgs, &err,
+                                        QString(), pauseOnExit)) {
+        emit operationFinished(title, false, err);
         return;
     }
 
-    emit operationStarted(task.description);
-    emit terminalLaunched(task.description);
+    emit terminalLaunched(title);
 
     auto *proc = new QProcess(this);
-    m_activeProcess = proc;
+    m_activeTerminals.insert(sessionKey, proc);
     proc->setProgram(termPath);
     proc->setArguments(termArgs);
     auto completed = std::make_shared<bool>(false);
 
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, proc, task, completed](int code, QProcess::ExitStatus status) {
+            this, [this, proc, sessionKey, title, completed](int code, QProcess::ExitStatus status) {
         if (*completed) return;
         *completed = true;
+        if (m_activeTerminals.value(sessionKey) == proc) {
+            m_activeTerminals.remove(sessionKey);
+        }
         const bool ok = (status == QProcess::NormalExit && code == 0);
         QString errMsg;
         if (!ok) {
-            errMsg = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-            if (errMsg.isEmpty()) errMsg = tr("Command failed (exit %1)").arg(code);
+            errMsg = formatProcessFailure(code, status, QString::fromUtf8(proc->readAllStandardError()));
         }
-        emit operationFinished(task.description, ok, errMsg);
-        emit terminalClosed(task.description);
+        emit operationFinished(title, ok, errMsg);
+        emit terminalClosed(title);
         proc->deleteLater();
-        finishActiveTask();
     });
 
     connect(proc, &QProcess::errorOccurred,
-            this, [this, proc, task, completed](QProcess::ProcessError) {
+            this, [this, proc, sessionKey, title, completed](QProcess::ProcessError) {
         if (*completed) return;
         *completed = true;
-        emit operationFinished(task.description, false, proc->errorString());
-        emit terminalClosed(task.description);
+        if (m_activeTerminals.value(sessionKey) == proc) {
+            m_activeTerminals.remove(sessionKey);
+        }
+        emit operationFinished(title, false, proc->errorString());
+        emit terminalClosed(title);
         proc->deleteLater();
-        finishActiveTask();
     });
 
     proc->start();
@@ -543,16 +583,6 @@ void ContainerBackend::enqueueParishctl(const QString &description, const QStrin
     enqueueTask(t);
 }
 
-void ContainerBackend::enqueueDirectAction(const QString &description, const QString &program, const QStringList &args)
-{
-    PendingTask t;
-    t.kind = PendingTask::Kind::UserAction;
-    t.description = description;
-    t.program = program;
-    t.args = args;
-    enqueueTask(t);
-}
-
 void ContainerBackend::enqueueStreamingPkexec(const QString &title, const QStringList &sbinArgs)
 {
     PendingTask t;
@@ -560,16 +590,6 @@ void ContainerBackend::enqueueStreamingPkexec(const QString &title, const QStrin
     t.description = title;
     t.program = m_pkexecPath;
     t.args = sbinArgs;
-    enqueueTask(t);
-}
-
-void ContainerBackend::enqueueTerminal(const QString &title, const QStringList &execArgv, bool pauseOnExit)
-{
-    PendingTask t;
-    t.kind = PendingTask::Kind::TerminalAction;
-    t.description = title;
-    t.args = execArgv;
-    t.pauseTerminalOnExit = pauseOnExit;
     enqueueTask(t);
 }
 
@@ -588,9 +608,10 @@ void ContainerBackend::stopContainer(const QString &name)
 void ContainerBackend::unlockVault(const QString &name)
 {
     if (!isValidCompartmentName(name)) return;
-    enqueueTerminal(tr("Unlock Vault: %1").arg(name),
-                    { m_pkexecPath, QStringLiteral("/usr/local/sbin/parishctl-unlock"), name },
-                    true);
+    launchIndependentTerminal(QStringLiteral("unlock:") + name,
+                              tr("Unlock Vault: %1").arg(name),
+                              { m_pkexecPath, QStringLiteral("/usr/local/sbin/parishctl-unlock"), name },
+                              true);
 }
 
 void ContainerBackend::lockVault(const QString &name)
@@ -611,28 +632,8 @@ void ContainerBackend::setAudioConfig(const QString &name, bool outputEnabled, b
     if (!isValidCompartmentName(name)) return;
     const QString outFlag = outputEnabled ? QStringLiteral("--output=on") : QStringLiteral("--output=off");
     const QString inFlag = inputEnabled ? QStringLiteral("--input=on") : QStringLiteral("--input=off");
-    enqueueParishctl(tr("Updating audio policy for '%1'").arg(name),
+    enqueueParishctl(tr("Updating audio settings for '%1'").arg(name),
                      { QStringLiteral("parishctl-audio"), QStringLiteral("set"), name, outFlag, inFlag });
-}
-
-void ContainerBackend::attachXpra(const QString &name)
-{
-    if (!isValidCompartmentName(name)) return;
-    PendingTask t;
-    t.kind = PendingTask::Kind::UserAction;
-    t.description = tr("Attaching display for '%1'").arg(name);
-    t.program = m_pkexecPath;
-    t.args = { QStringLiteral("/usr/local/sbin/parishctl-xpra-start"), name };
-    t.attachAfterJail = name;
-    enqueueTask(t);
-}
-
-void ContainerBackend::detachXpra(const QString &name)
-{
-    if (!isValidCompartmentName(name)) return;
-    enqueueDirectAction(tr("Detaching display for '%1'").arg(name),
-                        QStringLiteral("/usr/local/bin/parish-xpra"),
-                        { QStringLiteral("detach"), name });
 }
 
 void ContainerBackend::exchangeTransfer(const QString &op,
@@ -713,16 +714,18 @@ void ContainerBackend::createContainer(const QString &name, const QString &templ
 void ContainerBackend::openConsole(const QString &name)
 {
     if (!isValidCompartmentName(name)) return;
-    enqueueTerminal(tr("Console: %1").arg(name),
-                    { m_pkexecPath, QStringLiteral("/usr/local/sbin/parishctl-console"), name },
-                    true);
+    launchIndependentTerminal(QStringLiteral("console:") + name,
+                              tr("Console: %1").arg(name),
+                              { m_pkexecPath, QStringLiteral("/usr/local/sbin/parishctl-console"), name },
+                              true);
 }
 
 void ContainerBackend::launchTemplateWizard()
 {
-    enqueueTerminal(tr("ParishBSD Template Wizard"),
-                    { m_pkexecPath, QStringLiteral("/usr/local/bin/parish-template-wizard") },
-                    false);
+    launchIndependentTerminal(QStringLiteral("wizard"),
+                              tr("ParishBSD Template Wizard"),
+                              { m_pkexecPath, QStringLiteral("/usr/local/bin/parish-template-wizard") },
+                              false);
 }
 
 void ContainerBackend::updateTemplateAsync(const QString &name, bool shipped)
@@ -775,9 +778,57 @@ void ContainerBackend::launchApplication(const QString &jail, const QString &app
 {
     Q_UNUSED(isCustom);
     if (!isValidCompartmentName(jail) || appName.trimmed().isEmpty()) return;
-    enqueueDirectAction(tr("Launching '%1' in %2").arg(appName, jail),
-                        QStringLiteral("/usr/local/bin/parish-app-launch"),
-                        { jail, appName });
+
+    const QString desc = tr("Launching '%1' in '%2'").arg(appName, jail);
+    emit operationStarted(desc);
+
+    // Run outside m_queue so an open GUI app does not block compartment refreshes or installs.
+    auto *proc = new QProcess(this);
+    proc->setProgram(QStringLiteral("/usr/local/bin/parish-app-launch"));
+    proc->setArguments({ jail, appName });
+    auto completed = std::make_shared<bool>(false);
+
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, proc, desc, completed](int exitCode, QProcess::ExitStatus status) {
+        if (*completed) return;
+        *completed = true;
+        const bool ok = (status == QProcess::NormalExit && exitCode == 0);
+        QString err;
+        if (!ok) {
+            err = formatProcessFailure(exitCode, status, QString::fromUtf8(proc->readAllStandardError()));
+        }
+        emit operationFinished(desc, ok, err);
+        proc->deleteLater();
+    });
+
+    connect(proc, &QProcess::errorOccurred,
+            this, [this, proc, desc, completed](QProcess::ProcessError) {
+        if (*completed) return;
+        *completed = true;
+        emit operationFinished(desc, false, tr("Failed to launch application: %1").arg(proc->errorString()));
+        proc->deleteLater();
+    });
+
+    proc->start();
+}
+
+void ContainerBackend::createLauncher(const QString &jail, const QString &appName, const QString &where)
+{
+    if (!isValidCompartmentName(jail) || appName.trimmed().isEmpty()) return;
+    if (where != QLatin1String("menu") && where != QLatin1String("desktop") && where != QLatin1String("both")) {
+        return;
+    }
+
+    const QString desc = (where == QLatin1String("desktop"))
+        ? tr("Creating Desktop shortcut for '%1'").arg(appName)
+        : tr("Adding '%1' to Start Menu").arg(appName);
+
+    PendingTask t;
+    t.kind = PendingTask::Kind::UserAction;
+    t.description = desc;
+    t.program = m_pkexecPath;
+    t.args = { QStringLiteral("/usr/local/sbin/parish-app-create-launcher"), jail, appName, where };
+    enqueueTask(t);
 }
 
 void ContainerBackend::cancelInstall()

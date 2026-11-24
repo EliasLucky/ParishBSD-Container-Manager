@@ -1,17 +1,17 @@
 #pragma once
 
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QQueue>
 #include <QString>
 #include <QStringList>
+#include <QProcess>
 #include <atomic>
 
 #include "ContainerInfo.h"
 #include "PackageInfo.h"
 #include "TemplateInfo.h"
-
-class QProcess;
 
 struct ExchangeFileEntry {
     QString name;
@@ -32,7 +32,7 @@ class ContainerBackend : public QObject {
 public:
     explicit ContainerBackend(QObject *parent = nullptr);
 
-    // Non-blocking async queries (serialized through the single pkexec queue)
+    // Non-blocking async queries (serialized through the pkexec queue)
     void requestContainers();
     void requestTemplates();
     void requestPackages(const QString &jail);
@@ -49,10 +49,6 @@ public:
 
     // Audio policy (output & input independent; excluded for vaults)
     void setAudioConfig(const QString &name, bool outputEnabled, bool inputEnabled);
-
-    // Xpra display session client attach / detach
-    void attachXpra(const QString &name);
-    void detachXpra(const QString &name);
 
     // File Exchange (op: copy | move | put | get)
     void exchangeTransfer(const QString &op,
@@ -75,12 +71,12 @@ public:
     void destroyContainer(const QString &name, const QString &confirmationToken);
     void createContainer(const QString &name, const QString &templateName);
 
-    // Interactive terminal actions
+    // Interactive terminal actions (run independently of backend queue)
     void openConsole(const QString &name);
     void launchTemplateWizard();
     void updateTemplateAsync(const QString &name, bool shipped);
 
-    // Application / package management (all async, serialized)
+    // Application / package management
     void upgradePackages(const QString &jail);
     void installPackageAsync(const QString &jail, const QString &package);
     void installFromFileAsync(const QString &jail, const QString &filePath);
@@ -88,6 +84,7 @@ public:
                         const QStringList &nativePackages,
                         const QStringList &customApps);
     void launchApplication(const QString &jail, const QString &appName, bool isCustom);
+    void createLauncher(const QString &jail, const QString &appName, const QString &where);
     void cancelInstall();
 
 signals:
@@ -114,8 +111,7 @@ private:
             PollExchangeFiles,
             PollUsbDevices,
             UserAction,
-            StreamingAction,
-            TerminalAction
+            StreamingAction
         };
 
         Kind kind = Kind::UserAction;
@@ -123,8 +119,6 @@ private:
         QString program;
         QStringList args;
         QString targetJail;
-        QString attachAfterJail;
-        bool pauseTerminalOnExit = true;
 
         bool isPoll() const {
             return kind == Kind::PollContainers ||
@@ -142,15 +136,20 @@ private:
     void startPollTask(const PendingTask &task);
     void startUserActionTask(const PendingTask &task);
     void startStreamingTask(const PendingTask &task);
-    void startTerminalTask(const PendingTask &task);
+
+    void launchIndependentTerminal(const QString &sessionKey,
+                                   const QString &title,
+                                   const QStringList &execArgv,
+                                   bool pauseOnExit);
 
     void enqueueParishctl(const QString &description, const QStringList &args);
-    void enqueueDirectAction(const QString &description, const QString &program, const QStringList &args);
     void enqueueStreamingPkexec(const QString &title, const QStringList &sbinArgs);
-    void enqueueTerminal(const QString &title, const QStringList &execArgv, bool pauseOnExit = true);
 
     static bool isValidCompartmentName(const QString &name);
     static bool isValidRiskLevel(const QString &risk);
+    static QString formatProcessFailure(int exitCode,
+                                        QProcess::ExitStatus status,
+                                        const QString &stderrText);
 
     QString m_pkexecPath;
     QQueue<PendingTask> m_queue;
@@ -158,4 +157,5 @@ private:
     PendingTask m_currentTask;
     bool m_taskRunning = false;
     std::atomic<int> m_userActionCount{0};
+    QMap<QString, QProcess*> m_activeTerminals;
 };

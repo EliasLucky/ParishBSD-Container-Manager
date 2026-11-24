@@ -1,4 +1,5 @@
 #include "ApplicationsDialog.h"
+#include "AppIcons.h"
 #include "CatalogTableModel.h"
 #include "ContainerBackend.h"
 #include "PackageTableModel.h"
@@ -24,7 +25,7 @@ ApplicationsDialog::ApplicationsDialog(ContainerBackend *backend,
     : QDialog(parent), m_backend(backend), m_container(container)
 {
     setWindowTitle(tr("Applications in '%1'").arg(m_container.name));
-    setMinimumSize(840, 580);
+    setMinimumSize(820, 540);
     buildUi();
 
     connect(m_backend, &ContainerBackend::packagesReady,
@@ -40,15 +41,12 @@ void ApplicationsDialog::buildUi()
 {
     auto *root = new QVBoxLayout(this);
 
-    const QString caps = m_container.capabilities.isEmpty()
-        ? tr("Standard")
-        : m_container.capabilities.join(QStringLiteral(", "));
     auto *capBanner = new QLabel(
-        tr("Compartment capabilities: %1 · Risk level: %2")
-            .arg(caps, m_container.humanRiskLevel()),
+        tr("Features: %1 · Risk level: %2")
+            .arg(m_container.humanCapabilities(), m_container.humanRiskLevel()),
         this);
     capBanner->setWordWrap(true);
-    capBanner->setAccessibleName(tr("Compartment capabilities summary"));
+    capBanner->setAccessibleName(tr("Compartment features summary"));
     root->addWidget(capBanner);
 
     m_tabs = new QTabWidget(this);
@@ -75,6 +73,7 @@ void ApplicationsDialog::buildInstalledTab(QWidget *parent)
 {
     auto *layout = new QVBoxLayout(parent);
     m_installedSummary = new QLabel(tr("Loading installed applications..."), parent);
+    m_installedSummary->setWordWrap(true);
     layout->addWidget(m_installedSummary);
 
     m_installedModel = new PackageTableModel(this);
@@ -88,25 +87,51 @@ void ApplicationsDialog::buildInstalledTab(QWidget *parent)
     m_installedView->verticalHeader()->setVisible(false);
     m_installedView->setSortingEnabled(true);
     m_installedView->sortByColumn(PackageTableModel::NameColumn, Qt::AscendingOrder);
-    m_installedView->setAccessibleName(tr("Installed packages and custom applications"));
+    m_installedView->setAccessibleName(tr("Installed applications and packages"));
     layout->addWidget(m_installedView, 1);
 
-    auto *buttons = new QHBoxLayout();
-    m_launchBtn = new QPushButton(tr("&Launch"), parent);
-    m_updateBtn = new QPushButton(tr("&Update All"), parent);
-    m_removeBtn = new QPushButton(tr("&Remove"), parent);
-    auto *installNewBtn = new QPushButton(tr("&Install New..."), parent);
-    buttons->addWidget(m_launchBtn);
-    buttons->addWidget(m_updateBtn);
-    buttons->addWidget(m_removeBtn);
-    buttons->addSpacing(20);
-    buttons->addStretch();
-    buttons->addWidget(installNewBtn);
-    layout->addLayout(buttons);
+    auto *primaryButtons = new QHBoxLayout();
+    m_launchBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("media-playback-start"), QStringLiteral("start")),
+        tr("&Launch"), parent);
+    m_addToMenuBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("application-menu"), QStringLiteral("menu-shortcut")),
+        tr("Add to Start &Menu"), parent);
+    m_addToMenuBtn->setToolTip(
+        tr("Adds a shortcut to your desktop Start Menu (~/.local/share/applications/) for KDE Plasma, MATE, XFCE, and GNOME"));
+    m_addToDesktopBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("user-desktop"), QStringLiteral("desktop-shortcut")),
+        tr("Add &Desktop Shortcut"), parent);
+    m_addToDesktopBtn->setToolTip(
+        tr("Places a shortcut on your Desktop (~/Desktop) so you can open this app directly"));
+
+    primaryButtons->addWidget(m_launchBtn);
+    primaryButtons->addWidget(m_addToMenuBtn);
+    primaryButtons->addWidget(m_addToDesktopBtn);
+    primaryButtons->addStretch();
+    layout->addLayout(primaryButtons);
+
+    auto *manageButtons = new QHBoxLayout();
+    m_updateBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")),
+        tr("&Update All"), parent);
+    m_removeBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("edit-delete"), QStringLiteral("destroy")),
+        tr("&Remove"), parent);
+    auto *installNewBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("list-add"), QStringLiteral("new-compartment")),
+        tr("&Install New..."), parent);
+    manageButtons->addWidget(m_updateBtn);
+    manageButtons->addWidget(m_removeBtn);
+    manageButtons->addStretch();
+    manageButtons->addWidget(installNewBtn);
+    layout->addLayout(manageButtons);
 
     connect(m_updateBtn, &QPushButton::clicked, this, &ApplicationsDialog::onUpdateSelected);
     connect(m_removeBtn, &QPushButton::clicked, this, &ApplicationsDialog::onRemoveSelected);
     connect(m_launchBtn, &QPushButton::clicked, this, &ApplicationsDialog::onLaunchSelected);
+    connect(m_addToMenuBtn, &QPushButton::clicked, this, &ApplicationsDialog::onAddMenuShortcut);
+    connect(m_addToDesktopBtn, &QPushButton::clicked, this, &ApplicationsDialog::onAddDesktopShortcut);
     connect(installNewBtn, &QPushButton::clicked, this, [this]() {
         m_tabs->setCurrentIndex(1);
     });
@@ -178,12 +203,25 @@ void ApplicationsDialog::onPackagesReady(const QString &jail,
     if (jail != m_container.name) return;
 
     if (!err.isEmpty()) {
-        m_installedSummary->setText(tr("Failed to load package list: %1").arg(err));
+        m_installedSummary->setText(tr("Could not load installed applications: %1").arg(err));
         updateActionStates();
         return;
     }
 
     m_installedModel->setPackages(pkgs);
+
+    if (pkgs.isEmpty()) {
+        if (m_container.isRunning()) {
+            m_installedSummary->setText(
+                tr("No applications installed yet. Open the 'Install New' tab to install an app."));
+        } else {
+            m_installedSummary->setText(
+                tr("No applications listed yet (this compartment is stopped). "
+                   "Start it first, then open 'Install New' to install apps."));
+        }
+        updateActionStates();
+        return;
+    }
 
     int native = 0, custom = 0, updatable = 0;
     for (const auto &p : pkgs) {
@@ -192,7 +230,7 @@ void ApplicationsDialog::onPackagesReady(const QString &jail,
         if (p.hasUpdate()) ++updatable;
     }
     m_installedSummary->setText(
-        tr("%1 native package(s), %2 custom app(s), %3 update(s) available")
+        tr("%1 installed package(s), %2 custom app(s), %3 update(s) available")
             .arg(native)
             .arg(custom)
             .arg(updatable));
@@ -227,6 +265,7 @@ void ApplicationsDialog::updateActionStates()
     const PackageInfo p = selectedPackage();
     const bool valid = p.isValid();
     const bool contained = m_container.isContained();
+    const bool canLaunch = valid && !contained && !m_container.isVault && m_container.supportsGui();
 
     bool anyUpdatable = false;
     for (int r = 0; r < m_installedModel->rowCount(); ++r) {
@@ -238,7 +277,9 @@ void ApplicationsDialog::updateActionStates()
 
     m_updateBtn->setEnabled(anyUpdatable && !contained);
     m_removeBtn->setEnabled(valid && !contained);
-    m_launchBtn->setEnabled(valid && !contained && !m_container.isVault && m_container.supportsGui());
+    m_launchBtn->setEnabled(canLaunch);
+    m_addToMenuBtn->setEnabled(canLaunch);
+    m_addToDesktopBtn->setEnabled(canLaunch);
     m_installFromFileBtn->setEnabled(!contained);
 }
 
@@ -272,8 +313,8 @@ void ApplicationsDialog::onRemoveSelected()
         msg += tr("\nPackages:\n  %1").arg(native.join(QStringLiteral("\n  ")));
     if (!custom.isEmpty())
         msg += tr("\nCustom apps:\n  %1\n\n"
-                  "Custom apps will only have their metadata removed; "
-                  "their files stay in the container.").arg(custom.join(QStringLiteral("\n  ")));
+                  "Custom apps will only have their shortcut information removed; "
+                  "their program files stay inside the compartment.").arg(custom.join(QStringLiteral("\n  ")));
 
     if (QMessageBox::question(this, tr("Remove"), msg) != QMessageBox::Yes) return;
 
@@ -310,8 +351,8 @@ bool ApplicationsDialog::checkFileCompatibility(const QString &filePath, QString
     if ((lower.endsWith(QStringLiteral(".exe")) || lower.endsWith(QStringLiteral(".msi"))) &&
         !m_container.supportsWindowsCompat()) {
         if (errorOut) {
-            *errorOut = tr("'%1' does not have Windows compatibility (T-compat-windows / Wine).\n\n"
-                           "Create a compartment from a template with Windows compatibility enabled.")
+            *errorOut = tr("'%1' does not have Windows app support enabled.\n\n"
+                           "Create a compartment from a template with Windows support to run .exe or .msi files.")
                 .arg(m_container.name);
         }
         return false;
@@ -320,8 +361,8 @@ bool ApplicationsDialog::checkFileCompatibility(const QString &filePath, QString
          lower.endsWith(QStringLiteral(".appimage"))) &&
         !m_container.supportsLinuxCompat()) {
         if (errorOut) {
-            *errorOut = tr("'%1' does not have Linux compatibility (T-compat-linux).\n\n"
-                           "Create a compartment from a template with Linux compatibility enabled.")
+            *errorOut = tr("'%1' does not have Linux app support enabled.\n\n"
+                           "Create a compartment from a template with Linux support for this file.")
                 .arg(m_container.name);
         }
         return false;
@@ -358,23 +399,44 @@ void ApplicationsDialog::onLaunchSelected()
     if (!p.isValid()) return;
 
     if (m_container.isContained()) {
-        QMessageBox::critical(this, tr("Compartment Contained"),
+        QMessageBox::critical(this, tr("Compartment Blocked"),
             tr("Cannot launch applications from a Guardian-contained compartment."));
         return;
     }
     if (!m_container.supportsGui()) {
-        QMessageBox::warning(this, tr("No Graphical Environment"),
-            tr("Compartment '%1' lacks T-xpra graphical display support.").arg(m_container.name));
+        QMessageBox::warning(this, tr("No Graphical Support"),
+            tr("Compartment '%1' does not support graphical desktop apps.").arg(m_container.name));
         return;
     }
 
     m_backend->launchApplication(m_container.name, p.name, p.isCustom());
 }
 
+void ApplicationsDialog::onAddMenuShortcut()
+{
+    const PackageInfo p = selectedPackage();
+    if (!p.isValid() || m_container.isContained() || m_container.isVault) return;
+    m_backend->createLauncher(m_container.name, p.name, QStringLiteral("menu"));
+}
+
+void ApplicationsDialog::onAddDesktopShortcut()
+{
+    const PackageInfo p = selectedPackage();
+    if (!p.isValid() || m_container.isContained() || m_container.isVault) return;
+    m_backend->createLauncher(m_container.name, p.name, QStringLiteral("desktop"));
+}
+
 void ApplicationsDialog::onOperationFinished(const QString &desc, bool ok, const QString &err)
 {
-    Q_UNUSED(desc);
     Q_UNUSED(err);
+    if (ok && (desc.startsWith(QStringLiteral("Adding ")) ||
+               desc.startsWith(QStringLiteral("Creating Desktop shortcut")))) {
+        QMessageBox::information(this, tr("Shortcut Created"),
+            tr("%1 completed successfully.\n\n"
+               "The shortcut will automatically start this compartment and open the app window when clicked.")
+                .arg(desc));
+        return;
+    }
     if (ok) {
         emit applicationsChanged();
     }
