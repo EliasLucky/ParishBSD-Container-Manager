@@ -59,8 +59,8 @@ parish_service_start() {
     chmod 0755 /var/run/parishbsd || { printf 'parish: cannot chmod 0755 /var/run/parishbsd\n' >&2; return 1; }
 
     if [ -d "$_ps_jailroot/xpra" ]; then
-        mkdir -p "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot create /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
-        chmod 0755 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0755 /var/run/xpra/$s\n' "$_ps_jail" >&2; return 1; }
+        mkdir -p "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot create /var/run/xpra/%s\n' "$_ps_jail" >&2; return 1; }
+        chmod 0700 "/var/run/xpra/$_ps_jail" || { printf 'parish: cannot chmod 0700 /var/run/xpra/%s\n' "$_ps_jail" >&2; return 1; }
     fi
 
 
@@ -113,6 +113,11 @@ parish_service_start() {
     chmod 0600 "/var/log/jail_${_ps_jail}_console.log" 2>/dev/null || true
 
     exec 9>&-
+
+    if [ -x /usr/local/bin/parish-audio ]; then
+        /usr/local/bin/parish-audio apply "$_ps_jail" 2>/dev/null || true
+    fi
+
     _write_event "start $_ps_jail"
     return 0
 }
@@ -121,6 +126,13 @@ parish_service_stop() {
     _ps_jail="${1:?parish_service_stop: jail name required}"
 
     validate_jail_name_existing "$_ps_jail" || return 1
+
+    if [ -x /usr/local/bin/parish-audio ]; then
+        /usr/local/bin/parish-audio stop "$_ps_jail" 2>/dev/null || true
+    fi
+    if [ -x /usr/local/bin/parish-xpra ]; then
+        /usr/local/bin/parish-xpra stop "$_ps_jail" >/dev/null 2>&1 || true
+    fi
 
     if ! { exec 9> "/var/run/parishbsd/service.lock"; } 2>/dev/null; then
         printf 'parish: cannot open service lock\n' >&2
@@ -137,12 +149,11 @@ parish_service_stop() {
         if [ -s "$_ps_err" ]; then
             sed 's/^/  /' "$_ps_err" >&2
         else
-            echo "  (no stderr output" >&2
+            echo "  (no stderr output)" >&2
         fi
         echo "" >&2
         rm -f "$_ps_err"
         exec 9>&-
-    _write_event "stop $_ps_jail"
         return 1
     fi
 
@@ -168,5 +179,6 @@ parish_service_stop() {
     esac
 
     exec 9>&-
+    _write_event "stop $_ps_jail"
     return 0
 }
