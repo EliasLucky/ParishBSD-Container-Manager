@@ -41,7 +41,6 @@ if(BUILD_GUI)
         src/ContainerBackend.cpp
         src/ContainerModel.cpp
         src/ContainerInfo.cpp
-        src/ActionsDialog.cpp
         src/ApplicationsDialog.cpp
         src/ExchangeDialog.cpp
         src/ProcessLogDialog.cpp
@@ -51,14 +50,15 @@ if(BUILD_GUI)
         src/TemplateModel.cpp
         src/TreeAssemblyModel.cpp
         src/TerminalLauncher.cpp
+        resources/parishbsd.qrc
     )
 
     set(HEADERS
+        src/AppIcons.h
         src/MainWindow.h
         src/ContainerBackend.h
         src/ContainerModel.h
         src/ContainerInfo.h
-        src/ActionsDialog.h
         src/ApplicationsDialog.h
         src/ExchangeDialog.h
         src/ProcessLogDialog.h
@@ -172,3 +172,5 @@ install(TARGETS xpra-sup
 install(FILES resources/applications.catalog
     DESTINATION ${CMAKE_INSTALL_DATADIR}/parishbsd)
 
+install(FILES docs/SECURITY-ARCHITECTURE.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR})
