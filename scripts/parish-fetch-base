@@ -1,0 +1,81 @@
+#!/bin/sh
+# parish-fetch-base  download and verify base.txz for template builds.
+#
+# Usage: parish-fetch-base <version> <arch> [cache_dir]
+#   e.g. parish-fetch-base 15.1-RELEASE amd64 /var/cache/parishbsd
+#
+# Downloads MANIFEST and base.txz from download.freebsd.org, verifies SHA256
+# checksum against MANIFEST, and atomically installs to:
+#   <cache_dir>/base-<version>-<arch>.txz
+
+set -eu
+
+version="${1:?usage: parish-fetch-base <version> <arch> [cache_dir]}"
+arch="${2:?usage: parish-fetch-base <version> <arch> [cache_dir]}"
+cache_dir="${3:-/var/cache/parishbsd}"
+
+case "$version" in
+    [0-9]*.[0-9]*-RELEASE) : ;;
+    *)
+        printf 'parish-fetch-base: invalid version "%s" (expected M.m-RELEASE)\n' "$version" >&2
+        exit 2
+        ;;
+esac
+case "$arch" in
+    amd64|arm64|aarch64|i386) : ;;
+    *)
+        printf 'parish-fetch-base: unsupported architecture "%s"\n' "$arch" >&2
+        exit 2
+        ;;
+esac
+
+mkdir -p "$cache_dir"
+dest="$cache_dir/base-${version}-${arch}.txz"
+if [ -s "$dest" ]; then
+    printf 'Base archive already cached: %s\n' "$dest"
+    exit 0
+fi
+
+mirror_base=""
+manifest_tmp="$cache_dir/.MANIFEST.${version}.${arch}.tmp.$$"
+txz_tmp="$cache_dir/.base-${version}-${arch}.txz.tmp.$$"
+trap 'rm -f "$manifest_tmp" "$txz_tmp"' EXIT INT TERM
+
+for candidate in \
+    "https://download.freebsd.org/releases/${arch}/${version}" \
+    "https://download.freebsd.org/releases/${arch}/${arch}/${version}"
+do
+    if /usr/bin/fetch -q -o "$manifest_tmp" "${candidate}/MANIFEST" 2>/dev/null; then
+        mirror_base="$candidate"
+        break
+    fi
+done
+
+if [ -z "$mirror_base" ]; then
+    printf 'parish-fetch-base: could not download MANIFEST for %s (%s)\n' "$version" "$arch" >&2
+    exit 1
+fi
+
+expected_sha=$(awk '$1=="base.txz" {print $2; exit}' "$manifest_tmp" 2>/dev/null || true)
+if [ -z "$expected_sha" ]; then
+    printf 'parish-fetch-base: MANIFEST does not list base.txz\n' >&2
+    exit 1
+fi
+
+printf 'Downloading FreeBSD %s (%s) base system archive...\n' "$version" "$arch"
+/usr/bin/fetch -o "$txz_tmp" "${mirror_base}/base.txz" || {
+    printf 'parish-fetch-base: failed to download %s/base.txz\n' "$mirror_base" >&2
+    exit 1
+}
+
+actual_sha=$(/sbin/sha256 -q "$txz_tmp")
+if [ "$actual_sha" != "$expected_sha" ]; then
+    printf 'parish-fetch-base: SHA256 mismatch for base.txz!\n' >&2
+    printf '  expected: %s\n  actual:   %s\n' "$expected_sha" "$actual_sha" >&2
+    exit 1
+fi
+
+chmod 0644 "$txz_tmp"
+mv -f "$txz_tmp" "$dest"
+rm -f "$manifest_tmp"
+printf 'Verified and cached: %s\n' "$dest"
