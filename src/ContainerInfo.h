@@ -22,6 +22,13 @@ struct ContainerInfo {
     QString path;         // /usr/local/jails/containers/<name>
     QString internalIp;
 
+    QString osVersion;
+    QString osArch;
+    QString hostOsVersion;
+    QString hostOsArch;
+    QString osStatus;     // current | patch-behind | minor-behind | major-behind | ahead | unknown
+    bool needsRecovery = false;
+
     bool isValid() const { return !name.isEmpty(); }
 
     bool isRunning() const {
@@ -42,6 +49,12 @@ struct ContainerInfo {
                jailState == QLatin1String("containing");
     }
 
+    bool isOsOutdated() const {
+        return osStatus == QLatin1String("patch-behind") ||
+               osStatus == QLatin1String("minor-behind") ||
+               osStatus == QLatin1String("major-behind");
+    }
+
     bool hasCapability(const QString &cap) const;
     bool supportsGui() const { return hasCapability(QStringLiteral("gui")) || (!isVault && capabilities.isEmpty()); }
     bool supportsLinuxCompat() const { return hasCapability(QStringLiteral("compat-linux")); }
@@ -53,6 +66,7 @@ struct ContainerInfo {
     QColor riskColor() const;
 
     QString humanState() const;
+    QString humanOsStatus() const;
     QString humanCapabilities() const;
     QString accessibleText() const;
     QString accessibleDescription() const;

@@ -51,12 +51,34 @@ QColor ContainerInfo::riskColor() const {
 QString ContainerInfo::humanState() const {
     if (jailState == QLatin1String("running"))                 return QObject::tr("Running");
     if (jailState == QLatin1String("stopped"))                 return QObject::tr("Stopped");
-    if (jailState == QLatin1String("contained"))               return QObject::tr("CONTAINED by Guardian");
-    if (jailState == QLatin1String("containment-failed"))      return QObject::tr("CONTAINMENT FAILED");
-    if (jailState == QLatin1String("contained-but-running"))   return QObject::tr("CONTAINED (running)");
+    if (jailState == QLatin1String("contained"))               return QObject::tr("Contained");
+    if (jailState == QLatin1String("containment-failed"))      return QObject::tr("Containment failed");
+    if (jailState == QLatin1String("contained-but-running"))   return QObject::tr("Contained (running)");
     if (jailState == QLatin1String("stopped-maybe-contained")) return QObject::tr("May be contained");
     if (jailState == QLatin1String("containing"))              return QObject::tr("Containing...");
-    if (jailState == QLatin1String("running-other-contained")) return QObject::tr("Running (another contained)");
+    if (jailState == QLatin1String("running-other-contained")) return QObject::tr("Running");
+    return QObject::tr("Unknown");
+}
+
+QString ContainerInfo::humanOsStatus() const {
+    if (needsRecovery) {
+        return QObject::tr("Needs recovery (interrupted update)");
+    }
+    if (osStatus == QLatin1String("current")) {
+        return QObject::tr("Matches host OS");
+    }
+    if (osStatus == QLatin1String("patch-behind")) {
+        return QObject::tr("Security / patch update available");
+    }
+    if (osStatus == QLatin1String("minor-behind") || osStatus == QLatin1String("release-behind")) {
+        return QObject::tr("FreeBSD release update available");
+    }
+    if (osStatus == QLatin1String("major-behind")) {
+        return QObject::tr("Major OS upgrade available");
+    }
+    if (osStatus == QLatin1String("ahead")) {
+        return QObject::tr("Newer than host OS");
+    }
     return QObject::tr("Unknown");
 }
 
@@ -91,6 +113,9 @@ QString ContainerInfo::accessibleText() const {
 QString ContainerInfo::accessibleDescription() const {
     QString desc = QObject::tr("%1 is a %2 compartment based on template %3. Status: %4. Risk level: %5.")
         .arg(name, kind, sourceTemplate, humanState(), humanRiskLevel());
+    if (!osVersion.isEmpty() && osVersion != QLatin1String("unknown")) {
+        desc += QLatin1Char(' ') + QObject::tr("System: FreeBSD %1 (%2).").arg(osVersion, humanOsStatus());
+    }
     if (isVault) {
         desc += QLatin1Char(' ') + (keyState == QLatin1String("locked")
             ? QObject::tr("Vault is locked.")

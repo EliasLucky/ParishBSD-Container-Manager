@@ -182,6 +182,13 @@ void MainWindow::buildMenus()
     m_actLock->setIcon(AppIcons::themedOrBundled(QStringLiteral("security-high"), QStringLiteral("lock")));
 
     QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
+    m_actUpgradeOs = toolsMenu->addAction(tr("Update Compartment &System..."));
+    m_actUpgradeOs->setIcon(AppIcons::themedOrBundled(QStringLiteral("system-software-update"), QStringLiteral("refresh")));
+    m_actUpgradeAll = toolsMenu->addAction(tr("Update &All Outdated Systems..."));
+    m_actUpgradeAll->setIcon(AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")));
+    m_actRecover = toolsMenu->addAction(tr("&Restore Previous Backup Snapshot..."));
+    m_actRecover->setIcon(AppIcons::themedOrBundled(QStringLiteral("edit-undo"), QStringLiteral("refresh")));
+    toolsMenu->addSeparator();
     m_actExchange = toolsMenu->addAction(tr("File &Exchange..."));
     m_actExchange->setIcon(AppIcons::themedOrBundled(QStringLiteral("folder-sync"), QStringLiteral("exchange")));
     m_actExchange->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
@@ -209,6 +216,9 @@ void MainWindow::buildMenus()
     connect(m_actLock, &QAction::triggered, this, &MainWindow::onLock);
     connect(m_actConsole, &QAction::triggered, this, &MainWindow::onConsole);
     connect(m_actApps, &QAction::triggered, this, &MainWindow::onApplications);
+    connect(m_actUpgradeOs, &QAction::triggered, this, &MainWindow::onUpgradeOs);
+    connect(m_actUpgradeAll, &QAction::triggered, this, &MainWindow::onUpgradeAll);
+    connect(m_actRecover, &QAction::triggered, this, &MainWindow::onRecoverCompartment);
     connect(m_actExchange, &QAction::triggered, this, &MainWindow::onExchange);
     connect(m_actUsb, &QAction::triggered, this, &MainWindow::onUsb);
 }
@@ -220,8 +230,6 @@ void MainWindow::buildToolBar()
     tb->setMovable(false);
     tb->setIconSize(QSize(20, 20));
 
-    // Keep the toolbar short and focused on high-frequency lifecycle actions;
-    // detailed compartment controls live in the Inspector pane and right-click menu.
     tb->addAction(m_actCreate);
     tb->addAction(m_actNewTemplate);
 
@@ -274,7 +282,7 @@ void MainWindow::buildCentralWidget()
     h->resizeSection(TreeAssemblyModel::RiskColumn, 130);
 
     auto *inspectorContainer = new QWidget(splitter);
-    inspectorContainer->setMinimumWidth(290);
+    inspectorContainer->setMinimumWidth(300);
     buildInspectorPane(inspectorContainer);
 
     splitter->addWidget(m_tree);
@@ -333,7 +341,7 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     auto *welcomeLay = new QVBoxLayout(welcomeBox);
     auto *welcomeLbl = new QLabel(
         tr("Select a compartment or template on the left to inspect its status, "
-           "install or launch applications, manage sound and safety levels, or open a console.\n\n"
+           "install or launch applications, update its FreeBSD system version, manage sound, or open a console.\n\n"
            "Tip: Right-click any item for quick actions, or choose 'New Template...' "
            "to create a custom setup for desktop, Linux, or Windows apps."),
         welcomeBox);
@@ -358,13 +366,22 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     compBoxLay->addWidget(m_inspName);
 
     m_inspGuardianBanner = new QLabel(
-        tr("BLOCKED FOR SAFETY (GUARDIAN): Investigate this compartment before restoring or destroying it."),
+        tr("CONTAINED: This compartment was paused for safety. Review it before starting or destroying it."),
         compBox);
     m_inspGuardianBanner->setWordWrap(true);
     m_inspGuardianBanner->setStyleSheet(QStringLiteral(
         "QLabel { color: #ffffff; background-color: #b91c1c; padding: 8px; border-radius: 4px; font-weight: bold; }"));
     m_inspGuardianBanner->setVisible(false);
     compBoxLay->addWidget(m_inspGuardianBanner);
+
+    m_inspRecoveryBanner = new QLabel(
+        tr("INTERRUPTED UPDATE: Click 'Restore Snapshot...' below before updating this compartment again."),
+        compBox);
+    m_inspRecoveryBanner->setWordWrap(true);
+    m_inspRecoveryBanner->setStyleSheet(QStringLiteral(
+        "QLabel { color: #ffffff; background-color: #b45309; padding: 8px; border-radius: 4px; font-weight: bold; }"));
+    m_inspRecoveryBanner->setVisible(false);
+    compBoxLay->addWidget(m_inspRecoveryBanner);
 
     m_inspDetails = new QLabel(compBox);
     m_inspDetails->setWordWrap(true);
@@ -424,6 +441,16 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     ioRow->addWidget(m_inspExchangeBtn);
     ioRow->addWidget(m_inspUsbBtn);
 
+    auto *maintRow = new QHBoxLayout();
+    m_inspUpgradeBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("system-software-update"), QStringLiteral("refresh")),
+        tr("Update / Upgrade OS..."), compBox);
+    m_inspRecoverBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("edit-undo"), QStringLiteral("refresh")),
+        tr("Restore Snapshot..."), compBox);
+    maintRow->addWidget(m_inspUpgradeBtn);
+    maintRow->addWidget(m_inspRecoverBtn);
+
     m_inspDestroyBtn = new QPushButton(
         AppIcons::themedOrBundled(QStringLiteral("edit-delete"), QStringLiteral("destroy")),
         tr("Destroy..."), compBox);
@@ -433,6 +460,7 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     compBoxLay->addWidget(m_inspAppsBtn);
     compBoxLay->addWidget(m_inspConsoleBtn);
     compBoxLay->addLayout(ioRow);
+    compBoxLay->addLayout(maintRow);
     compBoxLay->addSpacing(6);
     compBoxLay->addWidget(m_inspDestroyBtn);
     compBoxLay->addStretch();
@@ -453,6 +481,8 @@ void MainWindow::buildInspectorPane(QWidget *parent)
     connect(m_inspAppsBtn, &QPushButton::clicked, this, &MainWindow::onApplications);
     connect(m_inspExchangeBtn, &QPushButton::clicked, this, &MainWindow::onExchange);
     connect(m_inspUsbBtn, &QPushButton::clicked, this, &MainWindow::onUsb);
+    connect(m_inspUpgradeBtn, &QPushButton::clicked, this, &MainWindow::onUpgradeOs);
+    connect(m_inspRecoverBtn, &QPushButton::clicked, this, &MainWindow::onRecoverCompartment);
     connect(m_inspDestroyBtn, &QPushButton::clicked, this, &MainWindow::onDestroy);
 
     compLay->addWidget(compBox);
@@ -478,13 +508,18 @@ void MainWindow::buildInspectorPane(QWidget *parent)
         tr("Create Compartment from Template..."), tmplBox);
     m_tmplUpdateBtn = new QPushButton(
         AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")),
-        tr("Update Template Packages"), tmplBox);
+        tr("Update Template OS && Packages..."), tmplBox);
+    m_tmplRecoverBtn = new QPushButton(
+        AppIcons::themedOrBundled(QStringLiteral("edit-undo"), QStringLiteral("refresh")),
+        tr("Restore Template Snapshot..."), tmplBox);
     tmplBoxLay->addWidget(m_tmplCreateBtn);
     tmplBoxLay->addWidget(m_tmplUpdateBtn);
+    tmplBoxLay->addWidget(m_tmplRecoverBtn);
     tmplBoxLay->addStretch();
 
     connect(m_tmplCreateBtn, &QPushButton::clicked, this, &MainWindow::onCreate);
     connect(m_tmplUpdateBtn, &QPushButton::clicked, this, &MainWindow::onUpdateTemplate);
+    connect(m_tmplRecoverBtn, &QPushButton::clicked, this, &MainWindow::onRecoverTemplate);
 
     tmplLay->addWidget(tmplBox);
     m_inspectorStack->addWidget(tmplPage);
@@ -531,7 +566,6 @@ void MainWindow::updateActionStates()
     const bool isApp = haveContainer && !c.isVault;
     const bool isVault = haveContainer && c.isVault;
 
-    // Single create button adjusts label cleanly when a ready template is selected
     m_actCreate->setText(haveReadyTemplate ? tr("Create from Template") : tr("New Compartment"));
 
     m_tbSepLifecycle->setVisible(haveContainer);
@@ -549,6 +583,8 @@ void MainWindow::updateActionStates()
     m_actLock->setEnabled(haveContainer && !locked && !contained);
     m_actConsole->setEnabled(haveContainer && running && !contained);
     m_actApps->setEnabled(haveContainer);
+    m_actUpgradeOs->setEnabled(haveContainer && !contained && !c.needsRecovery);
+    m_actRecover->setEnabled(haveContainer && !contained);
     m_actExchange->setEnabled(!contained);
     m_actUsb->setEnabled(!contained);
     m_actDestroy->setEnabled(haveContainer && !contained);
@@ -561,11 +597,19 @@ void MainWindow::updateInspector()
         m_inspectorStack->setCurrentIndex(1);
         m_inspName->setText(c.name);
         m_inspGuardianBanner->setVisible(c.isContained());
+        m_inspRecoveryBanner->setVisible(c.needsRecovery);
+
+        const QString sysVer = c.osVersion.isEmpty()
+            ? tr("Unknown")
+            : QStringLiteral("FreeBSD %1 (%2)").arg(c.osVersion, c.osArch.isEmpty() ? QStringLiteral("amd64") : c.osArch);
+        const QString hostStr = c.hostOsVersion.isEmpty()
+            ? QString()
+            : tr("\nHost OS: FreeBSD %1").arg(c.hostOsVersion);
 
         m_inspDetails->setText(
-            tr("Type: %1\nStatus: %2\nTemplate: %3\nFeatures: %4\nSpace used: %5")
-                .arg(c.kind, c.humanState(), c.sourceTemplate,
-                     c.humanCapabilities(), formatDiskUsage(c.diskUsage)));
+            tr("Type: %1\nStatus: %2\nTemplate: %3\nSystem: %4\nUpdate status: %5%6\nFeatures: %7\nSpace used: %8")
+                .arg(c.kind, c.humanState(), c.sourceTemplate, sysVer,
+                     c.humanOsStatus(), hostStr, c.humanCapabilities(), formatDiskUsage(c.diskUsage)));
 
         {
             const QSignalBlocker b(m_inspRiskCombo);
@@ -607,6 +651,11 @@ void MainWindow::updateInspector()
         m_inspAppsBtn->setEnabled(true);
         m_inspExchangeBtn->setEnabled(!contained);
         m_inspUsbBtn->setEnabled(!contained);
+        m_inspUpgradeBtn->setEnabled(!contained && !c.needsRecovery);
+        m_inspUpgradeBtn->setText(c.isOsOutdated()
+            ? tr("Update System to Host OS...")
+            : tr("Update / Upgrade OS..."));
+        m_inspRecoverBtn->setEnabled(!contained);
         m_inspDestroyBtn->setEnabled(!contained);
         return;
     }
@@ -615,16 +664,21 @@ void MainWindow::updateInspector()
     if (t.isValid()) {
         m_inspectorStack->setCurrentIndex(2);
         m_tmplName->setText(t.name);
+        const QString tmplOs = t.osVersion.isEmpty()
+            ? tr("Not built yet")
+            : QStringLiteral("FreeBSD %1 (%2)").arg(t.osVersion, t.humanOsStatus());
         m_tmplDetails->setText(
-            tr("Origin: %1\nType: %2\nStatus: %3\nBase snapshot: %4\nBuild size: %5 MiB\n\n%6")
+            tr("Origin: %1\nType: %2\nStatus: %3\nSystem: %4\nBase snapshot: %5\nBuild size: %6 MiB\n\n%7")
                 .arg(t.shipped ? tr("Shipped") : tr("Custom"),
                      t.kind,
                      t.humanState(),
+                     tmplOs,
                      t.currentBase.isEmpty() ? tr("(none)") : t.currentBase)
                 .arg(t.buildSizeMb)
                 .arg(t.description));
         m_tmplCreateBtn->setEnabled(t.isReady());
-        m_tmplUpdateBtn->setEnabled(t.isReady());
+        m_tmplUpdateBtn->setEnabled(t.isReady() && !t.needsRecovery);
+        m_tmplRecoverBtn->setEnabled(t.isReady() || t.state == QLatin1String("failed") || t.needsRecovery);
         return;
     }
 
@@ -644,7 +698,7 @@ void MainWindow::onTreeContextMenu(const QPoint &pos)
 
     if (c.isValid()) {
         if (c.isContained()) {
-            QAction *hdr = menu.addAction(tr("Blocked by Guardian"));
+            QAction *hdr = menu.addAction(tr("Contained (requires review)"));
             hdr->setEnabled(false);
             menu.addSeparator();
             menu.addAction(m_actApps);
@@ -656,6 +710,9 @@ void MainWindow::onTreeContextMenu(const QPoint &pos)
             }
             menu.addAction(m_actApps);
             menu.addAction(m_actConsole);
+            menu.addSeparator();
+            menu.addAction(m_actUpgradeOs);
+            menu.addAction(m_actRecover);
             menu.addSeparator();
             menu.addAction(m_actExchange);
             menu.addAction(m_actUsb);
@@ -669,8 +726,12 @@ void MainWindow::onTreeContextMenu(const QPoint &pos)
         createAct->setEnabled(t.isReady());
         QAction *updAct = menu.addAction(
             AppIcons::themedOrBundled(QStringLiteral("view-refresh"), QStringLiteral("refresh")),
-            tr("Update Template Packages"), this, &MainWindow::onUpdateTemplate);
-        updAct->setEnabled(t.isReady());
+            tr("Update Template OS && Packages..."), this, &MainWindow::onUpdateTemplate);
+        updAct->setEnabled(t.isReady() && !t.needsRecovery);
+        QAction *recAct = menu.addAction(
+            AppIcons::themedOrBundled(QStringLiteral("edit-undo"), QStringLiteral("refresh")),
+            tr("Restore Template Snapshot..."), this, &MainWindow::onRecoverTemplate);
+        recAct->setEnabled(t.isReady() || t.state == QLatin1String("failed") || t.needsRecovery);
     } else {
         if (idx.isValid() && !idx.parent().isValid()) {
             const bool expanded = m_tree->isExpanded(idx);
@@ -681,6 +742,7 @@ void MainWindow::onTreeContextMenu(const QPoint &pos)
         }
         menu.addAction(m_actCreate);
         menu.addAction(m_actNewTemplate);
+        menu.addAction(m_actUpgradeAll);
         menu.addAction(m_actRefresh);
     }
 
@@ -783,12 +845,96 @@ void MainWindow::onUpdateTemplate()
 {
     const TemplateInfo t = selectedTemplate();
     if (!t.isValid()) return;
-    if (QMessageBox::question(this, tr("Update Template"),
-        tr("Update packages inside template '%1'?\n\nExisting compartments created from it remain unchanged.").arg(t.name)) != QMessageBox::Yes) {
+
+    const QString hostRel = t.hostOsVersion.section(QLatin1String("-p"), 0, 0);
+    const QString msg = t.isOsOutdated()
+        ? tr("Upgrade template '%1' (%2) to match your host system (%3) and update packages?\n\n"
+             "A ZFS safety snapshot is created automatically first. Existing compartments stay untouched.")
+              .arg(t.name, t.osVersion, hostRel.isEmpty() ? t.hostOsVersion : hostRel)
+        : tr("Update packages inside template '%1' (%2)?\n\nExisting compartments created from it remain unchanged.")
+              .arg(t.name, t.osVersion);
+
+    if (QMessageBox::question(this, tr("Update Template System & Packages"), msg) != QMessageBox::Yes) {
         return;
     }
     m_backend->updateTemplateAsync(t.name, t.shipped);
     auto *logDlg = new ProcessLogDialog(m_backend, tr("Updating template %1").arg(t.name), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
+}
+
+void MainWindow::onRecoverTemplate()
+{
+    const TemplateInfo t = selectedTemplate();
+    if (!t.isValid()) return;
+    if (QMessageBox::question(this, tr("Restore Template Safety Snapshot"),
+        tr("Restore template '%1' back to its newest pre-upgrade backup snapshot?\n\n"
+           "Any unfinished OS update changes in this template will be safely undone.").arg(t.name)) != QMessageBox::Yes) {
+        return;
+    }
+    m_backend->recoverTemplate(t.name, QString());
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Restoring template %1").arg(t.name), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
+}
+
+void MainWindow::onUpgradeOs()
+{
+    const ContainerInfo c = selectedContainer();
+    if (!c.isValid()) return;
+    if (c.needsRecovery) {
+        QMessageBox::warning(this, tr("Recovery Required First"),
+            tr("Compartment '%1' has an interrupted update. Please click 'Restore Snapshot...' first.").arg(c.name));
+        return;
+    }
+    const QString targetInfo = c.hostOsVersion.isEmpty() ? tr("the host FreeBSD version") : c.hostOsVersion;
+    const QString runningNote = c.isRunning()
+        ? tr("\n\nNote: '%1' is currently running and will be safely stopped during the update, then restarted afterward.").arg(c.name)
+        : QString();
+
+    if (QMessageBox::question(this, tr("Update / Upgrade Compartment System"),
+        tr("Update FreeBSD system files and installed applications in '%1' (currently %2) to match %3?\n\n"
+           "A ZFS backup snapshot is taken automatically before changes begin, so if anything fails your compartment rolls back safely.%4")
+            .arg(c.name, c.osVersion.isEmpty() ? tr("unknown") : c.osVersion, targetInfo, runningNote)) != QMessageBox::Yes) {
+        return;
+    }
+
+    m_backend->upgradeCompartmentOs(c.name, QString(), c.isRunning());
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Updating system in %1").arg(c.name), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
+}
+
+void MainWindow::onUpgradeAll()
+{
+    if (QMessageBox::question(this, tr("Update All Outdated Systems"),
+        tr("Update all outdated templates and compartments to match the host FreeBSD version?\n\n"
+           "Running compartments will be paused cleanly during their update, and automatic ZFS backup snapshots protect every item.")) != QMessageBox::Yes) {
+        return;
+    }
+    m_backend->upgradeAllOutdated(true);
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Updating outdated compartments & templates"), this);
+    logDlg->setAttribute(Qt::WA_DeleteOnClose);
+    logDlg->show();
+}
+
+void MainWindow::onRecoverCompartment()
+{
+    const ContainerInfo c = selectedContainer();
+    if (!c.isValid()) return;
+
+    const QString stopNote = c.isRunning()
+        ? tr("\n\nNote: '%1' will be stopped safely before restoring.").arg(c.name)
+        : QString();
+
+    if (QMessageBox::question(this, tr("Restore Pre-Upgrade Snapshot"),
+        tr("Restore compartment '%1' back to its latest pre-upgrade backup snapshot?%2")
+            .arg(c.name, stopNote)) != QMessageBox::Yes) {
+        return;
+    }
+
+    m_backend->recoverCompartment(c.name, QString(), c.isRunning());
+    auto *logDlg = new ProcessLogDialog(m_backend, tr("Restoring %1").arg(c.name), this);
     logDlg->setAttribute(Qt::WA_DeleteOnClose);
     logDlg->show();
 }
@@ -800,17 +946,26 @@ void MainWindow::onDestroy()
 
     if (c.isContained()) {
         QMessageBox::critical(this, tr("Cannot Destroy"),
-            tr("This compartment is blocked by Guardian. Investigate the incident first."));
+            tr("This compartment is contained. Review it first before destroying."));
         return;
     }
 
-    bool ok = false;
-    const QString token = QInputDialog::getText(this, tr("Confirm Destruction"),
-        tr("This will permanently delete compartment '%1' and all files inside it.\nType the compartment name to confirm:").arg(c.name),
-        QLineEdit::Normal, QString(), &ok);
+    const QString expectedToken = c.isVault ? (QStringLiteral("destroy-") + c.name) : c.name;
+    const QString prompt = c.isVault
+        ? tr("This will permanently destroy vault '%1' AND erase all encrypted vault data inside it.\nThis cannot be undone.\n\nType '%2' to confirm:")
+              .arg(c.name, expectedToken)
+        : tr("This will permanently delete compartment '%1' and all files inside it.\n\nType the compartment name to confirm:")
+              .arg(c.name);
 
-    if (!ok || token != c.name) {
-        if (ok) QMessageBox::warning(this, tr("Aborted"), tr("The typed name did not match."));
+    bool ok = false;
+    const QString token = QInputDialog::getText(this, tr("Confirm Destruction"), prompt,
+                                                QLineEdit::Normal, QString(), &ok);
+
+    if (!ok || token != expectedToken) {
+        if (ok) {
+            QMessageBox::warning(this, tr("Aborted"),
+                tr("Confirmation text did not match '%1'.").arg(expectedToken));
+        }
         return;
     }
 
@@ -940,7 +1095,7 @@ void MainWindow::onAbout()
     QMessageBox::about(this, tr("About ParishBSD Compartment Manager"),
         tr("<b>ParishBSD Compartment Manager</b><br><br>"
            "Manage isolated compartments, encrypted vaults, installed applications, "
-           "and templates on ParishBSD."));
+           "FreeBSD compartment upgrades, and templates on ParishBSD."));
 }
 
 void MainWindow::onOperationStarted(const QString &desc)

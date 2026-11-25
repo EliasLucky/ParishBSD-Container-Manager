@@ -27,6 +27,11 @@ struct UsbDeviceInfo {
     QString attachedJails; // comma-separated
 };
 
+struct SnapshotInfo {
+    QString name;
+    QString created;
+};
+
 class ContainerBackend : public QObject {
     Q_OBJECT
 public:
@@ -38,6 +43,7 @@ public:
     void requestPackages(const QString &jail);
     void requestExchangeFiles(const QString &jail);
     void requestUsbDevices();
+    void requestSnapshots(const QString &name, bool isTemplate);
     bool isBusy() const;
 
     // Lifecycle & vault operations
@@ -74,7 +80,19 @@ public:
     // Interactive terminal actions (run independently of backend queue)
     void openConsole(const QString &name);
     void launchTemplateWizard();
-    void updateTemplateAsync(const QString &name, bool shipped);
+    void updateTemplateAsync(const QString &name, bool shipped,
+                             const QString &targetRelease = QString());
+
+    // FreeBSD OS upgrades & ZFS snapshot recovery
+    void upgradeCompartmentOs(const QString &name,
+                              const QString &targetRelease = QString(),
+                              bool stopFirst = false);
+    void upgradeAllOutdated(bool stopFirst = false);
+    void recoverCompartment(const QString &name,
+                            const QString &snapshotName,
+                            bool stopFirst = false);
+    void recoverTemplate(const QString &name,
+                         const QString &snapshotName);
 
     // Application / package management
     void upgradePackages(const QString &jail);
@@ -98,6 +116,7 @@ signals:
     void packagesReady(QString jail, QList<PackageInfo> list, QString error);
     void exchangeFilesReady(QString jail, QList<ExchangeFileEntry> files, QString error);
     void usbDevicesReady(QList<UsbDeviceInfo> devices, QString error);
+    void snapshotsReady(QString name, bool isTemplate, QList<SnapshotInfo> snapshots, QString error);
 
     void installOutputReady(const QString &text);
     void installFinished(bool success, const QString &errorMessage);
@@ -110,6 +129,7 @@ private:
             PollPackages,
             PollExchangeFiles,
             PollUsbDevices,
+            PollSnapshots,
             UserAction,
             StreamingAction
         };
@@ -119,13 +139,15 @@ private:
         QString program;
         QStringList args;
         QString targetJail;
+        bool targetIsTemplate = false;
 
         bool isPoll() const {
             return kind == Kind::PollContainers ||
                    kind == Kind::PollTemplates ||
                    kind == Kind::PollPackages ||
                    kind == Kind::PollExchangeFiles ||
-                   kind == Kind::PollUsbDevices;
+                   kind == Kind::PollUsbDevices ||
+                   kind == Kind::PollSnapshots;
         }
     };
 

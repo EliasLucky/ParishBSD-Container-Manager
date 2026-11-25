@@ -34,6 +34,10 @@ private slots:
     void onCreate();
     void onCreateTemplate();
     void onUpdateTemplate();
+    void onRecoverTemplate();
+    void onUpgradeOs();
+    void onUpgradeAll();
+    void onRecoverCompartment();
     void onDestroy();
     void onStart();
     void onStop();
@@ -80,6 +84,7 @@ private:
     QLabel *m_inspName = nullptr;
     QLabel *m_inspDetails = nullptr;
     QLabel *m_inspGuardianBanner = nullptr;
+    QLabel *m_inspRecoveryBanner = nullptr;
     QComboBox *m_inspRiskCombo = nullptr;
     QGroupBox *m_inspAudioBox = nullptr;
     QCheckBox *m_inspAudioOutCheck = nullptr;
@@ -91,12 +96,15 @@ private:
     QPushButton *m_inspAppsBtn = nullptr;
     QPushButton *m_inspExchangeBtn = nullptr;
     QPushButton *m_inspUsbBtn = nullptr;
+    QPushButton *m_inspUpgradeBtn = nullptr;
+    QPushButton *m_inspRecoverBtn = nullptr;
     QPushButton *m_inspDestroyBtn = nullptr;
 
     QLabel *m_tmplName = nullptr;
     QLabel *m_tmplDetails = nullptr;
     QPushButton *m_tmplCreateBtn = nullptr;
     QPushButton *m_tmplUpdateBtn = nullptr;
+    QPushButton *m_tmplRecoverBtn = nullptr;
 
     QAction *m_actRefresh = nullptr;
     QAction *m_actCreate = nullptr;
@@ -108,6 +116,9 @@ private:
     QAction *m_actLock = nullptr;
     QAction *m_actConsole = nullptr;
     QAction *m_actApps = nullptr;
+    QAction *m_actUpgradeOs = nullptr;
+    QAction *m_actUpgradeAll = nullptr;
+    QAction *m_actRecover = nullptr;
     QAction *m_actExchange = nullptr;
     QAction *m_actUsb = nullptr;
     QAction *m_actSettings = nullptr;

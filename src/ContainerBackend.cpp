@@ -102,6 +102,7 @@ void ContainerBackend::pumpQueue()
     case PendingTask::Kind::PollPackages:
     case PendingTask::Kind::PollExchangeFiles:
     case PendingTask::Kind::PollUsbDevices:
+    case PendingTask::Kind::PollSnapshots:
         startPollTask(m_currentTask);
         break;
     case PendingTask::Kind::UserAction:
@@ -142,6 +143,8 @@ void ContainerBackend::startPollTask(const PendingTask &task)
             emit exchangeFilesReady(task.targetJail, {}, errMsg);
         } else if (task.kind == PendingTask::Kind::PollUsbDevices) {
             emit usbDevicesReady({}, errMsg);
+        } else if (task.kind == PendingTask::Kind::PollSnapshots) {
+            emit snapshotsReady(task.targetJail, task.targetIsTemplate, {}, errMsg);
         }
     };
 
@@ -200,6 +203,12 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                         info.audioOutput = !info.isVault && obj[QStringLiteral("audio_output")].toBool(false);
                         info.audioInput = !info.isVault && obj[QStringLiteral("audio_input")].toBool(false);
                         info.internalIp = obj[QStringLiteral("internal_ip")].toString();
+                        info.osVersion = obj[QStringLiteral("os_version")].toString();
+                        info.osArch = obj[QStringLiteral("os_arch")].toString();
+                        info.hostOsVersion = obj[QStringLiteral("host_os_version")].toString();
+                        info.hostOsArch = obj[QStringLiteral("host_os_arch")].toString();
+                        info.osStatus = obj[QStringLiteral("os_status")].toString();
+                        info.needsRecovery = obj[QStringLiteral("needs_recovery")].toBool(false);
                         info.path = QStringLiteral("/usr/local/jails/containers/%1").arg(info.name);
 
                         const QJsonArray caps = obj[QStringLiteral("capabilities")].toArray();
@@ -243,6 +252,12 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                         info.buildSizeMb = obj[QStringLiteral("build_size_mb")].toInt();
                         info.hidden = obj[QStringLiteral("hidden")].toBool();
                         info.shipped = obj[QStringLiteral("shipped")].toBool();
+                        info.osVersion = obj[QStringLiteral("os_version")].toString();
+                        info.osArch = obj[QStringLiteral("os_arch")].toString();
+                        info.hostOsVersion = obj[QStringLiteral("host_os_version")].toString();
+                        info.hostOsArch = obj[QStringLiteral("host_os_arch")].toString();
+                        info.osStatus = obj[QStringLiteral("os_status")].toString();
+                        info.needsRecovery = obj[QStringLiteral("needs_recovery")].toBool(false);
                         const QString clustersCsv = obj[QStringLiteral("clusters")].toString();
                         if (!clustersCsv.isEmpty()) {
                             info.clusters = clustersCsv.split(QLatin1Char(','), Qt::SkipEmptyParts);
@@ -349,6 +364,27 @@ void ContainerBackend::startPollTask(const PendingTask &task)
                 }
             }
             emit usbDevicesReady(result, err);
+        } else if (task.kind == PendingTask::Kind::PollSnapshots) {
+            QList<SnapshotInfo> result;
+            QString err;
+            if (!ok) {
+                err = formatProcessFailure(exitCode, status, QString::fromUtf8(rawErr));
+            } else {
+                const QJsonDocument doc = QJsonDocument::fromJson(rawOut);
+                if (!doc.isArray()) {
+                    err = tr("Could not read recovery snapshot list.");
+                } else {
+                    for (const QJsonValue &val : doc.array()) {
+                        if (!val.isObject()) continue;
+                        const QJsonObject obj = val.toObject();
+                        SnapshotInfo s;
+                        s.name = obj[QStringLiteral("snapshot")].toString();
+                        s.created = obj[QStringLiteral("created")].toString();
+                        if (!s.name.isEmpty()) result.append(s);
+                    }
+                }
+            }
+            emit snapshotsReady(task.targetJail, task.targetIsTemplate, result, err);
         }
 
         proc->deleteLater();
@@ -572,6 +608,24 @@ void ContainerBackend::requestUsbDevices()
     enqueueTask(t);
 }
 
+void ContainerBackend::requestSnapshots(const QString &name, bool isTemplate)
+{
+    if (!isValidCompartmentName(name)) {
+        emit snapshotsReady(name, isTemplate, {}, tr("Invalid name."));
+        return;
+    }
+    PendingTask t;
+    t.kind = PendingTask::Kind::PollSnapshots;
+    t.description = tr("Listing recovery snapshots for %1").arg(name);
+    t.program = m_pkexecPath;
+    t.args = { isTemplate ? QStringLiteral("/usr/local/sbin/parishctl-template-recover")
+                          : QStringLiteral("/usr/local/sbin/parishctl-recover"),
+               name, QStringLiteral("--list"), QStringLiteral("--json") };
+    t.targetJail = name;
+    t.targetIsTemplate = isTemplate;
+    enqueueTask(t);
+}
+
 void ContainerBackend::enqueueParishctl(const QString &description, const QStringList &args)
 {
     PendingTask t;
@@ -728,14 +782,68 @@ void ContainerBackend::launchTemplateWizard()
                               false);
 }
 
-void ContainerBackend::updateTemplateAsync(const QString &name, bool shipped)
+void ContainerBackend::updateTemplateAsync(const QString &name, bool shipped, const QString &targetRelease)
 {
-    enqueueStreamingPkexec(tr("Updating template '%1'").arg(name),
-                           { QStringLiteral("/usr/local/sbin/parish-template-build"),
-                             name,
-                             QStringLiteral("--update"),
-                             QStringLiteral("--source=%1").arg(shipped ? QStringLiteral("shipped")
-                                                                       : QStringLiteral("user")) });
+    QStringList args{
+        QStringLiteral("/usr/local/sbin/parish-template-build"),
+        name,
+        QStringLiteral("--update"),
+        QStringLiteral("--source=%1").arg(shipped ? QStringLiteral("shipped")
+                                                  : QStringLiteral("user"))
+    };
+    if (!targetRelease.trimmed().isEmpty()) {
+        args << QStringLiteral("--target-release=%1").arg(targetRelease.trimmed());
+    }
+    enqueueStreamingPkexec(tr("Updating template '%1'").arg(name), args);
+}
+
+void ContainerBackend::upgradeCompartmentOs(const QString &name,
+                                            const QString &targetRelease,
+                                            bool stopFirst)
+{
+    if (!isValidCompartmentName(name)) return;
+    QStringList args{ QStringLiteral("/usr/local/sbin/parishctl-upgrade"), name };
+    if (!targetRelease.trimmed().isEmpty()) {
+        args << QStringLiteral("--target=%1").arg(targetRelease.trimmed());
+    }
+    if (stopFirst) {
+        args << QStringLiteral("--stop");
+    }
+    enqueueStreamingPkexec(tr("Updating system in '%1'").arg(name), args);
+}
+
+void ContainerBackend::upgradeAllOutdated(bool stopFirst)
+{
+    QStringList args{ QStringLiteral("/usr/local/sbin/parishctl-upgrade"), QStringLiteral("--all") };
+    if (stopFirst) {
+        args << QStringLiteral("--stop");
+    }
+    enqueueStreamingPkexec(tr("Updating all outdated compartments and templates"), args);
+}
+
+void ContainerBackend::recoverCompartment(const QString &name,
+                                          const QString &snapshotName,
+                                          bool stopFirst)
+{
+    if (!isValidCompartmentName(name)) return;
+    QStringList args{ QStringLiteral("/usr/local/sbin/parishctl-recover"), name };
+    if (!snapshotName.trimmed().isEmpty()) {
+        args << QStringLiteral("--snapshot=%1").arg(snapshotName.trimmed());
+    }
+    if (stopFirst) {
+        args << QStringLiteral("--stop");
+    }
+    enqueueStreamingPkexec(tr("Restoring backup snapshot for '%1'").arg(name), args);
+}
+
+void ContainerBackend::recoverTemplate(const QString &name, const QString &snapshotName)
+{
+    if (!isValidCompartmentName(name)) return;
+    QStringList args{ QStringLiteral("/usr/local/sbin/parishctl-template-recover"), name };
+    if (!snapshotName.trimmed().isEmpty()) {
+        args << QStringLiteral("--snapshot=%1").arg(snapshotName.trimmed());
+    }
+    enqueueStreamingPkexec(tr("Restoring backup snapshot for template '%1'").arg(name), args);
 }
 
 void ContainerBackend::upgradePackages(const QString &jail)

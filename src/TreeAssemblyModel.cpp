@@ -107,7 +107,15 @@ QVariant TreeAssemblyModel::data(const QModelIndex &index, int role) const
             case SourceColumn:      return c.sourceTemplate;
             case StateColumn:       return c.humanState();
             case RiskColumn:        return c.humanRiskLevel();
-            case DescriptionColumn: return tr("%1 · %2").arg(c.kind, formatDiskUsage(c.diskUsage));
+            case DescriptionColumn: {
+                QString base = tr("%1 · %2").arg(c.kind, formatDiskUsage(c.diskUsage));
+                if (c.needsRecovery) {
+                    base += tr(" · Recovery needed");
+                } else if (c.isOsOutdated()) {
+                    base += tr(" · OS update (%1)").arg(c.osVersion);
+                }
+                return base;
+            }
             }
         }
         if (role == Qt::DecorationRole && index.column() == StateColumn) {
@@ -132,9 +140,14 @@ QVariant TreeAssemblyModel::data(const QModelIndex &index, int role) const
             case RiskColumn:   return t.kind;
             case DescriptionColumn: {
                 const int uses = getUseCount(t.name);
-                const QString useStr = (uses == 1)
+                QString useStr = (uses == 1)
                     ? tr("1 compartment uses this. ")
                     : tr("%1 compartments use this. ").arg(uses);
+                if (t.needsRecovery) {
+                    useStr += tr("[Recovery needed] ");
+                } else if (t.isOsOutdated() && !t.osVersion.isEmpty()) {
+                    useStr += tr("[OS %1 -> %2] ").arg(t.osVersion, t.hostOsVersion);
+                }
                 return useStr + t.description;
             }
             }
