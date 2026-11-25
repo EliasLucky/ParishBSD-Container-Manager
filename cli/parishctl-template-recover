@@ -1,0 +1,59 @@
+#!/bin/sh
+# parishctl-template-recover  list or restore safety snapshots for a template.
+# Runs via pkexec.
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/os_upgrade.sh"
+
+name=""
+list_only=0
+json_mode=0
+snap=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list)        list_only=1 ;;
+        --json)        json_mode=1 ;;
+        --snapshot=*)  snap="${1#--snapshot=}" ;;
+        -*)            printf 'parish: unknown option: %s\n' "$1" >&2; exit 2 ;;
+        *)             if [ -z "$name" ]; then name="$1"; else printf 'parish: unexpected argument: %s\n' "$1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+
+[ -n "$name" ] || { printf 'usage: parishctl template recover <name> [--list [--json] | --snapshot=<snap>]\n' >&2; exit 2; }
+case "$name" in ''|*[!a-z0-9-]*|-*|*-|*--*) printf 'parish: invalid template name\n' >&2; exit 2 ;; esac
+[ "${#name}" -le 63 ] || { printf 'parish: template name too long\n' >&2; exit 2; }
+
+ds="zroot/jails/templates/$name"
+zfs list -H -o name "$ds" >/dev/null 2>&1 || {
+    printf 'parish: template dataset %s does not exist\n' "$ds" >&2
+    exit 1
+}
+
+if [ "$list_only" -eq 1 ]; then
+    if [ "$json_mode" -eq 1 ]; then
+        printf '['
+        first=1
+        parish_list_snapshots "$ds" | while IFS='	' read -r sname scre; do
+            [ -n "$sname" ] || continue
+            [ "$first" -eq 1 ] || printf ','
+            first=0
+            printf '\n  {"snapshot": "%s", "created": "%s"}' "$sname" "$scre"
+        done
+        printf '\n]\n'
+    else
+        printf 'Recovery snapshots for template %s (%s):\n' "$name" "$ds"
+        parish_list_snapshots "$ds" | while IFS='	' read -r sname scre; do
+            printf '  %-32s  %s\n' "$sname" "$scre"
+        done
+    fi
+    exit 0
+fi
+
+if [ -n "$snap" ]; then
+    exec /usr/local/sbin/parish-template-build "$name" --recover="$snap"
+else
+    exec /usr/local/sbin/parish-template-build "$name" --recover
+fi

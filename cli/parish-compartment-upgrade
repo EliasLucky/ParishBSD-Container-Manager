@@ -1,0 +1,589 @@
+#!/bin/sh
+# parish-compartment-upgrade
+# Upgrade FreeBSD OS userland + packages inside ParishBSD compartments
+# (app, compatibility, and vaults) and manage ZFS pre-upgrade recovery snapshots.
+#
+# Runs as root (invoked via pkexec through parishctl-upgrade / parishctl-recover).
+# Handles:
+#   - Patch updates (e.g. 15.1-RELEASE -> 15.1-RELEASE-p2)
+#   - Minor upgrades (e.g. 15.0-RELEASE -> 15.1-RELEASE)
+#   - Major upgrades (e.g. 14.3-RELEASE -> 15.1-RELEASE), including pkg ABI
+#     re-bootstrap BEFORE deleting obsolete shared libraries
+#   - FreeBSD pkgbase vs traditional freebsd-update(8)
+#   - Vault protection (snapshots both jail dataset and vault-data dataset when unlocked)
+#   - Interrupted upgrade detection + ZFS snapshot rollback recovery
+
+set -eu
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/validate.sh"
+. "$LIBDIR/state.sh"
+. "$LIBDIR/service.sh"
+. "$LIBDIR/container.sh"
+. "$LIBDIR/policy.sh"
+. "$LIBDIR/os_upgrade.sh"
+
+LOG_DIR="/var/log/parishbsd"
+RUN_DIR="/var/run/parishbsd"
+
+log()  { printf '==> %s\n' "$*"; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+err()  { printf 'parish: %s\n' "$*" >&2; exit 1; }
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || err "must be run as root (use parishctl upgrade / recover)"
+}
+
+_ts_now() {
+    date -u +%Y%m%d-%H%M%S
+}
+
+_resolve_jail_dataset() {
+    _rjd_name="$1"
+    _rjd_root="$2"
+    for _cand in "zroot/jails/app/$_rjd_name" "zroot/jails/vault/$_rjd_name" "zroot/jails/containers/$_rjd_name"; do
+        if zfs list -H -o name "$_cand" >/dev/null 2>&1; then
+            printf '%s' "$_cand"
+            return 0
+        fi
+    done
+    _rjd_ds="$(zfs list -H -o name,mountpoint 2>/dev/null | awk -v mp="$_rjd_root" '$2==mp {print $1; exit}')"
+    [ -n "$_rjd_ds" ] && printf '%s' "$_rjd_ds"
+}
+
+_sync_resolvconf() {
+    _sr_root="$1"
+    if [ -r /etc/resolv.conf ] && [ -d "$_sr_root/etc" ] && [ ! -L "$_sr_root/etc/resolv.conf" ]; then
+        cp /etc/resolv.conf "$_sr_root/etc/resolv.conf" 2>/dev/null || true
+        chmod 0644 "$_sr_root/etc/resolv.conf" 2>/dev/null || true
+    fi
+}
+
+_check_pool_headroom_mb() {
+    _need_mb="${1:-1024}"
+    _avail_bytes="$(zfs get -H -p -o value available zroot/jails 2>/dev/null || zfs get -H -p -o value available zroot 2>/dev/null || echo 0)"
+    case "$_avail_bytes" in ''|*[!0-9]*) _avail_bytes=0 ;; esac
+    _avail_mb=$((_avail_bytes / 1024 / 1024))
+    if [ "$_avail_mb" -gt 0 ] && [ "$_avail_mb" -lt "$_need_mb" ]; then
+        err "insufficient free space on zroot (${_avail_mb} MiB free, need at least ${_need_mb} MiB for snapshot + OS upgrade)."
+    fi
+}
+
+_write_upgrade_state() {
+    _wus_name="$1"
+    _wus_state="$2"
+    _wus_snap="$3"
+    _wus_from="$4"
+    _wus_to="$5"
+    mkdir -p "$PARISH_UPGRADE_STATE_DIR"
+    chmod 0755 "$PARISH_UPGRADE_STATE_DIR"
+    _wus_file="$PARISH_UPGRADE_STATE_DIR/$_wus_name.state"
+    _wus_tmp="${_wus_file}.tmp.$$"
+    cat > "$_wus_tmp" <<EOF
+NAME=$_wus_name
+STATE=$_wus_state
+SNAPSHOT=$_wus_snap
+FROM_VERSION=$_wus_from
+TO_VERSION=$_wus_to
+TIMESTAMP=$(_ts_now)
+EOF
+    chmod 0644 "$_wus_tmp"
+    mv -f "$_wus_tmp" "$_wus_file"
+}
+
+_clear_upgrade_state() {
+    _cus_name="$1"
+    _cus_snap="$2"
+    _cus_from="$3"
+    _cus_to="$4"
+    _write_upgrade_state "$_cus_name" "ready" "$_cus_snap" "$_cus_from" "$_cus_to"
+}
+
+_preserve_configs() {
+    _pc_root="$1"
+    _pc_bak="$2"
+    parish_backup_jail_configs "$_pc_root" "$_pc_bak"
+}
+
+_restore_critical_configs() {
+    _rc_root="$1"
+    _rc_bak="$2"
+    _rc_tier="${3:-app}"
+    parish_restore_jail_configs "$_rc_root" "$_rc_bak"
+    if [ "$_rc_tier" != "vault" ]; then
+        _sync_resolvconf "$_rc_root"
+    elif [ ! -f "$_rc_bak/etc/resolv.conf" ]; then
+        rm -f "$_rc_root/etc/resolv.conf" 2>/dev/null || true
+    fi
+}
+
+# Reconfigure pkg ABI cleanly inside root if major release changed
+_upgrade_pkgs_for_abi() {
+    _up_root="$1"
+    _up_target_rel="$2"
+    _up_arch="$3"
+    _up_major="${_up_target_rel%%.*}"
+    _up_abi="FreeBSD:${_up_major}:${_up_arch}"
+
+    log "Updating application packages for ABI ${_up_abi}..."
+    _sync_resolvconf "$_up_root"
+
+    _pkg_static="/usr/local/sbin/pkg-static"
+    [ -x "$_pkg_static" ] || _pkg_static="/usr/local/sbin/pkg"
+    if ! env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes ABI="$_up_abi" \
+        "$_pkg_static" -r "$_up_root" bootstrap -f -y; then
+        warn "pkg bootstrap -f returned non-zero; attempting pkg upgrade anyway"
+    fi
+
+    env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes ABI="$_up_abi" \
+        pkg -r "$_up_root" update -f || return 1
+
+    # Force-upgrade packages against the new ABI BEFORE deleting obsolete base shared libs
+    env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes ABI="$_up_abi" \
+        pkg -r "$_up_root" upgrade -f -y || return 1
+}
+
+_run_freebsd_update_on_root() {
+    _rfu_root="$1"
+    _rfu_cur_ver="$2"
+    _rfu_target_ver="$3"
+    _rfu_arch="$4"
+    _rfu_tier="$5"
+
+    _rfu_cur_rel="$(parish_release_branch "$_rfu_cur_ver")"
+    _rfu_tgt_rel="$(parish_release_branch "$_rfu_target_ver")"
+    _rfu_status="$(parish_version_status "$_rfu_cur_ver" "$_rfu_target_ver")"
+
+    if parish_root_uses_pkgbase "$_rfu_root"; then
+        log "Detected pkgbase inside compartment; upgrading base packages for ${_rfu_tgt_rel}..."
+        _rfu_major="${_rfu_tgt_rel%%.*}"
+        _rfu_abi="FreeBSD:${_rfu_major}:${_rfu_arch}"
+        _sync_resolvconf "$_rfu_root"
+        env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes ABI="$_rfu_abi" \
+            pkg -r "$_rfu_root" update -f || return 1
+        env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes ABI="$_rfu_abi" \
+            pkg -r "$_rfu_root" upgrade -y || return 1
+        return 0
+    fi
+
+    if [ "$_rfu_status" = "current" ] || [ "$_rfu_status" = "ahead" ]; then
+        log "Base OS version ($_rfu_cur_ver) already matches target ($_rfu_target_ver). Upgrading installed apps..."
+        _sync_resolvconf "$_rfu_root"
+        env ASSUME_ALWAYS_YES=yes pkg -r "$_rfu_root" update -f || return 1
+        env ASSUME_ALWAYS_YES=yes pkg -r "$_rfu_root" upgrade -y || return 1
+        return 0
+    fi
+
+    _rfu_ts="$(_ts_now)"
+    _rfu_conf="$RUN_DIR/fbsd-update-jail-${_rfu_ts}-$$.conf"
+    _rfu_work="$RUN_DIR/fbsd-work-jail-${_rfu_ts}-$$"
+    mkdir -p "$_rfu_work"
+    parish_write_jail_fbsd_update_conf "$_rfu_conf" "$_rfu_work"
+
+    # Same release branch: security/errata patches only
+    if [ "$_rfu_cur_rel" = "$_rfu_tgt_rel" ]; then
+        log "Applying FreeBSD security and patch updates (${_rfu_cur_ver} -> ${_rfu_target_ver})..."
+        _sync_resolvconf "$_rfu_root"
+        if ! yes | env UNAME_r="$_rfu_cur_rel" PAGER=cat EDITOR=/usr/bin/true ASSUME_ALWAYS_YES=yes \
+            freebsd-update -b "$_rfu_root" -f "$_rfu_conf" --currently-running "$_rfu_cur_ver" \
+            --not-running-from-cron fetch; then
+            rm -rf "$_rfu_conf" "$_rfu_work"
+            return 1
+        fi
+        yes | env UNAME_r="$_rfu_cur_rel" PAGER=cat EDITOR=/usr/bin/true ASSUME_ALWAYS_YES=yes \
+            freebsd-update -b "$_rfu_root" -f "$_rfu_conf" --currently-running "$_rfu_cur_ver" \
+            --not-running-from-cron install || true
+
+        log "Upgrading installed packages inside compartment..."
+        if ! env ASSUME_ALWAYS_YES=yes pkg -r "$_rfu_root" update -f || \
+           ! env ASSUME_ALWAYS_YES=yes pkg -r "$_rfu_root" upgrade -y; then
+            rm -rf "$_rfu_conf" "$_rfu_work"
+            return 1
+        fi
+        rm -rf "$_rfu_conf" "$_rfu_work"
+        return 0
+    fi
+
+    # Cross-release minor or major upgrade (e.g. 14.3-RELEASE -> 15.1-RELEASE or 15.0 -> 15.1)
+    log "Upgrading FreeBSD release from ${_rfu_cur_rel} to ${_rfu_tgt_rel}..."
+    log "Stage 1/4: Fetching upgrade files (runs from host; compartment stays isolated)..."
+    _sync_resolvconf "$_rfu_root"
+    if ! yes | env PAGER=cat EDITOR=/usr/bin/true ASSUME_ALWAYS_YES=yes \
+        freebsd-update -b "$_rfu_root" -f "$_rfu_conf" --currently-running "$_rfu_cur_ver" \
+        -r "$_rfu_tgt_rel" --not-running-from-cron upgrade; then
+        rm -rf "$_rfu_conf" "$_rfu_work"
+        return 1
+    fi
+
+    log "Stage 2/4: Installing updated userland libraries and binaries (keeping old libs during ABI transition)..."
+    yes | env PAGER=cat EDITOR=/usr/bin/true ASSUME_ALWAYS_YES=yes \
+        freebsd-update -b "$_rfu_root" -f "$_rfu_conf" --currently-running "$_rfu_tgt_rel" \
+        --not-running-from-cron install || true
+    yes | env PAGER=cat EDITOR=/usr/bin/true ASSUME_ALWAYS_YES=yes \
+        freebsd-update -b "$_rfu_root" -f "$_rfu_conf" --currently-running "$_rfu_tgt_rel" \
+        --not-running-from-cron install || true
+
+    log "Stage 3/4: Rebuilding/upgrading packages for ${_rfu_tgt_rel} ABI BEFORE removing old libraries..."
+    if [ "$_rfu_tier" = "vault" ]; then
+        log "Vault note: upgrading packages cleanly using host resolver without altering encrypted vault data."
+    fi
+    if ! _upgrade_pkgs_for_abi "$_rfu_root" "$_rfu_tgt_rel" "$_rfu_arch"; then
+        rm -rf "$_rfu_conf" "$_rfu_work"
+        return 1
+    fi
+
+    log "Stage 4/4: Cleaning up superseded old base libraries and cache..."
+    yes | env PAGER=cat EDITOR=/usr/bin/true ASSUME_ALWAYS_YES=yes \
+        freebsd-update -b "$_rfu_root" -f "$_rfu_conf" --currently-running "$_rfu_tgt_rel" \
+        --not-running-from-cron install || true
+    rm -rf "$_rfu_root/var/db/freebsd-update"/* "$_rfu_conf" "$_rfu_work" 2>/dev/null || true
+
+    # Verify dependency linkage & shell sanity
+    log "Verifying compartment integrity after upgrade..."
+    chroot "$_rfu_root" /bin/sh -c 'true' || return 1
+    pkg -r "$_rfu_root" check -d || warn "pkg check -d reported minor dependency warnings; inspect if any app fails to start."
+    return 0
+}
+
+cmd_status() {
+    json_mode=0
+    target_jail=""
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=1 ;;
+            -*) err "unknown option: $arg" ;;
+            *) target_jail="$arg" ;;
+        esac
+    done
+
+    host_ver="$(parish_host_os_version)"
+    host_arch="$(parish_host_os_arch)"
+
+    if [ "$json_mode" -eq 1 ]; then
+        printf '{\n'
+        printf '  "host_os_version": "%s",\n' "$host_ver"
+        printf '  "host_os_arch": "%s",\n' "$host_arch"
+        printf '  "compartments": ['
+        first=1
+        for d in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/containers/*; do
+            [ -d "$d" ] && [ -f "$d/bin/sh" ] || continue
+            name="$(basename "$d")"
+            [ -z "$target_jail" ] || [ "$name" = "$target_jail" ] || continue
+            ov="$(parish_root_os_version "$d" || echo "unknown")"
+            oa="$(parish_root_os_arch "$d" || echo "$host_arch")"
+            st="$(parish_version_status "$ov" "$host_ver")"
+            rec="false"; parish_upgrade_interrupted "$name" && rec="true"
+            [ "$first" -eq 1 ] || printf ','
+            first=0
+            printf '\n    {"name": "%s", "os_version": "%s", "os_arch": "%s", "os_status": "%s", "needs_recovery": %s}' \
+                "$name" "$ov" "$oa" "$st" "$rec"
+        done
+        printf '\n  ]\n}\n'
+    else
+        printf 'Host OS: %s (%s)\n\n' "$host_ver" "$host_arch"
+        printf '%-20s %-18s %-8s %-14s\n' "COMPARTMENT" "OS_VERSION" "ARCH" "STATUS"
+        printf '%-20s %-18s %-8s %-14s\n' "-----------" "----------" "----" "------"
+        for d in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/containers/*; do
+            [ -d "$d" ] && [ -f "$d/bin/sh" ] || continue
+            name="$(basename "$d")"
+            [ -z "$target_jail" ] || [ "$name" = "$target_jail" ] || continue
+            ov="$(parish_root_os_version "$d" || echo "unknown")"
+            oa="$(parish_root_os_arch "$d" || echo "$host_arch")"
+            st="$(parish_version_status "$ov" "$host_ver")"
+            parish_upgrade_interrupted "$name" && st="needs-recovery"
+            printf '%-20s %-18s %-8s %-14s\n' "$name" "$ov" "$oa" "$st"
+        done
+    fi
+}
+
+cmd_upgrade_one() {
+    jail=""
+    target_rel=""
+    auto_stop=0
+    restart_after=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target=*) target_rel="${1#--target=}" ;;
+            --to=*)     target_rel="${1#--to=}" ;;
+            --stop)     auto_stop=1 ;;
+            --restart)  restart_after=1 ;;
+            -*)         err "unknown option: $1" ;;
+            *)          if [ -z "$jail" ]; then jail="$1"; else err "unexpected argument: $1"; fi ;;
+        esac
+        shift
+    done
+
+    [ -n "$jail" ] || err "usage: parish-compartment-upgrade upgrade <jail> [--target=<release>] [--stop]"
+    validate_jail_name_existing "$jail" || exit 2
+
+    jailroot="$(container_path "$jail")" || err "no compartment named '$jail'"
+    tier="$(container_tier "$jailroot")"
+    ds="$(_resolve_jail_dataset "$jail" "$jailroot")"
+    [ -n "$ds" ] || err "cannot determine ZFS dataset for '$jail' ($jailroot)"
+
+    # Refuse containment states
+    state="$(parish_jail_state "$jail")"
+    case "$state" in
+        stopped) : ;;
+        running|running-other-contained)
+            if [ "$auto_stop" -eq 1 ]; then
+                log "Stopping compartment '$jail' safely before OS upgrade..."
+                parish_service_stop "$jail" || err "failed to stop '$jail' cleanly"
+                restart_after=1
+            else
+                err "compartment '$jail' is running. Pass --stop or stop it first ('pkexec parishctl stop $jail')."
+            fi
+            ;;
+        *)
+            parish_jail_state_message "$jail" "$state" >&2
+            exit 1
+            ;;
+    esac
+
+    if parish_upgrade_interrupted "$jail"; then
+        err "compartment '$jail' has an interrupted previous upgrade. Run 'pkexec parishctl recover $jail' first to restore its pre-upgrade snapshot."
+    fi
+
+    host_ver="$(parish_host_os_version)"
+    host_arch="$(parish_host_os_arch)"
+    [ -n "$target_rel" ] || target_rel="$host_ver"
+    cur_ver="$(parish_root_os_version "$jailroot" || echo "unknown")"
+    cur_arch="$(parish_root_os_arch "$jailroot" || echo "$host_arch")"
+
+    [ "$cur_arch" = "$host_arch" ] || err "architecture mismatch: host is $host_arch, compartment is $cur_arch"
+
+    # Never upgrade a jail BEYOND the running host kernel version (unsupported in FreeBSD!)
+    if [ "$(parish_version_status "$target_rel" "$host_ver")" = "ahead" ]; then
+        err "cannot upgrade compartment to $target_rel because host OS is still on $host_ver. Update the host system first via ParishBSD System Updater (parish-update)."
+    fi
+
+    _check_pool_headroom_mb 1024
+
+    ts="$(_ts_now)"
+    snap_name="pre-upgrade-$ts"
+    vault_ds="zroot/vault-data/$jail"
+    vault_snapped=0
+
+    mkdir -p "$LOG_DIR" "$RUN_DIR"
+    lockf -t 5 "$RUN_DIR/upgrade-$jail.lock" true 2>/dev/null || true
+
+    log "Creating safety ZFS snapshot: ${ds}@${snap_name}"
+    zfs snapshot "${ds}@${snap_name}" || err "failed to create safety snapshot ${ds}@${snap_name}"
+
+    if [ "$tier" = "vault" ] && zfs list -H -o name "$vault_ds" >/dev/null 2>&1; then
+        ks="$(zfs get -H -o value keystatus "$vault_ds" 2>/dev/null || echo "unavailable")"
+        if [ "$ks" = "available" ]; then
+            log "Vault is unlocked; also snapshotting encrypted data dataset ${vault_ds}@${snap_name}"
+            zfs snapshot "${vault_ds}@${snap_name}" && vault_snapped=1 || warn "could not snapshot $vault_ds"
+        else
+            log "Vault '$jail' is locked; encrypted vault data remains unmounted and untouched."
+        fi
+    fi
+
+    _write_upgrade_state "$jail" "in-progress" "$snap_name" "$cur_ver" "$target_rel"
+
+    bak_dir="/var/db/parishbsd/upgrade-state/backup-$jail-$ts"
+    _preserve_configs "$jailroot" "$bak_dir"
+
+    if _run_freebsd_update_on_root "$jailroot" "$cur_ver" "$target_rel" "$cur_arch" "$tier"; then
+        _restore_critical_configs "$jailroot" "$bak_dir" "$tier"
+        rm -rf "$bak_dir"
+        new_ver="$(parish_root_os_version "$jailroot" || echo "$target_rel")"
+        _clear_upgrade_state "$jail" "$snap_name" "$cur_ver" "$new_ver"
+        parish_prune_old_pre_upgrade_snaps "$ds" 3
+        log "Compartment '$jail' upgraded successfully ($cur_ver -> $new_ver)."
+        log "Recovery snapshot kept: ${ds}@${snap_name}"
+
+        if [ "$restart_after" -eq 1 ] && [ "$tier" != "vault" ]; then
+            log "Restarting compartment '$jail'..."
+            parish_service_start "$jail" "$jailroot" || warn "upgrade succeeded, but automatic restart failed; start '$jail' manually."
+        fi
+        return 0
+    else
+        warn "Upgrade failed for '$jail'. Automatically restoring pre-upgrade snapshot ${ds}@${snap_name}..."
+        if zfs rollback -r "${ds}@${snap_name}"; then
+            if [ "$vault_snapped" -eq 1 ]; then
+                zfs rollback -r "${vault_ds}@${snap_name}" 2>/dev/null || true
+            fi
+            _clear_upgrade_state "$jail" "$snap_name" "$cur_ver" "$cur_ver"
+            rm -rf "$bak_dir"
+            err "upgrade failed; compartment '$jail' was safely rolled back to its exact previous state ($cur_ver)."
+        else
+            rm -rf "$bak_dir"
+            err "upgrade failed AND automatic rollback failed! Run 'pkexec parishctl recover $jail --snapshot=$snap_name' manually."
+        fi
+    fi
+}
+
+cmd_upgrade_all() {
+    target_rel=""
+    auto_stop=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target=*) target_rel="${1#--target=}" ;;
+            --to=*)     target_rel="${1#--to=}" ;;
+            --stop)     auto_stop=1 ;;
+            *)          err "unknown option: $1" ;;
+        esac
+        shift
+    done
+
+    host_ver="$(parish_host_os_version)"
+    [ -n "$target_rel" ] || target_rel="$host_ver"
+    failures=0
+
+    # 1. Upgrade built templates that are behind host
+    for tconf in /var/db/parishbsd/templates/*/template.conf; do
+        [ -f "$tconf" ] || continue
+        tname="$(basename "$(dirname "$tconf")")"
+        tstate="$(awk -F= '$1=="state"{sub(/^[^=]*=/,""); print; exit}' "$tconf" 2>/dev/null || true)"
+        [ "$tstate" = "ready" ] || continue
+        tmpl_mp="/usr/local/jails/templates/$tname"
+        [ -d "$tmpl_mp/bin" ] || continue
+        tver="$(parish_root_os_version "$tmpl_mp" || echo "unknown")"
+        tst="$(parish_version_status "$tver" "$target_rel")"
+        case "$tst" in
+            patch-behind|minor-behind|major-behind)
+                src_flag="--source=user"
+                [ -f "/usr/local/share/parishbsd/templates/$tname/template.conf" ] && src_flag="--source=shipped"
+                log "Updating outdated template '$tname' ($tver -> $target_rel)..."
+                if ! /usr/local/sbin/parish-template-build "$tname" --update "$src_flag" --to="$(parish_release_branch "$target_rel")"; then
+                    warn "Template '$tname' update failed."
+                    failures=$((failures + 1))
+                fi
+                ;;
+        esac
+    done
+
+    # 2. Upgrade compartments that are behind host
+    for d in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/containers/*; do
+        [ -d "$d" ] && [ -f "$d/bin/sh" ] || continue
+        name="$(basename "$d")"
+        cver="$(parish_root_os_version "$d" || echo "unknown")"
+        cst="$(parish_version_status "$cver" "$target_rel")"
+        case "$cst" in
+            patch-behind|minor-behind|major-behind)
+                args="$name --target=$target_rel"
+                [ "$auto_stop" -eq 1 ] && args="$args --stop"
+                log "Updating outdated compartment '$name' ($cver -> $target_rel)..."
+                # shellcheck disable=SC2086
+                if ! cmd_upgrade_one $args; then
+                    warn "Compartment '$name' update failed."
+                    failures=$((failures + 1))
+                fi
+                ;;
+        esac
+    done
+
+    if [ "$failures" -gt 0 ]; then
+        err "$failures item(s) could not be updated. Check the log messages above."
+    fi
+    log "All compartments and templates are up to date with $target_rel."
+}
+
+cmd_recover() {
+    jail=""
+    snap=""
+    list_only=0
+    json_mode=0
+    auto_stop=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --list)        list_only=1 ;;
+            --json)        json_mode=1 ;;
+            --stop)        auto_stop=1 ;;
+            --snapshot=*)  snap="${1#--snapshot=}" ;;
+            -*)            err "unknown option: $1" ;;
+            *)             if [ -z "$jail" ]; then jail="$1"; else err "unexpected argument: $1"; fi ;;
+        esac
+        shift
+    done
+
+    [ -n "$jail" ] || err "usage: parish-compartment-upgrade recover <jail> [--list [--json] | --snapshot=<name> [--stop]]"
+    validate_jail_name_existing "$jail" || exit 2
+
+    jailroot="$(container_path "$jail")" || err "no compartment named '$jail'"
+    tier="$(container_tier "$jailroot")"
+    ds="$(_resolve_jail_dataset "$jail" "$jailroot")"
+    [ -n "$ds" ] || err "cannot determine ZFS dataset for '$jail'"
+
+    if [ "$list_only" -eq 1 ]; then
+        if [ "$json_mode" -eq 1 ]; then
+            printf '['
+            first=1
+            parish_list_snapshots "$ds" | while IFS='	' read -r sname scre; do
+                [ -n "$sname" ] || continue
+                [ "$first" -eq 1 ] || printf ','
+                first=0
+                printf '\n  {"snapshot": "%s", "created": "%s"}' "$sname" "$scre"
+            done
+            printf '\n]\n'
+        else
+            printf 'Recovery snapshots for %s (%s):\n' "$jail" "$ds"
+            parish_list_snapshots "$ds" | while IFS='	' read -r sname scre; do
+                printf '  %-32s  %s\n' "$sname" "$scre"
+            done
+        fi
+        return 0
+    fi
+
+    # If no snapshot specified, pick the newest pre-upgrade-* snapshot
+    if [ -z "$snap" ]; then
+        snap="$(parish_latest_recovery_snapshot "$ds")"
+    fi
+    [ -n "$snap" ] || err "no recovery snapshots found for '$jail'."
+
+    case "$snap" in
+        *[!A-Za-z0-9._:-]*) err "invalid snapshot name: $snap" ;;
+    esac
+    zfs list -H -t snapshot -o name "${ds}@${snap}" >/dev/null 2>&1 \
+        || err "snapshot '${ds}@${snap}' does not exist."
+
+    state="$(parish_jail_state "$jail")"
+    case "$state" in
+        stopped) : ;;
+        running|running-other-contained)
+            if [ "$auto_stop" -eq 1 ]; then
+                log "Stopping '$jail' before restoring snapshot..."
+                parish_service_stop "$jail" || err "failed to stop '$jail'"
+            else
+                err "compartment '$jail' is running. Stop it first or pass --stop."
+            fi
+            ;;
+        *)
+            parish_jail_state_message "$jail" "$state" >&2
+            exit 1
+            ;;
+    esac
+
+    log "Restoring '${ds}' to snapshot '@${snap}'..."
+    zfs rollback -r "${ds}@${snap}" || err "zfs rollback failed for ${ds}@${snap}"
+
+    vault_ds="zroot/vault-data/$jail"
+    if [ "$tier" = "vault" ] && zfs list -H -o name "${vault_ds}@${snap}" >/dev/null 2>&1; then
+        log "Also restoring matching vault data snapshot '${vault_ds}@${snap}'..."
+        zfs rollback -r "${vault_ds}@${snap}" || warn "could not roll back ${vault_ds}@${snap}"
+    fi
+
+    restored_ver="$(parish_root_os_version "$jailroot" || echo "unknown")"
+    _clear_upgrade_state "$jail" "$snap" "$restored_ver" "$restored_ver"
+    log "Compartment '$jail' restored cleanly to '@${snap}' (OS version: $restored_ver)."
+}
+
+require_root
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    status)      cmd_status "$@" ;;
+    upgrade)     cmd_upgrade_one "$@" ;;
+    upgrade-all) cmd_upgrade_all "$@" ;;
+    recover)     cmd_recover "$@" ;;
+    *)
+        printf 'usage: parish-compartment-upgrade {status|upgrade|upgrade-all|recover} ...\n' >&2
+        exit 2
+        ;;
+esac

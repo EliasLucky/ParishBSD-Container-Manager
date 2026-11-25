@@ -1,0 +1,37 @@
+#!/bin/sh
+# parishctl-host-info  emit host FreeBSD version, architecture, and base cache status.
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/os_upgrade.sh"
+
+json_mode=0
+for arg in "$@"; do
+    case "$arg" in
+        --json) json_mode=1 ;;
+        *) printf 'usage: parishctl host-info [--json]\n' >&2; exit 2 ;;
+    esac
+done
+
+host_ver="$(parish_host_os_version)"
+host_rel="$(parish_strip_patch "$host_ver")"
+host_maj="$(parish_version_major "$host_ver")"
+host_arch="$(parish_host_os_arch)"
+cache_path="${PARISH_CACHE_DIR}/base-${host_rel}-${host_arch}.txz"
+cache_ok="false"
+[ -f "$cache_path" ] && cache_ok="true"
+
+if [ "$json_mode" -eq 1 ]; then
+    printf '{\n'
+    printf '  "os_version": "%s",\n' "$host_ver"
+    printf '  "release": "%s",\n' "$host_rel"
+    printf '  "major": %s,\n' "${host_maj:-0}"
+    printf '  "arch": "%s",\n' "$host_arch"
+    printf '  "base_cache_present": %s,\n' "$cache_ok"
+    printf '  "base_cache_path": "%s"\n' "$cache_path"
+    printf '}\n'
+else
+    printf 'Host FreeBSD Version: %s (%s)\n' "$host_ver" "$host_arch"
+    printf 'Release Branch:       %s\n' "$host_rel"
+    printf 'Base Cache:           %s (%s)\n' "$cache_ok" "$cache_path"
+fi

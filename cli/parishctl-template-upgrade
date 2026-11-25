@@ -1,0 +1,54 @@
+#!/bin/sh
+# parishctl-template-upgrade  upgrade one or all built templates to match the host OS.
+# Runs via pkexec or directly as root.
+set -eu
+
+LIBDIR=/usr/local/libexec/parishbsd/lib
+. "$LIBDIR/os_upgrade.sh"
+
+name=""
+all_mode=0
+target_rel=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --all)             all_mode=1 ;;
+        --to=*)            target_rel="${1#--to=}" ;;
+        --target=*)        target_rel="${1#--target=}" ;;
+        --target-release=*) target_rel="${1#--target-release=}" ;;
+        -*)                printf 'parish: unknown option: %s\n' "$1" >&2; exit 2 ;;
+        *)                 if [ -z "$name" ]; then name="$1"; else printf 'parish: unexpected arg: %s\n' "$1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+
+host_ver="$(parish_host_os_version)"
+[ -n "$target_rel" ] || target_rel="$(parish_release_branch "$host_ver")"
+target_branch="$(parish_release_branch "$target_rel")"
+
+if [ "$all_mode" -eq 1 ]; then
+    failures=0
+    for tconf in /var/db/parishbsd/templates/*/template.conf; do
+        [ -f "$tconf" ] || continue
+        tname="$(basename "$(dirname "$tconf")")"
+        tstate="$(awk -F= '$1=="state"{sub(/^[^=]*=/,""); print; exit}' "$tconf" 2>/dev/null || true)"
+        [ "$tstate" = "ready" ] || continue
+        src_flag="--source=user"
+        [ -f "/usr/local/share/parishbsd/templates/$tname/template.conf" ] && src_flag="--source=shipped"
+        printf '==> Updating template %s to %s...\n' "$tname" "$target_branch"
+        if ! /usr/local/sbin/parish-template-build "$tname" --update "$src_flag" --to="$target_branch"; then
+            failures=$((failures + 1))
+        fi
+    done
+    [ "$failures" -eq 0 ] || exit 1
+    exit 0
+fi
+
+[ -n "$name" ] || {
+    printf 'usage: parishctl template upgrade <name|--all> [--to=<release>]\n' >&2
+    exit 2
+}
+
+src_flag="--source=user"
+[ -f "/usr/local/share/parishbsd/templates/$name/template.conf" ] && src_flag="--source=shipped"
+exec /usr/local/sbin/parish-template-build "$name" --update "$src_flag" --to="$target_branch"

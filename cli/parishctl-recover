@@ -1,0 +1,11 @@
+#!/bin/sh
+# parishctl-recover  list or restore pre-upgrade snapshots for a compartment.
+# Runs via pkexec.
+set -eu
+
+if [ "$#" -lt 1 ]; then
+    printf 'usage: parishctl recover <name> [--list [--json] | --snapshot=<name> [--stop]]\n' >&2
+    exit 2
+fi
+
+exec /usr/local/bin/parish-compartment-upgrade recover "$@"
