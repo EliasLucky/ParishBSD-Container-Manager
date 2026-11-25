@@ -1,0 +1,61 @@
+#!/bin/sh
+# parish-firstboot  inspect or resume ParishBSD first-boot template initialization.
+set -eu
+
+STATE_FILE="/var/db/parishbsd/firstboot-state.conf"
+PENDING_FLAG="/var/db/parishbsd/firstboot-pending"
+LOG_FILE="/var/log/parishbsd/firstboot.log"
+WORKER="/usr/local/sbin/parishbsd-firstboot-worker"
+
+usage() {
+    cat <<'EOF'
+parish-firstboot - ParishBSD first-boot setup status and recovery
+
+  parish-firstboot status    Show first-boot template build progress
+  parish-firstboot resume    Run or resume interrupted first-boot setup
+  parish-firstboot gui       Open the Welcome & Setup Progress window
+  parish-firstboot log       Show the first-boot setup log
+EOF
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    status)
+        if [ -f "$STATE_FILE" ]; then
+            cat "$STATE_FILE"
+        elif [ -f "$PENDING_FLAG" ]; then
+            printf 'status=pending\n'
+        else
+            printf 'status=completed\n'
+        fi
+        ;;
+    log)
+        if [ -f "$LOG_FILE" ]; then
+            cat "$LOG_FILE"
+        else
+            printf 'No first-boot log found at %s\n' "$LOG_FILE"
+        fi
+        ;;
+    resume|run)
+        if [ "$(id -u)" -eq 0 ]; then
+            exec "$WORKER" --resume
+        else
+            exec /usr/local/bin/pkexec "$WORKER" --resume
+        fi
+        ;;
+    gui)
+        if [ -x /usr/local/bin/parish-firstboot-gui ]; then
+            exec /usr/local/bin/parish-firstboot-gui
+        fi
+        printf 'parish-firstboot-gui is not installed.\n' >&2
+        exit 1
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
