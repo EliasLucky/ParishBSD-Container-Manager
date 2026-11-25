@@ -9,6 +9,12 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/validate.sh"
 . "$LIBDIR/state.sh"
 . "$LIBDIR/policy.sh"
+. "$LIBDIR/os_upgrade.sh"
+
+host_os_ver="$(parish_host_os_version)"
+host_os_arch="$(parish_host_os_arch)"
+host_os_ver_esc=$(printf '%s' "$host_os_ver" | sed 's/["\\]/\\&/g')
+host_os_arch_esc=$(printf '%s' "$host_os_arch" | sed 's/["\\]/\\&/g')
 
 json_mode=0
 while [ $# -gt 0 ]; do
@@ -22,8 +28,8 @@ done
 if [ "$json_mode" -eq 1 ]; then
     printf '[\n'
 else
-    printf "%-20s %-15s %-15s %-10s %-15s\n" "NAME" "KIND" "STATE" "RISK" "TEMPLATE"
-    printf "%-20s %-15s %-15s %-10s %-15s\n" "----" "----" "-----" "----" "--------"
+    printf "%-18s %-15s %-12s %-10s %-18s %-14s\n" "NAME" "KIND" "STATE" "RISK" "OS_VERSION" "TEMPLATE"
+    printf "%-18s %-15s %-12s %-10s %-18s %-14s\n" "----" "----" "-----" "----" "----------" "--------"
 fi
 
 read_meta() {
@@ -117,6 +123,16 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/contai
         caps_json="${caps_json:+$caps_json, }\"$_ce\""
     done
 
+    comp_os_ver="$(parish_root_os_version "$d" || echo "unknown")"
+    comp_os_arch="$(parish_root_os_arch "$d" || echo "$host_os_arch")"
+    comp_os_status="$(parish_version_status "$comp_os_ver" "$host_os_ver")"
+    comp_needs_rec="false"
+    if parish_upgrade_interrupted "$name"; then
+        comp_needs_rec="true"
+    fi
+    comp_os_ver_esc=$(printf '%s' "$comp_os_ver" | sed 's/["\\]/\\&/g')
+    comp_os_arch_esc=$(printf '%s' "$comp_os_arch" | sed 's/["\\]/\\&/g')
+
     if [ "$json_mode" -eq 1 ]; then
         [ "$first" -eq 1 ] || printf ',\n'
         first=0
@@ -133,10 +149,16 @@ for d in /usr/local/jails/app/* /usr/local/jails/vault/* /usr/local/jails/contai
         printf '    "audio_input": %s,\n' "$([ "$audio_in" = "1" ] && echo "true" || echo "false")"
         printf '    "disk_usage": %s,\n' "$bytes"
         printf '    "is_vault": %s,\n' "$([ "$is_vault" -eq 1 ] && echo "true" || echo "false")"
-        printf '    "is_compatibility": %s\n' "$is_compat"
+        printf '    "is_compatibility": %s,\n' "$is_compat"
+        printf '    "os_version": "%s",\n' "$comp_os_ver_esc"
+        printf '    "os_arch": "%s",\n' "$comp_os_arch_esc"
+        printf '    "host_os_version": "%s",\n' "$host_os_ver_esc"
+        printf '    "host_os_arch": "%s",\n' "$host_os_arch_esc"
+        printf '    "os_status": "%s",\n' "$comp_os_status"
+        printf '    "needs_recovery": %s\n' "$comp_needs_rec"
         printf '  }'
     else
-        printf "%-20s %-15s %-15s %-10s %-15s\n" "$name" "$kind" "$state" "$risk_level" "${source_template:-Unknown}"
+        printf "%-18s %-15s %-12s %-10s %-18s %-14s\n" "$name" "$kind" "$state" "$risk_level" "$comp_os_ver" "${source_template:-Unknown}"
     fi
 done
 

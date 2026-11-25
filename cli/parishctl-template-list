@@ -24,6 +24,16 @@
 
 set -eu
 
+LIBDIR=/usr/local/libexec/parishbsd/lib
+if [ -r "$LIBDIR/os_upgrade.sh" ]; then
+    . "$LIBDIR/os_upgrade.sh"
+    host_os_ver="$(parish_host_os_version)"
+    host_os_arch="$(parish_host_os_arch)"
+else
+    host_os_ver="$(/bin/freebsd-version -u 2>/dev/null || uname -r)"
+    host_os_arch="$(uname -m 2>/dev/null || echo amd64)"
+fi
+
 json_mode=0
 show_hidden=0
 for arg in "$@"; do
@@ -101,6 +111,29 @@ if [ "$json_mode" -eq 1 ]; then
             cb_json="null"
         fi
 
+        tmpl_mp="/usr/local/jails/templates/$name"
+        if [ -d "$tmpl_mp/bin" ] && command -v parish_root_os_version >/dev/null 2>&1; then
+            tmpl_os_ver="$(parish_root_os_version "$tmpl_mp" || echo "unknown")"
+            tmpl_os_arch="$(parish_root_os_arch "$tmpl_mp" || echo "$host_os_arch")"
+            tmpl_os_status="$(parish_version_status "$tmpl_os_ver" "$host_os_ver")"
+        else
+            tmpl_os_ver="$(read_field os_version "$state_file")"
+            [ -n "$tmpl_os_ver" ] || tmpl_os_ver="not-built"
+            tmpl_os_arch="$host_os_arch"
+            if [ "$tmpl_os_ver" = "not-built" ]; then
+                tmpl_os_status="not-built"
+            elif command -v parish_version_status >/dev/null 2>&1; then
+                tmpl_os_status="$(parish_version_status "$tmpl_os_ver" "$host_os_ver")"
+            else
+                tmpl_os_status="unknown"
+            fi
+        fi
+
+        tmpl_needs_rec="false"
+        if command -v parish_upgrade_interrupted >/dev/null 2>&1 && parish_upgrade_interrupted template "$name"; then
+            tmpl_needs_rec="true"
+        fi
+
         [ "$_first" -eq 1 ] || printf ',\n'
         _first=0
         printf '  {\n'
@@ -112,7 +145,13 @@ if [ "$json_mode" -eq 1 ]; then
         printf '    "current_base": %s,\n'      "$cb_json"
         printf '    "build_size_mb": %s,\n'     "$size_json"
         printf '    "hidden": %s,\n'            "$hidden_json"
-        printf '    "shipped": %s\n'            "$shipped"
+        printf '    "shipped": %s,\n'           "$shipped"
+        printf '    "os_version": "%s",\n'      "$(json_escape "$tmpl_os_ver")"
+        printf '    "os_arch": "%s",\n'         "$(json_escape "$tmpl_os_arch")"
+        printf '    "host_os_version": "%s",\n' "$(json_escape "$host_os_ver")"
+        printf '    "host_os_arch": "%s",\n'    "$(json_escape "$host_os_arch")"
+        printf '    "os_status": "%s",\n'       "$(json_escape "$tmpl_os_status")"
+        printf '    "needs_recovery": %s\n'     "$tmpl_needs_rec"
         printf '  }'
     done <<EOF
 $_names
@@ -122,8 +161,8 @@ EOF
 fi
 
 # Text mode.
-printf "%-20s %-10s %-10s\n" "NAME" "SOURCE" "STATE"
-printf "%-20s %-10s %-10s\n" "----" "------" "-----"
+printf "%-20s %-10s %-10s %-18s\n" "NAME" "SOURCE" "STATE" "OS_VERSION"
+printf "%-20s %-10s %-10s %-18s\n" "----" "------" "-----" "----------"
 while IFS= read -r name; do
     [ -n "$name" ] || continue
 
@@ -143,7 +182,15 @@ while IFS= read -r name; do
         source="user"
     fi
 
-    printf "%-20s %-10s %-10s\n" "$name" "$source" "$state"
+    tmpl_mp="/usr/local/jails/templates/$name"
+    if [ -d "$tmpl_mp/bin" ] && command -v parish_root_os_version >/dev/null 2>&1; then
+        tmpl_os_ver="$(parish_root_os_version "$tmpl_mp" || echo "unknown")"
+    else
+        tmpl_os_ver="$(read_field os_version "$state_file")"
+        [ -n "$tmpl_os_ver" ] || tmpl_os_ver="-"
+    fi
+
+    printf "%-20s %-10s %-10s %-18s\n" "$name" "$source" "$state" "$tmpl_os_ver"
 done <<EOF
 $_names
 EOF

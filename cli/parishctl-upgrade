@@ -1,0 +1,16 @@
+#!/bin/sh
+# parishctl-upgrade  upgrade FreeBSD OS + apps in compartment(s).
+# Runs via pkexec.
+set -eu
+
+if [ "$#" -lt 1 ]; then
+    printf 'usage: parishctl upgrade <name|--all> [--target=<release>] [--stop]\n' >&2
+    exit 2
+fi
+
+if [ "$1" = "--all" ]; then
+    shift
+    exec /usr/local/bin/parish-compartment-upgrade upgrade-all "$@"
+fi
+
+exec /usr/local/bin/parish-compartment-upgrade upgrade "$@"

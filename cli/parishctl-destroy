@@ -20,8 +20,8 @@ PARISH_SCRIPTS=/usr/local/libexec/parishbsd
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
 
-if [ "$#" -ne 1 ]; then
-    printf 'usage: parishctl destroy <name>\n' >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    printf 'usage: parishctl destroy <name> [--confirmation-token=<value>]\n' >&2
     exit 2
 fi
 

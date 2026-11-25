@@ -70,6 +70,15 @@ BuildResult update_template(
     const std::string& clusters_tsv,
     const std::string& log_dir,
     const std::string& run_dir,
+    Ops& ops,
+    const std::string& target_release = "");
+
+BuildResult recover_template(
+    const std::string& name,
+    const std::string& state_templates_dir,
+    const std::string& snapshot_name,        // "" = newest pre-upgrade-* / base-*
+    const std::string& log_dir,
+    const std::string& run_dir,
     Ops& ops);
 
 }  // namespace tbuild

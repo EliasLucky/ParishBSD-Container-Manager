@@ -37,24 +37,32 @@ int main(int argc, char** argv) {
     std::string state_override;
     std::string base_cache_override;
     std::string cache_dir = "/var/cache/parishbsd";
+    std::string target_release;
+    std::string recover_snap;
     bool update_mode = false;
+    bool recover_mode = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if      (a == "--update")                     update_mode = true;
-        else if (a.rfind("--source=", 0) == 0)        source = a.substr(9);
-        else if (a.rfind("--templates-dir=", 0) == 0) templates_override = a.substr(16);
-        else if (a.rfind("--state-dir=", 0) == 0)     state_override = a.substr(12);
-        else if (a.rfind("--base-cache=", 0) == 0)    base_cache_override = a.substr(13);
-        else if (a.rfind("--cache-dir=", 0) == 0)     cache_dir = a.substr(12);
+        if      (a == "--update")                          update_mode = true;
+        else if (a.rfind("--to=", 0) == 0)                 { target_release = a.substr(5); update_mode = true; }
+        else if (a.rfind("--target-release=", 0) == 0)     { target_release = a.substr(17); update_mode = true; }
+        else if (a.rfind("--target=", 0) == 0)             { target_release = a.substr(9); update_mode = true; }
+        else if (a == "--recover")                         recover_mode = true;
+        else if (a.rfind("--recover=", 0) == 0)            { recover_snap = a.substr(10); recover_mode = true; }
+        else if (a.rfind("--source=", 0) == 0)             source = a.substr(9);
+        else if (a.rfind("--templates-dir=", 0) == 0)      templates_override = a.substr(16);
+        else if (a.rfind("--state-dir=", 0) == 0)          state_override = a.substr(12);
+        else if (a.rfind("--base-cache=", 0) == 0)         base_cache_override = a.substr(13);
+        else if (a.rfind("--cache-dir=", 0) == 0)          cache_dir = a.substr(12);
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
         else {
-            std::fprintf(stderr, "usage: parish-template-build <name> [--update] [--source=shipped|user] ...\n");
+            std::fprintf(stderr, "usage: parish-template-build <name> [--update] [--target-release=<rel>] [--recover[=<snap>]] [--source=shipped|user] ...\n");
             return 2;
         }
     }
     if (name.empty()) {
-        std::fprintf(stderr, "usage: parish-template-build <name> [--update] ...\n");
+        std::fprintf(stderr, "usage: parish-template-build <name> [--update] [--target-release=<rel>] [--recover[=<snap>]] ...\n");
         return 2;
     }
 
@@ -71,26 +79,38 @@ int main(int argc, char** argv) {
     if (!state_override.empty()) state_dir = state_override;
 
     Ops ops;
-    std::string version = get_version(ops);
-    std::string arch    = get_arch(ops);
-    if (version.empty() || arch.empty()) {
-        std::fprintf(stderr, "parish: cannot determine host version/arch\n");
-        return 1;
-    }
-
-    std::string base_cache = base_cache_override;
-
     BuildResult r;
-    if (update_mode) {
-        r = update_template(
-            name, state_dir, cache_dir, version, arch, base_cache,
-            "/usr/local/libexec/parishbsd/templates/clusters.tsv",
+    const char* verb_label = "Build";
+    const char* past_label = "built";
+
+    if (recover_mode) {
+        verb_label = "Recovery";
+        past_label = "recovered";
+        r = recover_template(
+            name, state_dir, recover_snap,
             "/var/log/parishbsd", "/var/run/parishbsd", ops);
     } else {
-        r = build_template(
-            name, source_dir, state_dir, cache_dir, version, arch, base_cache,
-            "/usr/local/libexec/parishbsd/templates/clusters.tsv",
-            "/var/log/parishbsd", "/var/run/parishbsd", ops);
+        std::string version = get_version(ops);
+        std::string arch    = get_arch(ops);
+        if (version.empty() || arch.empty()) {
+            std::fprintf(stderr, "parish: cannot determine host version/arch\n");
+            return 1;
+        }
+
+        std::string base_cache = base_cache_override;
+        if (update_mode) {
+            verb_label = "Update";
+            past_label = "updated";
+            r = update_template(
+                name, state_dir, cache_dir, version, arch, base_cache,
+                "/usr/local/libexec/parishbsd/templates/clusters.tsv",
+                "/var/log/parishbsd", "/var/run/parishbsd", ops, target_release);
+        } else {
+            r = build_template(
+                name, source_dir, state_dir, cache_dir, version, arch, base_cache,
+                "/usr/local/libexec/parishbsd/templates/clusters.tsv",
+                "/var/log/parishbsd", "/var/run/parishbsd", ops);
+        }
     }
 
     for (const auto& s : r.steps) {
@@ -100,9 +120,9 @@ int main(int argc, char** argv) {
     }
     if (r.succeeded) {
         std::printf("Template '%s' %s successfully. Log: %s\n",
-                    name.c_str(), update_mode ? "updated" : "built", r.log_path.c_str());
+                    name.c_str(), past_label, r.log_path.c_str());
         return 0;
     }
-    std::fprintf(stderr, "%s failed. Log: %s\n", update_mode ? "Update" : "Build", r.log_path.c_str());
+    std::fprintf(stderr, "%s failed. Log: %s\n", verb_label, r.log_path.c_str());
     return 1;
 }

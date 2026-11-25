@@ -9,6 +9,8 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <fstream>
+#include <sstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -104,7 +106,6 @@ int run_cmd_capture_impl(const std::vector<std::string>& argv, std::string& out)
     return -1;
 }
 
-// Tee helper: writes to log, warns once on failure, disables log_fd.
 static void tee_to_log(int& log_fd, const char* buf, size_t n, bool& warned) {
     if (log_fd < 0) return;
     size_t off = 0;
@@ -172,7 +173,7 @@ int run_cmd_logged_impl(const std::vector<std::string>& argv, int& log_fd) {
 }
 
 // ---------------------------------------------------------------------
-// ZFS / filesystem wrappers
+// ZFS / filesystem / version helpers
 // ---------------------------------------------------------------------
 
 bool zfs_dataset_exists_impl(const std::string& name) {
@@ -262,6 +263,84 @@ bool mkdir_p(const std::string& path, mode_t mode) {
     return true;
 }
 
+std::string strip_patch(const std::string& v) {
+    auto p = v.find("-p");
+    if (p != std::string::npos) return v.substr(0, p);
+    return v;
+}
+
+bool parse_major_minor(const std::string& ver, int& maj, int& min) {
+    auto dot = ver.find('.');
+    if (dot == std::string::npos || dot == 0) return false;
+    std::string smaj = ver.substr(0, dot);
+    size_t end_min = dot + 1;
+    while (end_min < ver.size() && ver[end_min] >= '0' && ver[end_min] <= '9') {
+        ++end_min;
+    }
+    if (end_min == dot + 1) return false;
+    std::string smin = ver.substr(dot + 1, end_min - (dot + 1));
+    maj = std::atoi(smaj.c_str());
+    min = std::atoi(smin.c_str());
+    return maj > 0;
+}
+
+bool is_valid_release(const std::string& rel) {
+    int maj = 0, min = 0;
+    if (!parse_major_minor(rel, maj, min)) return false;
+    return rel.find("-RELEASE") != std::string::npos &&
+           rel.find(' ') == std::string::npos &&
+           rel.find('/') == std::string::npos;
+}
+
+std::string read_root_freebsd_version_full(const std::string& root, Ops& ops) {
+    std::string fv = root + "/bin/freebsd-version";
+    std::ifstream ifs(fv);
+    if (ifs) {
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (line.rfind("USERLAND_VERSION=", 0) == 0) {
+                std::string val = line.substr(17);
+                std::string cleaned;
+                for (char c : val) {
+                    if (c != '"' && c != '\'' && c != '\r' && c != '\n' && c != ' ' && c != '\t') {
+                        cleaned.push_back(c);
+                    }
+                }
+                if (!cleaned.empty()) return cleaned;
+            }
+        }
+    }
+    std::string out;
+    if (ops.run_cmd_capture({"/usr/sbin/chroot", root, "/bin/freebsd-version", "-u"}, out) == 0) {
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) {
+            out.pop_back();
+        }
+        return out;
+    }
+    return "";
+}
+
+bool write_jail_fbsd_update_conf(const std::string& conf_path, const std::string& work_dir) {
+    std::ofstream ofs(conf_path, std::ios::trunc);
+    if (!ofs) return false;
+    ofs << "KeyPrint 800651ef4b4c71c27e60786d7b487188970f4b4169cc055784e21eb71d410cc5\n"
+        << "ServerName update.FreeBSD.org\n"
+        << "Components world\n"
+        << "IgnorePaths /usr/local/etc/parishbsd /var/db/parishbsd /home /vault /exchange /compat\n"
+        << "IDSIgnorePaths /usr/local/etc/parishbsd /var/db/parishbsd /home /vault /exchange /compat\n"
+        << "UpdateIfUnmodified /etc/ /var/ /root/\n"
+        << "MergeChanges /etc/ /var/named/etc/\n"
+        << "WorkDir " << work_dir << "\n"
+        << "MailTo root\n"
+        << "AllowAdd yes\n"
+        << "AllowDelete yes\n"
+        << "KeepModifiedMetadata yes\n"
+        << "StrictComponents no\n"
+        << "BackupKernel no\n"
+        << "CreateBootEnv no\n";
+    return ofs.good();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------
@@ -281,7 +360,7 @@ Ops::Ops() {
     zfs_get_used_mb     = zfs_get_used_mb_impl;
     run_provision_hook  = run_provision_hook_impl;
     path_exists         = path_exists_impl;
-    zfs_rollback_r = zfs_rollback_r_impl;
+    zfs_rollback_r      = zfs_rollback_r_impl;
 }
 
 // ---------------------------------------------------------------------
@@ -322,10 +401,18 @@ static CacheOutcome ensure_base_cache(
     }
     const std::string txz = cache_dir + "/base-" + version + "-" + arch + ".txz";
     if (!ops.path_exists(txz)) {
-        return {"", CacheResult::MissingTxz,
-            "base archive '" + txz + "' not found. "
-            "Run 25-setup-templates.sh to download it for host "
-            + version + "-" + arch + "."};
+        // Attempt automatic verified download if parish-fetch-base is installed
+        const std::string fetcher = "/usr/local/libexec/parishbsd/parish-fetch-base";
+        if (ops.path_exists(fetcher)) {
+            int frc = ops.run_cmd_logged({"/bin/sh", fetcher, version, arch, cache_dir}, log_fd);
+            if (frc == -2) return {"", CacheResult::Cancelled, ""};
+        }
+        if (!ops.path_exists(txz)) {
+            return {"", CacheResult::MissingTxz,
+                "base archive '" + txz + "' not found and automatic download failed. "
+                "Check internet access or run '/usr/local/libexec/parishbsd/parish-fetch-base "
+                + version + " " + arch + " " + cache_dir + "'."};
+        }
     }
     int rc = ops.run_cmd_logged({"/sbin/zfs", "create", "-p", final_ds}, log_fd);
     if (rc == -2) return {"", CacheResult::Cancelled, ""};
@@ -358,8 +445,7 @@ static CacheOutcome ensure_base_cache(
         ops.zfs_destroy_r(final_ds);
         return {"", CacheResult::TxzCorrupt,
             "extraction of '" + txz + "' failed; the .txz may be corrupt. "
-            "Re-download via 25-setup-templates.sh, or delete the .txz and "
-            "retry. See log: " + log_path};
+            "Delete the .txz and retry. See log: " + log_path};
     }
     if (!ops.zfs_snapshot(final_ds, "extracted")) {
         ops.zfs_destroy_r(final_ds);
@@ -598,7 +684,6 @@ BuildResult build_template(
             fail_step(r, "zfs clone failed");
             goto fail;
         }
-        // FIX: resolve the mountpoint so pkg and provision scripts get a valid path
         if (ops.run_cmd_capture(
                 {"/sbin/zfs", "get", "-H", "-o", "value", "mountpoint", staging_ds},
                 staging_mp) != 0) {
@@ -687,7 +772,7 @@ BuildResult build_template(
                 {"/usr/local/sbin/pkg", "-r", staging_mp, "install", "-y"};
             std::string cur;
             for (char c : it->second) {
-                if (c == ',' || c == ' ' || c == '\t') { 
+                if (c == ',' || c == ' ' || c == '\t') {
                     if (!cur.empty()) { argv.push_back(cur); cur.clear(); }
                 }
                 else cur.push_back(c);
@@ -723,13 +808,26 @@ BuildResult build_template(
         }
     }
 
-    // --- Step 15: measure size ---
+    // --- Step 15: measure size & record version ---
     {
         mark_step("measure size");
         unsigned long long mb = 0;
         if (ops.zfs_get_used_mb(final_ds, mb)) {
             conf["build_size_mb"] = std::to_string(mb);
         }
+        std::string final_mp;
+        if (ops.run_cmd_capture({"/sbin/zfs", "get", "-H", "-o", "value", "mountpoint", final_ds}, final_mp) == 0) {
+            while (!final_mp.empty() && (final_mp.back()=='\n' || final_mp.back()=='\r')) final_mp.pop_back();
+            std::string fver = read_root_freebsd_version_full(final_mp, ops);
+            if (!fver.empty()) {
+                conf["freebsd_version"] = fver;
+                conf["os_version"] = fver;
+            }
+        } else {
+            conf["freebsd_version"] = version;
+            conf["os_version"] = version;
+        }
+        conf["arch"] = arch;
     }
 
     // --- Step 16: write state=ready ---
@@ -766,7 +864,7 @@ fail:
     }
     return result;
 }
-  
+
 BuildResult update_template(
     const std::string& name,
     const std::string& state_templates_dir,
@@ -777,17 +875,15 @@ BuildResult update_template(
     const std::string& clusters_tsv,
     const std::string& log_dir,
     const std::string& run_dir,
-    Ops& ops)
+    Ops& ops,
+    const std::string& target_release_in)
 {
-    // Silence unused parameter warnings for the update flow
     (void)cache_dir;
-    (void)arch;
     (void)base_cache_dataset_in;
     (void)clusters_tsv;
 
     BuildResult result;
-    
-    // 0. Validate name
+
     if (!validate_name(name)) {
         auto r = step("validate name");
         fail_step(r, "invalid template name '" + name + "'");
@@ -795,16 +891,53 @@ BuildResult update_template(
         return result;
     }
 
-    const std::string state_conf  = state_templates_dir  + "/" + name + "/template.conf";
-    const std::string final_ds    = "zroot/jails/templates/" + name;
-    const std::string ts          = now_ts();
-    const std::string log_path    = log_dir + "/template-update-" + name + "-" + ts + ".log";
-    const std::string pid_path    = run_dir + "/template-build-" + name + ".pid";
+    {
+        struct sigaction sa{};
+        sa.sa_handler = on_sigterm;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        (void)::sigaction(SIGTERM, &sa, nullptr);
+    }
+
+    const std::string host_rel = strip_patch(version);
+    const std::string target_rel = target_release_in.empty() ? host_rel : strip_patch(target_release_in);
+
+    if (!is_valid_release(target_rel)) {
+        auto r = step("validate target release");
+        fail_step(r, "invalid target release '" + target_rel + "' (expected e.g. 15.1-RELEASE)");
+        result.steps.push_back(r);
+        return result;
+    }
+
+    int host_maj = 0, host_min = 0, tgt_maj = 0, tgt_min = 0;
+    if (parse_major_minor(host_rel, host_maj, host_min) &&
+        parse_major_minor(target_rel, tgt_maj, tgt_min)) {
+        if (tgt_maj > host_maj || (tgt_maj == host_maj && tgt_min > host_min)) {
+            auto r = step("check host compatibility");
+            fail_step(r, "cannot upgrade template to " + target_rel +
+                         " because the host is running " + host_rel +
+                         ". Upgrade the host system first via parish-update.");
+            result.steps.push_back(r);
+            return result;
+        }
+    }
+
+    const std::string state_conf   = state_templates_dir  + "/" + name + "/template.conf";
+    const std::string final_ds     = "zroot/jails/templates/" + name;
+    const std::string ts           = now_ts();
+    const std::string log_path     = log_dir + "/template-update-" + name + "-" + ts + ".log";
+    const std::string pid_path     = run_dir + "/template-build-" + name + ".pid";
+    const std::string upg_dir      = "/var/db/parishbsd/upgrade-state";
+    const std::string upg_marker   = upg_dir + "/template-" + name + ".conf";
+    const std::string pre_snap     = "pre-upgrade-" + ts;
+    const std::string tmp_conf     = run_dir + "/fbsd-update-" + name + "-" + ts + ".conf";
+    const std::string tmp_workdir  = run_dir + "/fbsd-work-" + name + "-" + ts;
+    const std::string backup_dir   = run_dir + "/fbsd-bak-" + name + "-" + ts;
     result.log_path = log_path;
 
-    if (!mkdir_p(log_dir, 0755) || !mkdir_p(run_dir, 0755)) {
+    if (!mkdir_p(log_dir, 0755) || !mkdir_p(run_dir, 0755) || !mkdir_p(upg_dir, 0755)) {
         auto r = step("prepare dirs");
-        fail_step(r, "cannot create log/run dirs");
+        fail_step(r, "cannot create log/run/state dirs");
         result.steps.push_back(r);
         return result;
     }
@@ -835,12 +968,19 @@ BuildResult update_template(
 
     bool pid_acquired = false;
     bool mutation_started = false;
+    bool pre_snap_taken = false;
     std::string old_base;
+    std::string rollback_snap;
     std::string new_ts;
     std::string new_snap;
     std::map<std::string, std::string> conf;
     std::string err;
     std::string mp;
+
+    auto cleanup_temp = [&]() {
+        ::unlink(tmp_conf.c_str());
+        (void)ops.run_cmd({"/bin/rm", "-rf", tmp_workdir, backup_dir});
+    };
 
     // 1. Acquire pid lock
     {
@@ -865,10 +1005,10 @@ BuildResult update_template(
         }
         const std::string st = conf.count("state") ? conf["state"] : "<missing>";
         if (st != "ready") {
-            fail_step(r, "template is not ready (state=" + st + "); run 'parishctl template show " + name + "' to see status, or 'parishctl template scrub' if stuck");
+            fail_step(r, "template is not ready (state=" + st + "); run 'parishctl template show " + name + "' or 'parishctl template recover " + name + "'");
             goto fail;
         }
-        old_base = conf["current_base"]; 
+        old_base = conf["current_base"];
         if (old_base.empty() || old_base[0] != '@') {
             fail_step(r, "missing or invalid current_base in template.conf");
             goto fail;
@@ -880,7 +1020,7 @@ BuildResult update_template(
     {
         auto& r = mark_step("verify base snapshot");
         if (!ops.zfs_snapshot_exists(final_ds + "@" + old_base)) {
-            fail_step(r, "current_base '" + old_base + "' in template.conf does not exist as a snapshot; run 'parishctl template reset " + name + "' or restore from a pre-update snapshot");
+            fail_step(r, "current_base '" + old_base + "' does not exist as a snapshot");
             goto fail;
         }
     }
@@ -899,45 +1039,192 @@ BuildResult update_template(
         }
     }
 
+    // 5. Create pre-upgrade safety snapshot & crash recovery marker
+    {
+        auto& r = mark_step("create pre-upgrade snapshot");
+        if (!ops.zfs_snapshot(final_ds, pre_snap)) {
+            fail_step(r, "cannot create safety snapshot " + final_ds + "@" + pre_snap);
+            goto fail;
+        }
+        pre_snap_taken = true;
+        rollback_snap = pre_snap;
+        std::map<std::string, std::string> m;
+        m["kind"] = "template";
+        m["name"] = name;
+        m["dataset"] = final_ds;
+        m["pre_snapshot"] = pre_snap;
+        m["target_release"] = target_rel;
+        m["started_at"] = ts;
+        (void)write_state_file_atomic(upg_marker, m, err);
+    }
+
     mutation_started = true;
 
-    // 5. freebsd-update (if version drifted)
+    // 6. OS update / release upgrade
     {
-        auto& r = mark_step("freebsd-update");
-        std::string tmpl_ver;
-        if (ops.run_cmd_capture({"/usr/sbin/chroot", mp, "/bin/freebsd-version", "-u"}, tmpl_ver) == 0) {
-            auto p = tmpl_ver.find("-p");
-            if (p != std::string::npos) tmpl_ver = tmpl_ver.substr(0, p);
-            while (!tmpl_ver.empty() && (tmpl_ver.back()=='\n' || tmpl_ver.back()=='\r')) tmpl_ver.pop_back();
-            
-            if (tmpl_ver != version) {
-                int ret = ops.run_cmd_logged({"/usr/sbin/freebsd-update", "-b", mp, "--currently-running-kernel", "IGNORE", "fetch", "install"}, log_fd);
-                if (ret != 0) { fail_step(r, "freebsd-update failed"); goto fail; }
-            } else {
-                r.detail = "host and template match, skipping";
+        std::string tmpl_full = read_root_freebsd_version_full(mp, ops);
+        std::string tmpl_rel  = strip_patch(tmpl_full);
+        int tmpl_maj = 0, tmpl_min = 0;
+        bool has_tmpl_ver = parse_major_minor(tmpl_rel, tmpl_maj, tmpl_min);
+
+        bool uses_pkgbase = (ops.run_cmd({"/usr/local/sbin/pkg", "-r", mp, "info", "-e", "FreeBSD-runtime"}) == 0);
+
+        mkdir_p(tmp_workdir, 0700);
+        mkdir_p(backup_dir, 0700);
+        (void)ops.run_cmd({"/bin/sh", "-c",
+            "for f in etc/hosts etc/rc.conf etc/fstab usr/local/etc/parishbsd/metadata usr/local/etc/pkg/repos/ParishBSD.conf; do "
+            "  if [ -f \"$1/$f\" ]; then mkdir -p \"$2/$(dirname \"$f\")\"; cp -p \"$1/$f\" \"$2/$f\"; fi; "
+            "done", "_", mp, backup_dir});
+
+        if (!uses_pkgbase) {
+            if (!write_jail_fbsd_update_conf(tmp_conf, tmp_workdir)) {
+                auto& r = mark_step("prepare freebsd-update config");
+                fail_step(r, "cannot write temporary freebsd-update.conf");
+                goto fail;
+            }
+        }
+
+        const bool is_release_upgrade = (!tmpl_rel.empty() && tmpl_rel != target_rel);
+        const bool is_major_upgrade   = (has_tmpl_ver && tmpl_maj != tgt_maj);
+
+        if (uses_pkgbase) {
+            auto& r = mark_step("pkgbase OS upgrade");
+            std::string abi = "FreeBSD:" + std::to_string(tgt_maj) + ":" + arch;
+            int ret = ops.run_cmd_logged({"/usr/bin/env", "IGNORE_OSVERSION=yes", "ABI=" + abi,
+                                          "ASSUME_ALWAYS_YES=yes", "/usr/local/sbin/pkg-static",
+                                          "-r", mp, "bootstrap", "-f"}, log_fd);
+            if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+            ret = ops.run_cmd_logged({"/usr/bin/env", "IGNORE_OSVERSION=yes", "ABI=" + abi,
+                                      "ASSUME_ALWAYS_YES=yes", "/usr/local/sbin/pkg",
+                                      "-r", mp, "update", "-f"}, log_fd);
+            if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+            if (ret != 0)  { fail_step(r, "pkgbase update failed"); goto fail; }
+            ret = ops.run_cmd_logged({"/usr/bin/env", "IGNORE_OSVERSION=yes", "ABI=" + abi,
+                                      "ASSUME_ALWAYS_YES=yes", "/usr/local/sbin/pkg",
+                                      "-r", mp, "upgrade", "-fy"}, log_fd);
+            if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+            if (ret != 0)  { fail_step(r, "pkgbase upgrade failed"); goto fail; }
+        } else if (is_release_upgrade) {
+            {
+                auto& r = mark_step("freebsd-update release upgrade (" + tmpl_rel + " -> " + target_rel + ")");
+                int ret = ops.run_cmd_logged({
+                    "/bin/sh", "-c",
+                    "yes | env PAGER=/bin/cat EDITOR=/usr/bin/true /usr/sbin/freebsd-update "
+                    "-b \"$1\" -f \"$2\" --currently-running-kernel \"$3\" -r \"$4\" --not-running-from-cron upgrade",
+                    "_", mp, tmp_conf, tmpl_rel, target_rel
+                }, log_fd);
+                if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                if (ret != 0)  { fail_step(r, "freebsd-update upgrade prepare failed"); goto fail; }
+            }
+            {
+                auto& r = mark_step("freebsd-update install pass 1");
+                int ret = ops.run_cmd_logged({
+                    "/bin/sh", "-c",
+                    "yes | env PAGER=/bin/cat /usr/sbin/freebsd-update -b \"$1\" -f \"$2\" --not-running-from-cron install",
+                    "_", mp, tmp_conf
+                }, log_fd);
+                if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                if (ret != 0)  { fail_step(r, "freebsd-update install pass 1 failed"); goto fail; }
+            }
+            {
+                auto& r = mark_step("freebsd-update install pass 2");
+                int ret = ops.run_cmd_logged({
+                    "/bin/sh", "-c",
+                    "yes | env PAGER=/bin/cat /usr/sbin/freebsd-update -b \"$1\" -f \"$2\" --not-running-from-cron install",
+                    "_", mp, tmp_conf
+                }, log_fd);
+                if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                if (ret != 0)  { fail_step(r, "freebsd-update install pass 2 failed"); goto fail; }
+            }
+            {
+                auto& r = mark_step(is_major_upgrade ? "pkg ABI rebuild" : "pkg upgrade");
+                if (is_major_upgrade) {
+                    std::string abi = "FreeBSD:" + std::to_string(tgt_maj) + ":" + arch;
+                    (void)ops.run_cmd_logged({
+                        "/usr/bin/env", "IGNORE_OSVERSION=yes", "ABI=" + abi,
+                        "ASSUME_ALWAYS_YES=yes", "/usr/local/sbin/pkg-static", "-r", mp, "bootstrap", "-f"
+                    }, log_fd);
+                    int ret = ops.run_cmd_logged({
+                        "/usr/bin/env", "IGNORE_OSVERSION=yes", "ABI=" + abi,
+                        "ASSUME_ALWAYS_YES=yes", "/usr/local/sbin/pkg", "-r", mp, "update", "-f"
+                    }, log_fd);
+                    if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                    if (ret != 0)  { fail_step(r, "pkg update (new ABI) failed"); goto fail; }
+                    ret = ops.run_cmd_logged({
+                        "/usr/bin/env", "IGNORE_OSVERSION=yes", "ABI=" + abi,
+                        "ASSUME_ALWAYS_YES=yes", "/usr/local/sbin/pkg", "-r", mp, "upgrade", "-fy"
+                    }, log_fd);
+                    if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                    if (ret != 0)  { fail_step(r, "pkg upgrade (new ABI) failed"); goto fail; }
+                } else {
+                    int ret = ops.run_cmd_logged({"/usr/local/sbin/pkg", "-r", mp, "update", "-f"}, log_fd);
+                    if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                    if (ret != 0)  { fail_step(r, "pkg update failed"); goto fail; }
+                    ret = ops.run_cmd_logged({"/usr/local/sbin/pkg", "-r", mp, "upgrade", "-y"}, log_fd);
+                    if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                    if (ret != 0)  { fail_step(r, "pkg upgrade failed"); goto fail; }
+                }
+            }
+            {
+                auto& r = mark_step("freebsd-update cleanup pass 3");
+                int ret = ops.run_cmd_logged({
+                    "/bin/sh", "-c",
+                    "yes | env PAGER=/bin/cat /usr/sbin/freebsd-update -b \"$1\" -f \"$2\" --not-running-from-cron install || true",
+                    "_", mp, tmp_conf
+                }, log_fd);
+                if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
             }
         } else {
-            r.detail = "cannot determine template version, skipping";
+            // Same release: fetch security patches if behind host, then upgrade packages
+            {
+                auto& r = mark_step("freebsd-update patch check");
+                if (tmpl_full != version && !tmpl_full.empty()) {
+                    int ret = ops.run_cmd_logged({
+                        "/bin/sh", "-c",
+                        "yes | env UNAME_r=\"$1\" PAGER=/bin/cat EDITOR=/usr/bin/true "
+                        "/usr/sbin/freebsd-update -b \"$2\" -f \"$3\" --currently-running \"$4\" "
+                        "--not-running-from-cron fetch && "
+                        "yes | env UNAME_r=\"$1\" PAGER=/bin/cat "
+                        "/usr/sbin/freebsd-update -b \"$2\" -f \"$3\" --currently-running \"$4\" "
+                        "--not-running-from-cron install || true",
+                        "_", tmpl_rel, mp, tmp_conf, tmpl_full
+                    }, log_fd);
+                    if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                    if (ret != 0)  { fail_step(r, "freebsd-update failed"); goto fail; }
+                } else {
+                    r.detail = "template base matches host release/patch, skipping base fetch";
+                }
+            }
+            {
+                auto& r = mark_step("pkg upgrade");
+                int ret = ops.run_cmd_logged({"/usr/local/sbin/pkg", "-r", mp, "update", "-f"}, log_fd);
+                if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                if (ret != 0)  { fail_step(r, "pkg update failed"); goto fail; }
+                ret = ops.run_cmd_logged({"/usr/local/sbin/pkg", "-r", mp, "upgrade", "-y"}, log_fd);
+                if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
+                if (ret != 0)  { fail_step(r, "pkg upgrade failed"); goto fail; }
+            }
         }
+
+        // Restore preserved ParishBSD metadata and rebuild pwd db
+        (void)ops.run_cmd({"/bin/sh", "-c",
+            "for f in etc/hosts etc/rc.conf etc/fstab usr/local/etc/parishbsd/metadata usr/local/etc/pkg/repos/ParishBSD.conf; do "
+            "  if [ -f \"$2/$f\" ]; then mkdir -p \"$1/$(dirname \"$f\")\"; cp -p \"$2/$f\" \"$1/$f\"; fi; "
+            "done; "
+            "if [ -f \"$1/etc/master.passwd\" ]; then /usr/sbin/pwd_mkdb -d \"$1/etc\" -p \"$1/etc/master.passwd\" >/dev/null 2>&1 || true; fi",
+            "_", mp, backup_dir});
     }
 
-    // 6. pkg upgrade
-    {
-        auto& r = mark_step("pkg upgrade");
-        int ret = ops.run_cmd_logged({"/usr/local/sbin/pkg", "-r", mp, "upgrade", "-y"}, log_fd);
-        if (ret == -2) { fail_step(r, "cancelled"); goto fail; }
-        if (ret != 0)  { fail_step(r, "pkg upgrade failed"); goto fail; }
-    }
-
-    // 7. Cleanup freebsd-update cache
+    // 7. Cleanup freebsd-update cache inside template
     {
         mark_step("cleanup freebsd-update cache");
         if (ops.run_cmd({"/bin/rm", "-rf", mp + "/var/db/freebsd-update"}) != 0) {
             log("warning: could not remove /var/db/freebsd-update from template");
         }
+        cleanup_temp();
     }
 
-    // 8. New snapshot
+    // 8. New base snapshot
     new_ts = now_ts();
     new_snap = "base-" + new_ts;
     {
@@ -948,16 +1235,27 @@ BuildResult update_template(
         }
     }
 
-    // 9. Update state
+    // 9. Update state + recorded FreeBSD version
     {
         auto& r = mark_step("write state=ready");
         conf["current_base"] = "@" + new_snap;
         conf["updated"] = new_ts;
-        conf.erase("last_update_failed"); 
+        std::string final_ver = read_root_freebsd_version_full(mp, ops);
+        if (!final_ver.empty()) {
+            conf["freebsd_version"] = final_ver;
+            conf["os_version"] = final_ver;
+        }
+        conf["arch"] = arch;
+        unsigned long long mb = 0;
+        if (ops.zfs_get_used_mb(final_ds, mb)) {
+            conf["build_size_mb"] = std::to_string(mb);
+        }
+        conf.erase("last_update_failed");
         if (!write_state_file_atomic(state_conf, conf, err)) {
             fail_step(r, err);
             goto fail;
         }
+        ::unlink(upg_marker.c_str());
     }
 
     result.succeeded = true;
@@ -966,32 +1264,186 @@ BuildResult update_template(
     return result;
 
 fail:
-    log("UPDATE FAILED");
-    if (mutation_started && !old_base.empty() && ops.zfs_snapshot_exists(final_ds + "@" + old_base)) {
-        auto& r = mark_step("revert to pre-update snapshot");
-        if (ops.zfs_rollback_r(final_ds, old_base)) {
-            conf["state"] = "ready";
-            conf["last_update_failed"] = ts;
-            if (!write_state_file_atomic(state_conf, conf, err)) {
-                log("warning: could not write state after rollback success: " + err);
-                std::fprintf(stderr, "parish: warning: could not write state; check %s\n", state_conf.c_str());
-            }
-        } else {
-            fail_step(r, "zfs rollback failed; template is in failed state");
-            conf["state"] = "failed";
-            if (!write_state_file_atomic(state_conf, conf, err)) {
-                log("warning: could not write state after rollback failure: " + err);
-                std::fprintf(stderr, "parish: warning: could not write state; check %s\n", state_conf.c_str());
+    log(g_cancel_requested ? "UPDATE CANCELLED" : "UPDATE FAILED");
+    cleanup_temp();
+    if (mutation_started) {
+        const std::string snap_to_use = (pre_snap_taken && ops.zfs_snapshot_exists(final_ds + "@" + pre_snap))
+            ? pre_snap
+            : old_base;
+        if (!snap_to_use.empty() && ops.zfs_snapshot_exists(final_ds + "@" + snap_to_use)) {
+            auto& r = mark_step("revert to pre-update snapshot @" + snap_to_use);
+            if (ops.zfs_rollback_r(final_ds, snap_to_use)) {
+                conf["state"] = "ready";
+                conf["last_update_failed"] = ts;
+                if (!write_state_file_atomic(state_conf, conf, err)) {
+                    log("warning: could not write state after rollback success: " + err);
+                }
+                ::unlink(upg_marker.c_str());
+            } else {
+                fail_step(r, "zfs rollback failed; template may require manual recovery");
+                conf["state"] = "failed";
+                (void)write_state_file_atomic(state_conf, conf, err);
             }
         }
-    } else if (!mutation_started) {
-        // Early failure, no mutation, no rollback needed.
+    } else {
+        ::unlink(upg_marker.c_str());
     }
 
     if (pid_acquired) ::unlink(pid_path.c_str());
     if (log_fd >= 0) ::close(log_fd);
     return result;
 }
-  
+
+BuildResult recover_template(
+    const std::string& name,
+    const std::string& state_templates_dir,
+    const std::string& snapshot_name_in,
+    const std::string& log_dir,
+    const std::string& run_dir,
+    Ops& ops)
+{
+    BuildResult result;
+
+    if (!validate_name(name)) {
+        auto r = step("validate name");
+        fail_step(r, "invalid template name '" + name + "'");
+        result.steps.push_back(r);
+        return result;
+    }
+
+    const std::string state_conf = state_templates_dir + "/" + name + "/template.conf";
+    const std::string final_ds   = "zroot/jails/templates/" + name;
+    const std::string ts         = now_ts();
+    const std::string log_path   = log_dir + "/template-recover-" + name + "-" + ts + ".log";
+    const std::string pid_path   = run_dir + "/template-build-" + name + ".pid";
+    const std::string upg_marker = "/var/db/parishbsd/upgrade-state/template-" + name + ".conf";
+    result.log_path = log_path;
+
+    if (!mkdir_p(log_dir, 0755) || !mkdir_p(run_dir, 0755)) {
+        auto r = step("prepare dirs");
+        fail_step(r, "cannot create log/run dirs");
+        result.steps.push_back(r);
+        return result;
+    }
+
+    int log_fd = ::open(log_path.c_str(), O_WRONLY|O_CREAT|O_APPEND, 0600);
+    if (log_fd < 0) {
+        auto r = step("open log");
+        fail_step(r, "cannot open log");
+        result.steps.push_back(r);
+        return result;
+    }
+
+    auto mark_step = [&](const std::string& sn) -> StepResult& {
+        if (log_fd >= 0) {
+            std::string line = "[step] " + sn + "\n";
+            (void)::write(log_fd, line.data(), line.size());
+        }
+        result.steps.push_back(step(sn));
+        return result.steps.back();
+    };
+
+    bool pid_acquired = false;
+    std::map<std::string, std::string> conf;
+    std::string err;
+    std::string snap = snapshot_name_in;
+    if (!snap.empty() && snap[0] == '@') snap = snap.substr(1);
+
+    {
+        auto& r = mark_step("acquire lock");
+        int fd = ::open(pid_path.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0600);
+        if (fd < 0) {
+            fail_step(r, "another build/update is active for '" + name + "'");
+            goto fail;
+        }
+        std::string pid_str = std::to_string(::getpid()) + "\n";
+        (void)!::write(fd, pid_str.data(), pid_str.size());
+        ::close(fd);
+        pid_acquired = true;
+    }
+
+    {
+        auto& r = mark_step("verify template dataset");
+        if (!ops.zfs_dataset_exists(final_ds)) {
+            fail_step(r, "template dataset '" + final_ds + "' does not exist");
+            goto fail;
+        }
+        (void)parse_state_file(state_conf, conf, err);
+    }
+
+    if (snap.empty()) {
+        auto& r = mark_step("locate newest backup snapshot");
+        std::string out;
+        if (ops.run_cmd_capture({
+                "/sbin/zfs", "list", "-H", "-t", "snapshot", "-S", "creation",
+                "-o", "name", "-d", "1", final_ds
+            }, out) == 0) {
+            std::istringstream iss(out);
+            std::string line;
+            while (std::getline(iss, line)) {
+                auto at = line.rfind('@');
+                if (at == std::string::npos) continue;
+                std::string s = line.substr(at + 1);
+                if (s.rfind("pre-upgrade-", 0) == 0 ||
+                    s.rfind("pre-update-", 0) == 0 ||
+                    s.rfind("base-", 0) == 0) {
+                    snap = s;
+                    break;
+                }
+            }
+        }
+        if (snap.empty()) {
+            fail_step(r, "no recovery snapshot found on '" + final_ds + "'");
+            goto fail;
+        }
+        r.detail = "@" + snap;
+    }
+
+    {
+        auto& r = mark_step("rollback template to @" + snap);
+        if (!ops.zfs_snapshot_exists(final_ds + "@" + snap)) {
+            fail_step(r, "snapshot '" + final_ds + "@" + snap + "' does not exist");
+            goto fail;
+        }
+        if (!ops.zfs_rollback_r(final_ds, snap)) {
+            fail_step(r, "zfs rollback -r failed for '" + final_ds + "@" + snap + "'");
+            goto fail;
+        }
+    }
+
+    {
+        auto& r = mark_step("restore template metadata");
+        std::string mp;
+        if (ops.run_cmd_capture({"/sbin/zfs", "get", "-H", "-o", "value", "mountpoint", final_ds}, mp) == 0) {
+            while (!mp.empty() && (mp.back()=='\n' || mp.back()=='\r')) mp.pop_back();
+            std::string fver = read_root_freebsd_version_full(mp, ops);
+            if (!fver.empty()) {
+                conf["freebsd_version"] = fver;
+                conf["os_version"] = fver;
+            }
+        }
+        conf["state"] = "ready";
+        if (snap.rfind("base-", 0) == 0) {
+            conf["current_base"] = "@" + snap;
+        }
+        conf.erase("last_update_failed");
+        if (!write_state_file_atomic(state_conf, conf, err)) {
+            fail_step(r, err);
+            goto fail;
+        }
+        ::unlink(upg_marker.c_str());
+    }
+
+    result.succeeded = true;
+    ::unlink(pid_path.c_str());
+    if (log_fd >= 0) ::close(log_fd);
+    return result;
+
+fail:
+    if (pid_acquired) ::unlink(pid_path.c_str());
+    if (log_fd >= 0) ::close(log_fd);
+    return result;
+}
+
 }  // namespace tbuild
 }  // namespace parish

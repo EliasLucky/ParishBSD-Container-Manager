@@ -8,6 +8,7 @@ LIBDIR=/usr/local/libexec/parishbsd/lib
 . "$LIBDIR/container.sh"
 . "$LIBDIR/state.sh"
 . "$LIBDIR/policy.sh"
+. "$LIBDIR/os_upgrade.sh"
 
 json_mode=0
 name=""
@@ -83,9 +84,23 @@ for _c in $caps_space; do
     caps_json="${caps_json:+$caps_json, }\"$_ce\""
 done
 
+host_os_ver="$(parish_host_os_version)"
+host_os_arch="$(parish_host_os_arch)"
+comp_os_ver="$(parish_root_os_version "$jailroot" || echo "unknown")"
+comp_os_arch="$(parish_root_os_arch "$jailroot" || echo "$host_os_arch")"
+comp_os_status="$(parish_version_status "$comp_os_ver" "$host_os_ver")"
+comp_needs_rec="false"
+if parish_upgrade_interrupted "$name"; then
+    comp_needs_rec="true"
+fi
+
 if [ "$json_mode" -eq 1 ]; then
     st_esc=$(printf '%s' "$template" | sed 's/["\\]/\\&/g')
     path_esc=$(printf '%s' "$jailroot" | sed 's/["\\]/\\&/g')
+    cov_esc=$(printf '%s' "$comp_os_ver" | sed 's/["\\]/\\&/g')
+    coa_esc=$(printf '%s' "$comp_os_arch" | sed 's/["\\]/\\&/g')
+    hov_esc=$(printf '%s' "$host_os_ver" | sed 's/["\\]/\\&/g')
+    hoa_esc=$(printf '%s' "$host_os_arch" | sed 's/["\\]/\\&/g')
     printf '{\n'
     printf '  "name": "%s",\n' "$name"
     printf '  "jail_state": "%s",\n' "$state"
@@ -100,6 +115,12 @@ if [ "$json_mode" -eq 1 ]; then
     printf '  "disk_usage": %s,\n' "$bytes"
     printf '  "is_vault": %s,\n' "$([ "$is_vault" -eq 1 ] && echo true || echo false)"
     printf '  "path": "%s",\n' "$path_esc"
+    printf '  "os_version": "%s",\n' "$cov_esc"
+    printf '  "os_arch": "%s",\n' "$coa_esc"
+    printf '  "host_os_version": "%s",\n' "$hov_esc"
+    printf '  "host_os_arch": "%s",\n' "$hoa_esc"
+    printf '  "os_status": "%s",\n' "$comp_os_status"
+    printf '  "needs_recovery": %s,\n' "$comp_needs_rec"
     if [ -n "$internal_ip" ]; then
         printf '  "internal_ip": "%s"\n' "$internal_ip"
     else
@@ -112,6 +133,8 @@ fi
 printf 'Compartment: %s\n' "$name"
 printf '  %-18s %s\n' "kind"         "$kind"
 printf '  %-18s %s\n' "template"     "${template:-<legacy>}"
+printf '  %-18s %s\n' "system"       "$comp_os_ver ($comp_os_arch, host: $host_os_ver; $comp_os_status)"
+[ "$comp_needs_rec" = "true" ] && printf '  %-18s YES (interrupted update; run: parishctl recover %s)\n' "needs recovery" "$name"
 printf '  %-18s %s\n' "risk level"   "$risk_level"
 printf '  %-18s %s\n' "capabilities" "${caps_space:-none}"
 printf '  %-18s %s\n' "path"         "$jailroot"

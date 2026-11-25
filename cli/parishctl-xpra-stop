@@ -13,6 +13,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 jail="$1"
+shift
 validate_jail_name_existing "$jail" || exit 2
 
 exec /usr/local/bin/parish-xpra stop "$jail" "$@"

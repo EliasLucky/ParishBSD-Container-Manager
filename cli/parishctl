@@ -99,6 +99,20 @@ DISPLAY
   parishctl xpra stop <jail>        Stop Xpra server for a compartment
   parishctl xpra status <jail>      Show display session status
 
+SYSTEM UPDATES & RECOVERY
+  parishctl upgrade <name> [--target=<rel>] [--stop]
+                                    Update a compartment OS + packages to match host
+  parishctl upgrade --all [--stop]  Update all outdated compartments and templates
+  parishctl recover <name> [--list | --snapshot=<snap>] [--stop]
+                                    Restore a compartment from a backup snapshot
+  parishctl template update <name> [--to=<rel>]
+                                    Update/upgrade a template OS + packages
+  parishctl template upgrade <name|--all> [--to=<rel>]
+                                    Update one or all built templates
+  parishctl template recover <name> [--list | --snapshot=<snap>]
+                                    Restore a template from a backup snapshot
+  parishctl host-info [--json]      Show host FreeBSD version & template cache status
+
 REMOVED IN THIS VERSION
 
   apps set-launcher    Removed. To change what an application runs,
@@ -161,8 +175,16 @@ case "$verb" in
         ;;
     template)
         subverb="${1:-}"
-        [ -n "$subverb" ] || { echo "parish: usage: parishctl template <list|show|create|kill|destroy|scrub|hide|unhide|rename|reset>" >&2; exit 2; }
+        [ -n "$subverb" ] || { echo "parish: usage: parishctl template <list|show|create|update|upgrade|recover|kill|destroy|scrub|hide|unhide|rename|reset>" >&2; exit 2; }
         shift
+        if [ "$subverb" = "update" ]; then
+            _tname="${1:-}"
+            [ -n "$_tname" ] || { echo "parish: usage: parishctl template update <name> [--source=shipped|user] [--target-release=<rel>]" >&2; exit 2; }
+            shift
+            _src_flag="--source=user"
+            [ -f "/usr/local/share/parishbsd/templates/$_tname/template.conf" ] && _src_flag="--source=shipped"
+            exec /usr/local/bin/pkexec /usr/local/sbin/parish-template-build "$_tname" --update "$_src_flag" "$@"
+        fi
         wrapper="/usr/local/sbin/parishctl-template-$subverb"
         if [ ! -x "$wrapper" ]; then
             echo "parish: template subcommand '$subverb' not found." >&2

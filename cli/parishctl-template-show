@@ -1,28 +1,78 @@
 #!/bin/sh
-# parishctl-template-show - Show template details
+# parishctl-template-show  show details and recovery snapshots for a template.
 set -eu
 
-name="${1:?usage: parishctl template show <name>}"
-
-conf=""
-if [ -f "/var/db/parishbsd/templates/$name/template.conf" ]; then
-    conf="/var/db/parishbsd/templates/$name/template.conf"
-elif [ -f "/usr/local/share/parishbsd/templates/$name/template.conf" ]; then
-    conf="/usr/local/share/parishbsd/templates/$name/template.conf"
-else
-    echo "parish: template '$name' not found" >&2; exit 1
+LIBDIR=/usr/local/libexec/parishbsd/lib
+if [ -r "$LIBDIR/os_upgrade.sh" ]; then
+    . "$LIBDIR/os_upgrade.sh"
 fi
 
-echo "--- Configuration ($conf) ---"
-cat "$conf"
-echo ""
+json_mode=0
+name=""
+for arg in "$@"; do
+    case "$arg" in
+        --json) json_mode=1 ;;
+        -*)     printf 'parish: unknown option: %s\n' "$arg" >&2; exit 2 ;;
+        *)      if [ -z "$name" ]; then name="$arg"; else printf 'parish: unexpected argument: %s\n' "$arg" >&2; exit 2; fi ;;
+    esac
+done
 
-echo "--- ZFS Status ---"
+[ -n "$name" ] || { printf 'usage: parishctl template show <name> [--json]\n' >&2; exit 2; }
+case "$name" in ''|*[!a-z0-9-]*|-*|*-|*--*) printf 'parish: invalid template name\n' >&2; exit 2 ;; esac
+[ "${#name}" -le 63 ] || { printf 'parish: template name too long\n' >&2; exit 2; }
+
+state_file="/var/db/parishbsd/templates/$name/template.conf"
+shipped_file="/usr/local/share/parishbsd/templates/$name/template.conf"
+conf_file="$state_file"
+[ -f "$conf_file" ] || conf_file="$shipped_file"
+[ -f "$conf_file" ] || { printf 'parish: template "%s" not found\n' "$name" >&2; exit 1; }
+
+read_field() {
+    awk -F= -v k="$1" '$1==k { sub(/^[^=]*=/,""); print; exit }' "$2" 2>/dev/null || true
+}
+
+state="$(read_field state "$conf_file")"
+[ -n "$state" ] || state="not-built"
+tier="$(read_field tier "$conf_file")"
+kind="$(read_field kind "$conf_file")"
+desc="$(read_field description.en "$conf_file")"
+base="$(read_field current_base "$conf_file")"
+size_mb="$(read_field build_size_mb "$conf_file")"
+tmpl_mp="/usr/local/jails/templates/$name"
 ds="zroot/jails/templates/$name"
-if zfs list -H -o name "$ds" >/dev/null 2>&1; then
-    zfs list -H -o name,used,refer "$ds"
-elif zfs list -H -o name "${ds}-building" >/dev/null 2>&1; then
-    echo "Status: building (staging dataset exists, final dataset missing)"
+
+host_ver="$(parish_host_os_version 2>/dev/null || /bin/freebsd-version -u 2>/dev/null || uname -r)"
+if [ -d "$tmpl_mp/bin" ] && command -v parish_root_os_version >/dev/null 2>&1; then
+    tmpl_ver="$(parish_root_os_version "$tmpl_mp" || echo "unknown")"
 else
-    echo "Status: not built (no ZFS datasets found)"
+    tmpl_ver="$(read_field freebsd_version "$conf_file")"
+    [ -n "$tmpl_ver" ] || tmpl_ver="$(read_field os_version "$conf_file")"
+    [ -n "$tmpl_ver" ] || tmpl_ver="not-built"
+fi
+
+if [ "$json_mode" -eq 1 ]; then
+    printf '{\n'
+    printf '  "name": "%s",\n' "$name"
+    printf '  "state": "%s",\n' "$state"
+    printf '  "tier": "%s",\n' "${tier:-unknown}"
+    printf '  "kind": "%s",\n' "${kind:-}"
+    printf '  "current_base": "%s",\n' "$base"
+    printf '  "os_version": "%s",\n' "$tmpl_ver"
+    printf '  "host_os_version": "%s",\n' "$host_ver"
+    printf '  "build_size_mb": %s\n' "${size_mb:-0}"
+    printf '}\n'
+else
+    printf 'Template: %s\n' "$name"
+    printf '  %-16s %s\n' "state" "$state"
+    printf '  %-16s %s\n' "kind" "${kind:-$tier}"
+    printf '  %-16s %s (host: %s)\n' "OS version" "$tmpl_ver" "$host_ver"
+    printf '  %-16s %s\n' "current base" "${base:-none}"
+    printf '  %-16s %s MiB\n' "build size" "${size_mb:-0}"
+    [ -n "$desc" ] && printf '  %-16s %s\n' "description" "$desc"
+    if /sbin/zfs list -H -o name "$ds" >/dev/null 2>&1 && command -v parish_list_snapshots >/dev/null 2>&1; then
+        printf '  Snapshots:\n'
+        parish_list_snapshots "$ds" | while IFS='	' read -r sname scre; do
+            printf '    %-30s %s\n' "$sname" "$scre"
+        done
+    fi
 fi
