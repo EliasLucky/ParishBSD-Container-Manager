@@ -85,6 +85,17 @@ if(BUILD_GUI)
     target_link_libraries(parish-compartments PRIVATE
         Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
     )
+
+    add_executable(parish-firstboot-gui
+        src/firstboot/FirstBootMain.cpp
+        resources/parishbsd.qrc
+    )
+    set_target_properties(parish-firstboot-gui PROPERTIES
+        AUTOMOC ON
+        AUTORCC ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_link_libraries(parish-firstboot-gui PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 endif()  # BUILD_GUI
 
 # ============================================================
@@ -150,7 +161,7 @@ add_executable(xpra-sup cli/xpra-sup.cpp)
 # ============================================================
 
 if(BUILD_GUI)
-    install(TARGETS parish-compartments
+    install(TARGETS parish-compartments parish-firstboot-gui
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
@@ -172,5 +183,3 @@ install(TARGETS xpra-sup
 install(FILES resources/applications.catalog
     DESTINATION ${CMAKE_INSTALL_DATADIR}/parishbsd)
 
-install(FILES docs/SECURITY-ARCHITECTURE.md
-    DESTINATION ${CMAKE_INSTALL_DOCDIR})
