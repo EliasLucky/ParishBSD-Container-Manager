@@ -1,0 +1,25 @@
+<RCC>
+  <qresource prefix="/">
+    <file>parishbsd.png</file>
+    <file>icons/new-compartment.png</file>
+    <file>icons/new-template.png</file>
+    <file>icons/start.png</file>
+    <file>icons/stop.png</file>
+    <file>icons/unlock.png</file>
+    <file>icons/lock.png</file>
+    <file>icons/destroy.png</file>
+    <file>icons/refresh.png</file>
+    <file>icons/console.png</file>
+    <file>icons/apps.png</file>
+    <file>icons/exchange.png</file>
+    <file>icons/usb.png</file>
+    <file>icons/menu-shortcut.png</file>
+    <file>icons/desktop-shortcut.png</file>
+    <file>icons/container-app.png</file>
+    <file>icons/container-compat.png</file>
+    <file>icons/container-vault-locked.png</file>
+    <file>icons/container-vault-unlocked.png</file>
+    <file>icons/settings.png</file>
+    <file>icons/about.png</file>
+  </qresource>
+</RCC>
